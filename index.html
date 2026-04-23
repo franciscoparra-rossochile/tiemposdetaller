@@ -2,7 +2,10 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black"/>
 <title>Rosso · Control de Tiempos</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -48,18 +51,18 @@ h1,h2,h3,.hdr-title,.timer-d,.section-title{font-family:var(--head)}
 .g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
 
 /* SELECT BUTTONS */
-.sel-btn{background:var(--bg3);border:1px solid var(--border2);border-radius:3px;padding:10px 8px;font-size:12px;color:var(--wh3);cursor:pointer;text-align:center;transition:all 0.1s;line-height:1.4;font-family:var(--body);font-weight:600;letter-spacing:0.02em;text-transform:uppercase}
+.sel-btn{background:var(--bg3);border:1px solid var(--border2);border-radius:3px;padding:10px 8px;font-size:12px;color:var(--wh3);cursor:pointer;text-align:center;transition:all 0.1s;line-height:1.4;font-family:var(--body);font-weight:600;letter-spacing:0.02em;text-transform:uppercase;-webkit-tap-highlight-color:transparent;touch-action:manipulation;user-select:none;-webkit-user-select:none;min-height:48px}
 .sel-btn:hover{border-color:var(--red);color:var(--wh);background:var(--bg4)}
 .sel-btn.selected{background:var(--red5);border-color:var(--red);color:var(--red3);border-width:2px}
 
 /* BUTTONS */
-.btn-r{background:var(--red);color:#fff;border:none;border-radius:3px;padding:13px 18px;font-size:14px;font-weight:700;cursor:pointer;width:100%;transition:all 0.1s;letter-spacing:0.08em;text-transform:uppercase;font-family:var(--head)}
+.btn-r{background:var(--red);color:#fff;border:none;border-radius:3px;padding:13px 18px;font-size:14px;font-weight:700;cursor:pointer;width:100%;transition:all 0.1s;letter-spacing:0.08em;text-transform:uppercase;font-family:var(--head);-webkit-tap-highlight-color:transparent;touch-action:manipulation;min-height:48px}
 .btn-r:hover{background:var(--red2)}.btn-r:disabled{opacity:0.3;cursor:not-allowed}
-.btn-y{background:var(--gold);color:#fff;border:none;border-radius:3px;padding:13px 18px;font-size:14px;font-weight:700;cursor:pointer;width:100%;transition:all 0.1s;letter-spacing:0.08em;text-transform:uppercase;font-family:var(--head)}
+.btn-y{background:var(--gold);color:#fff;border:none;border-radius:3px;padding:13px 18px;font-size:14px;font-weight:700;cursor:pointer;width:100%;transition:all 0.1s;letter-spacing:0.08em;text-transform:uppercase;font-family:var(--head);-webkit-tap-highlight-color:transparent;touch-action:manipulation;min-height:48px}
 .btn-y:hover{background:#a06e08}
-.btn-g{background:var(--green);color:#fff;border:none;border-radius:3px;padding:13px 18px;font-size:14px;font-weight:700;cursor:pointer;width:100%;transition:all 0.1s;letter-spacing:0.08em;text-transform:uppercase;font-family:var(--head)}
+.btn-g{background:var(--green);color:#fff;border:none;border-radius:3px;padding:13px 18px;font-size:14px;font-weight:700;cursor:pointer;width:100%;transition:all 0.1s;letter-spacing:0.08em;text-transform:uppercase;font-family:var(--head);-webkit-tap-highlight-color:transparent;touch-action:manipulation;min-height:48px}
 .btn-g:hover{background:#155a0c}
-.btn-o{background:transparent;border:1px solid var(--border3);border-radius:3px;padding:12px 18px;font-size:13px;color:var(--wh2);cursor:pointer;width:100%;transition:all 0.1s;letter-spacing:0.06em;text-transform:uppercase;font-family:var(--head);font-weight:600}
+.btn-o{background:transparent;border:1px solid var(--border3);border-radius:3px;padding:12px 18px;font-size:13px;color:var(--wh2);cursor:pointer;width:100%;transition:all 0.1s;letter-spacing:0.06em;text-transform:uppercase;font-family:var(--head);font-weight:600;-webkit-tap-highlight-color:transparent;touch-action:manipulation;min-height:48px}
 .btn-o:hover{background:var(--bg3);border-color:var(--wh4)}
 
 /* TIMER */
@@ -84,7 +87,7 @@ h1,h2,h3,.hdr-title,.timer-d,.section-title{font-family:var(--head)}
 .modal{background:var(--bg2);border:1px solid var(--border3);border-top:3px solid var(--red);border-radius:4px;padding:22px;width:100%;max-width:320px}
 .modal-t{font-size:17px;font-weight:700;color:var(--wh);margin-bottom:4px;letter-spacing:0.05em;text-transform:uppercase;font-family:var(--head)}
 .modal-s{font-size:13px;color:var(--wh3);margin-bottom:16px}
-.reason-btn{background:var(--bg3);border:1px solid var(--border2);border-radius:3px;padding:12px 14px;font-size:13px;color:var(--wh2);cursor:pointer;width:100%;text-align:left;margin-bottom:8px;transition:all 0.1s;font-family:var(--body);font-weight:600;letter-spacing:0.03em}
+.reason-btn{background:var(--bg3);border:1px solid var(--border2);border-radius:3px;padding:14px;font-size:13px;color:var(--wh2);cursor:pointer;width:100%;text-align:left;margin-bottom:8px;transition:all 0.1s;font-family:var(--body);font-weight:600;letter-spacing:0.03em;-webkit-tap-highlight-color:transparent;touch-action:manipulation;min-height:48px}
 .reason-btn:hover{border-color:var(--gold);background:var(--gold2);color:var(--gold3)}
 
 /* INPUTS */
@@ -94,7 +97,7 @@ select.inp{cursor:pointer}
 
 /* TABS */
 .tab-bar{display:flex;background:var(--bg2);border-bottom:2px solid var(--border2);overflow-x:auto}
-.tab{flex:1;min-width:70px;padding:11px 6px;text-align:center;font-size:12px;font-weight:700;color:var(--wh4);cursor:pointer;border-bottom:3px solid transparent;white-space:nowrap;letter-spacing:0.06em;text-transform:uppercase;font-family:var(--head);margin-bottom:-2px}
+.tab{flex:1;min-width:70px;padding:11px 6px;text-align:center;font-size:12px;font-weight:700;color:var(--wh4);cursor:pointer;border-bottom:3px solid transparent;white-space:nowrap;letter-spacing:0.06em;text-transform:uppercase;font-family:var(--head);margin-bottom:-2px;-webkit-tap-highlight-color:transparent;touch-action:manipulation;user-select:none;-webkit-user-select:none}
 .tab.active{color:var(--red3);border-bottom-color:var(--red)}
 
 /* SESSION ROWS */
@@ -113,7 +116,7 @@ select.inp{cursor:pointer}
 
 /* MISC */
 .empty{text-align:center;color:var(--wh4);font-size:14px;padding:32px 0;letter-spacing:0.05em;text-transform:uppercase;font-family:var(--head)}
-.btn-sm{background:var(--bg3);border:1px solid var(--border2);border-radius:3px;padding:5px 10px;font-size:11px;color:var(--wh3);cursor:pointer;white-space:nowrap;font-family:var(--head);font-weight:600;letter-spacing:0.06em;text-transform:uppercase}
+.btn-sm{background:var(--bg3);border:1px solid var(--border2);border-radius:3px;padding:8px 12px;font-size:11px;color:var(--wh3);cursor:pointer;white-space:nowrap;font-family:var(--head);font-weight:600;letter-spacing:0.06em;text-transform:uppercase;-webkit-tap-highlight-color:transparent;touch-action:manipulation;min-height:40px}
 .btn-sm:hover{border-color:var(--red);color:var(--red3)}
 .role-badge{font-size:10px;padding:2px 7px;border-radius:2px;font-weight:700;font-family:var(--head);letter-spacing:0.06em;text-transform:uppercase}
 .rb-admin{background:#10102a;color:#7090e0}.rb-jefatura{background:#0a2a0a;color:#60cc60}.rb-tech{background:var(--red4);color:var(--red3)}
@@ -154,7 +157,7 @@ select.inp{cursor:pointer}
       <div class="lbl">Usuario</div>
       <input class="inp" id="li-u" placeholder="nombre.apellido" autocomplete="username"/>
       <div class="lbl">Contraseña</div>
-      <input class="inp" type="password" id="li-p" placeholder="••••••••" autocomplete="current-password" onkeydown="if(event.key===\'Enter\')doLogin()"/>
+      <input class="inp" type="password" id="li-p" placeholder="••••••••" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()"/>
       <div id="li-err" style="color:var(--red3);font-size:13px;margin-bottom:10px;display:none"></div>
       <button class="btn-r" id="li-btn" onclick="doLogin()">Ingresar</button>
     </div>
@@ -202,7 +205,7 @@ select.inp{cursor:pointer}
 <!-- TIMER -->
 <div class="screen" id="s-timer">
   <div class="hdr">
-    <button onclick="showScreen(\'s-home\')" style="background:none;border:none;cursor:pointer;color:var(--wh3);padding:0;margin-right:8px;font-size:26px;line-height:1;font-family:var(--head)">‹</button>
+    <button onclick="showScreen('s-home')" style="background:var(--bg3);border:1px solid var(--border2);border-radius:6px;cursor:pointer;color:var(--wh2);padding:6px 12px;margin-right:8px;font-size:20px;line-height:1;font-family:var(--head);min-width:44px;min-height:44px;display:flex;align-items:center;justify-content:center;-webkit-tap-highlight-color:transparent;touch-action:manipulation">‹</button>
     <div>
       <div class="hdr-title" id="t-tech">-</div>
       <div style="display:flex;align-items:center;gap:8px">
@@ -231,7 +234,7 @@ select.inp{cursor:pointer}
 <!-- MI HISTORIAL -->
 <div class="screen" id="s-mi-hist">
   <div class="hdr">
-    <button onclick="showScreen(\'s-home\')" style="background:none;border:none;cursor:pointer;color:var(--wh3);padding:0;margin-right:8px;font-size:26px;line-height:1">‹</button>
+    <button onclick="showScreen('s-home')" style="background:var(--bg3);border:1px solid var(--border2);border-radius:6px;cursor:pointer;color:var(--wh2);padding:6px 12px;margin-right:8px;font-size:20px;line-height:1;font-family:var(--head);min-width:44px;min-height:44px;display:flex;align-items:center;justify-content:center;-webkit-tap-highlight-color:transparent;touch-action:manipulation">‹</button>
     <div><div class="hdr-title">Mi historial</div><div class="hdr-sub" id="mi-sub"></div></div>
   </div>
   <div class="body" id="mi-body"></div>
@@ -249,9 +252,9 @@ select.inp{cursor:pointer}
     </div>
   </div>
   <div class="tab-bar">
-    <div class="tab active" id="tj-cur" onclick="jefTab(\'cur\')">En línea</div>
-    <div class="tab" id="tj-notif" onclick="jefTab(\'notif\')">Alertas <span id="tj-nd" style="display:none" class="notif-dot"></span></div>
-    <div class="tab" id="tj-hist" onclick="jefTab(\'hist\')">Historial</div>
+    <div class="tab active" id="tj-cur" onclick="jefTab('cur')">En línea</div>
+    <div class="tab" id="tj-notif" onclick="jefTab('notif')">Alertas <span id="tj-nd" style="display:none" class="notif-dot"></span></div>
+    <div class="tab" id="tj-hist" onclick="jefTab('hist')">Historial</div>
   </div>
   <div class="body">
     <div id="jv-cur"></div>
@@ -269,10 +272,10 @@ select.inp{cursor:pointer}
     <div style="margin-left:auto"><button class="btn-sm" onclick="doLogout()">Salir</button></div>
   </div>
   <div class="tab-bar">
-    <div class="tab active" id="ta-cur" onclick="adTab(\'cur\')">En curso</div>
-    <div class="tab" id="ta-hist" onclick="adTab(\'hist\')">Historial</div>
-    <div class="tab" id="ta-usr" onclick="adTab(\'usr\')">Usuarios</div>
-    <div class="tab" id="ta-cfg" onclick="adTab(\'cfg\')">Config</div>
+    <div class="tab active" id="ta-cur" onclick="adTab('cur')">En curso</div>
+    <div class="tab" id="ta-hist" onclick="adTab('hist')">Historial</div>
+    <div class="tab" id="ta-usr" onclick="adTab('usr')">Usuarios</div>
+    <div class="tab" id="ta-cfg" onclick="adTab('cfg')">Config</div>
   </div>
   <div class="body">
     <div id="ad-cur"></div>
@@ -291,10 +294,10 @@ select.inp{cursor:pointer}
   <div class="modal">
     <div class="modal-t">Motivo de pausa</div>
     <div class="modal-s">Selecciona el motivo para continuar</div>
-    <button class="reason-btn" onclick="confirmPause(\'Falta de repuestos\')">Falta de repuestos</button>
-    <button class="reason-btn" onclick="confirmPause(\'Espera de aprobación\')">Espera de aprobación</button>
-    <button class="reason-btn" onclick="confirmPause(\'Término de jornada\')">Término de jornada</button>
-    <button class="btn-o" onclick="document.getElementById(\'m-pause\').style.display=\'none\'" style="margin-top:4px">Cancelar</button>
+    <button class="reason-btn" onclick="confirmPause('Falta de repuestos')">Falta de repuestos</button>
+    <button class="reason-btn" onclick="confirmPause('Espera de aprobación')">Espera de aprobación</button>
+    <button class="reason-btn" onclick="confirmPause('Término de jornada')">Término de jornada</button>
+    <button class="btn-o" onclick="document.getElementById('m-pause').style.display='none'" style="margin-top:4px">Cancelar</button>
   </div>
 </div>
 
@@ -303,7 +306,7 @@ select.inp{cursor:pointer}
     <div class="modal-t">Confirmar finalización</div>
     <div class="modal-s" id="m-fin-sum"></div>
     <button class="btn-g" onclick="confirmFinish()">Guardar servicio</button>
-    <button class="btn-o" onclick="document.getElementById(\'m-finish\').style.display=\'none\'" style="margin-top:8px">Volver</button>
+    <button class="btn-o" onclick="document.getElementById('m-finish').style.display='none'" style="margin-top:8px">Volver</button>
   </div>
 </div>
 
@@ -324,7 +327,7 @@ select.inp{cursor:pointer}
     </div>
     <div id="cu-err" style="color:var(--red3);font-size:12px;margin-bottom:8px;display:none"></div>
     <button class="btn-r" id="cu-btn" onclick="saveUser()">Crear usuario</button>
-    <button class="btn-o" onclick="document.getElementById(\'m-create\').style.display=\'none\'" style="margin-top:8px">Cancelar</button>
+    <button class="btn-o" onclick="document.getElementById('m-create').style.display='none'" style="margin-top:8px">Cancelar</button>
   </div>
 </div>
 
@@ -336,7 +339,7 @@ select.inp{cursor:pointer}
     <div class="lbl">Confirmar contraseña</div><input class="inp" type="password" id="chp-conf"/>
     <div id="chp-err" style="color:var(--red3);font-size:12px;margin-bottom:8px;display:none"></div>
     <button class="btn-r" id="chp-btn" onclick="doChangePass()">Guardar</button>
-    <button class="btn-o" onclick="document.getElementById(\'m-chpass\').style.display=\'none\'" style="margin-top:8px">Cancelar</button>
+    <button class="btn-o" onclick="document.getElementById('m-chpass').style.display='none'" style="margin-top:8px">Cancelar</button>
   </div>
 </div>
 
@@ -634,11 +637,11 @@ async function renderAdUsr(){
   const {data}=await sb.from('users').select('*').order('role').order('name');
   el.innerHTML=`<button class="btn-r" onclick="openCreateUser(true)" style="margin-bottom:12px">+ Nuevo usuario</button>`;
   const card=document.createElement('div');card.className='card-plain';
-  (data||[]).forEach(u=>{const init=u.name.split(' ').map(x=>x[0]).join('').slice(0,2);const avc=u.role==='admin'?'av-a':u.role==='jefatura'?'av-j':'av';const row=document.createElement('div');row.className='user-row';row.innerHTML=`<div class="${avc}">${init}</div><div style="flex:1"><div style="font-size:13px;font-weight:700;color:var(--wh);font-family:var(--head);letter-spacing:0.03em;text-transform:uppercase">${u.name}</div><div style="font-size:11px;color:var(--wh3)">@${u.username} <span class="role-badge rb-${u.role}">${u.role}</span></div></div><button class="btn-sm" onclick="openChPass(\'${u.username}\')">Clave</button>`;card.appendChild(row);});
+  (data||[]).forEach(u=>{const init=u.name.split(' ').map(x=>x[0]).join('').slice(0,2);const avc=u.role==='admin'?'av-a':u.role==='jefatura'?'av-j':'av';const row=document.createElement('div');row.className='user-row';row.innerHTML=`<div class="${avc}">${init}</div><div style="flex:1"><div style="font-size:13px;font-weight:700;color:var(--wh);font-family:var(--head);letter-spacing:0.03em;text-transform:uppercase">${u.name}</div><div style="font-size:11px;color:var(--wh3)">@${u.username} <span class="role-badge rb-${u.role}">${u.role}</span></div></div><button class="btn-sm" onclick="openChPass('${u.username}')">Clave</button>`;card.appendChild(row);});
   el.appendChild(card);
 }
 function renderAdCfg(){
-  document.getElementById('ad-cfg').innerHTML=`<div class="card-plain"><div style="font-size:15px;font-weight:700;color:var(--wh);font-family:var(--head);letter-spacing:0.05em;text-transform:uppercase;margin-bottom:12px">Contraseña administrador</div><button class="btn-o" onclick="openChPass(\'admin\')" style="margin-bottom:16px">Cambiar contraseña admin</button><div style="border-top:1px solid var(--border2);padding-top:14px"><div style="font-size:15px;font-weight:700;color:var(--wh);font-family:var(--head);letter-spacing:0.05em;text-transform:uppercase;margin-bottom:10px">Tiempos objetivo</div>${SRVS.filter(s=>s.goal).map(s=>`<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px"><span style="color:var(--wh2);text-transform:uppercase;font-family:var(--head);letter-spacing:0.03em">${s.name}</span><span style="color:var(--red3);font-family:var(--mono);font-weight:700">${s.goal} min</span></div>`).join('')}</div></div>`;
+  document.getElementById('ad-cfg').innerHTML=`<div class="card-plain"><div style="font-size:15px;font-weight:700;color:var(--wh);font-family:var(--head);letter-spacing:0.05em;text-transform:uppercase;margin-bottom:12px">Contraseña administrador</div><button class="btn-o" onclick="openChPass('admin')" style="margin-bottom:16px">Cambiar contraseña admin</button><div style="border-top:1px solid var(--border2);padding-top:14px"><div style="font-size:15px;font-weight:700;color:var(--wh);font-family:var(--head);letter-spacing:0.05em;text-transform:uppercase;margin-bottom:10px">Tiempos objetivo</div>${SRVS.filter(s=>s.goal).map(s=>`<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px"><span style="color:var(--wh2);text-transform:uppercase;font-family:var(--head);letter-spacing:0.03em">${s.name}</span><span style="color:var(--red3);font-family:var(--mono);font-weight:700">${s.goal} min</span></div>`).join('')}</div></div>`;
 }
 
 function openCreateUser(isAdmin){document.getElementById('m-ct').textContent=isAdmin?'Nuevo usuario':'Crear cuenta';document.getElementById('cu-role-wrap').style.display=isAdmin?'block':'none';['cu-name','cu-user','cu-pass'].forEach(id=>document.getElementById(id).value='');document.getElementById('cu-err').style.display='none';document.getElementById('m-create').style.display='flex';}
