@@ -1789,7 +1789,16 @@ async function renderBossAlertas(body) {
   var {data} = await sb.from('notifications').select('*').order('created_at',{ascending:false}).limit(60);
   body.innerHTML = '<div class="lbl">Todas las alertas</div>';
   if (!data || !data.length) { body.innerHTML += '<div class="empty">Sin alertas</div>'; return; }
-  data.forEach(function(n) {
+  // Filtro: la jefatura/admin NO ve notificaciones tipo 'assign' dirigidas a otros usuarios
+  // (ya reciben la notificacion global 'cal' con la misma info; evita duplicados y el mensaje
+  // "Se te asigno" que no aplica para quien no es el destinatario).
+  // Si la notificacion assign esta dirigida al propio CU, se muestra normal.
+  var filtered = data.filter(function(n) {
+    if (n.type === 'assign' && n.target_user_id && n.target_user_id !== CU.id) return false;
+    return true;
+  });
+  if (!filtered.length) { body.innerHTML += '<div class="empty">Sin alertas</div>'; return; }
+  filtered.forEach(function(n) {
     var card = mk('div','card'); card.style.borderLeft = '4px solid ' + (n.type==='over'?'var(--red)':n.type==='pau'?'var(--gold)':n.type==='fin'?'var(--green)':n.type==='cal'?'var(--blue)':'var(--blue)');
     card.style.marginBottom = '6px';
     card.innerHTML = '<div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;color:#111">' + n.title + '</div>'
