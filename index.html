@@ -155,9 +155,10 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
   </div>
   <div class="tab-bar" id="tech-tabbar">
     <div class="tab active" data-tab="t-inicio" onclick="techTab('t-inicio')">Inicio</div>
+    <div class="tab" data-tab="t-misservicios" onclick="techTab('t-misservicios')">Mis servicios<span class="ndot" id="tech-active-dot"></span></div>
     <div class="tab" data-tab="t-agenda" onclick="techTab('t-agenda')">Agenda</div>
     <div class="tab" data-tab="t-alertas" onclick="techTab('t-alertas')">Alertas<span class="ndot" id="tech-ndot"></span></div>
-    <div class="tab" data-tab="t-online" onclick="techTab('t-online')">En linea</div>
+    <div class="tab" data-tab="t-historial" onclick="techTab('t-historial')">Historial</div>
   </div>
   <div class="body" id="tech-body"></div>
 </div>
@@ -234,6 +235,17 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
   </div>
 </div>
 
+<!-- Comment modal -->
+<div class="overlay" id="m-comment" style="display:none">
+  <div class="modal">
+    <div class="modal-t">Comentario operativo</div>
+    <div class="modal-s">Quedara registrado en el servicio</div>
+    <textarea class="inp" id="cm-text" rows="4" style="height:90px" placeholder="Escribe el comentario..."></textarea>
+    <button class="btn btn-red" onclick="saveComment()">Guardar comentario</button>
+    <button class="btn btn-out" onclick="closeModal('m-comment')" style="margin-top:8px">Cancelar</button>
+  </div>
+</div>
+
 <div class="overlay" id="m-checklist" style="display:none">
   <div class="modal" style="max-width:380px">
     <div class="modal-t">Checklist obligatorio</div>
@@ -278,8 +290,10 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     <input type="hidden" id="ck-visado"/>
     <div class="lbl">Observaciones finales</div>
     <textarea class="inp" id="ck-obs" placeholder="Observaciones opcionales" style="height:52px"></textarea>
+    <div id="ck-service-name" style="font-size:11px;color:var(--wh3);margin-bottom:8px;text-transform:uppercase;letter-spacing:.04em;font-family:var(--head)"></div>
     <div id="ck-err" style="display:none;color:var(--red);font-size:12px;margin-bottom:8px;font-weight:600;padding:8px;background:var(--red4);border-radius:4px"></div>
-    <button class="btn btn-green" id="ck-btn" onclick="submitChecklist()">Finalizar servicio</button>
+    <button class="btn btn-green" id="ck-btn" onclick="submitChecklist()">Finalizar y guardar</button>
+    <button class="btn btn-gold" onclick="deferChecklistFromModal()" style="margin-top:8px">Completar checklist despues</button>
     <button class="btn btn-out" onclick="closeModal('m-checklist')" style="margin-top:8px">Volver</button>
   </div>
 </div>
@@ -355,6 +369,70 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
   </div>
 </div>
 
+
+<!-- COMMENT MODAL -->
+<div class="overlay" id="m-comment" style="display:none">
+  <div class="modal">
+    <div class="modal-t" id="m-comment-title">Agregar comentario</div>
+    <div class="modal-s">El comentario quedara registrado en el servicio</div>
+    <textarea class="inp" id="m-comment-text" rows="4" style="height:90px" placeholder="Escribe tu comentario operativo..."></textarea>
+    <div id="m-comment-err" style="display:none;color:var(--red);font-size:12px;margin-bottom:8px;font-weight:600"></div>
+    <button class="btn btn-red" id="m-comment-btn" onclick="submitComment()">Guardar comentario</button>
+    <button class="btn btn-out" onclick="closeModal('m-comment')" style="margin-top:8px">Cancelar</button>
+  </div>
+</div>
+
+<!-- DEFERRED CHECKLIST MODAL (same fields, different context) -->
+<div class="overlay" id="m-checklist-deferred" style="display:none">
+  <div class="modal" style="max-width:380px">
+    <div class="modal-t">Completar checklist pendiente</div>
+    <div class="modal-s" id="m-ckd-sub">Servicio pendiente</div>
+    <div class="lbl">Litros de aceite</div>
+    <input class="inp" type="number" id="ckd-litros" placeholder="Ej: 4.5" min="0" max="20" step="0.5"/>
+    <div class="lbl">Tipo de aceite</div>
+    <div class="radio-group">
+      <button class="radio-btn" onclick="pickRadioD('ckd-aceite','Liqui Moly 5W30',this)">Liqui Moly 5W30</button>
+      <button class="radio-btn" onclick="pickRadioD('ckd-aceite','Mobil 10W40',this)">Mobil 10W40</button>
+      <button class="radio-btn" onclick="pickRadioD('ckd-aceite','Mobil 5W30',this)">Mobil 5W30</button>
+      <button class="radio-btn" onclick="pickRadioD('ckd-aceite','Mobil 15W40',this)">Mobil 15W40</button>
+    </div>
+    <input type="hidden" id="ckd-aceite"/>
+    <hr style="border:none;border-top:1px solid var(--border);margin:8px 0"/>
+    <div class="lbl">Prueba de ruta - Tipo</div>
+    <div class="radio-group">
+      <button class="radio-btn" onclick="pickRadioD('ckd-rt','A',this)">Tipo A</button>
+      <button class="radio-btn" onclick="pickRadioD('ckd-rt','B',this)">Tipo B</button>
+      <button class="radio-btn" onclick="pickRadioD('ckd-rt','C',this)">Tipo C</button>
+    </div>
+    <input type="hidden" id="ckd-rt"/>
+    <div class="lbl">Resultado</div>
+    <div class="radio-group">
+      <button class="radio-btn" onclick="pickRadioD('ckd-rr','OK',this)">OK</button>
+      <button class="radio-btn" onclick="pickRadioD('ckd-rr','Con observaciones',this)">Con observaciones</button>
+    </div>
+    <input type="hidden" id="ckd-rr"/>
+    <textarea class="inp" id="ckd-anom" placeholder="Anomalias (opcional)" style="height:48px"></textarea>
+    <hr style="border:none;border-top:1px solid var(--border);margin:8px 0"/>
+    <div class="lbl">Doble control</div>
+    <div class="radio-group">
+      <button class="radio-btn" onclick="pickRadioD('ckd-doble','Aprobado',this)">Aprobado</button>
+      <button class="radio-btn" onclick="pickRadioD('ckd-doble','Rechazado',this)">Rechazado</button>
+    </div>
+    <input type="hidden" id="ckd-doble"/>
+    <div class="lbl">Visado</div>
+    <div class="radio-group">
+      <button class="radio-btn" onclick="pickRadioD('ckd-visado','Aprobado',this)">Aprobado</button>
+      <button class="radio-btn" onclick="pickRadioD('ckd-visado','Rechazado',this)">Rechazado</button>
+    </div>
+    <input type="hidden" id="ckd-visado"/>
+    <div class="lbl">Observaciones finales</div>
+    <textarea class="inp" id="ckd-obs" placeholder="Observaciones opcionales" style="height:48px"></textarea>
+    <div id="ckd-err" style="display:none;color:var(--red);font-size:12px;margin-bottom:8px;font-weight:600;padding:8px;background:var(--red4);border-radius:4px"></div>
+    <button class="btn btn-green" id="ckd-btn" onclick="submitDeferredChecklist()">Finalizar servicio</button>
+    <button class="btn btn-out" onclick="closeModal('m-checklist-deferred')" style="margin-top:8px">Volver</button>
+  </div>
+</div>
+
 <script>
 // ═══════════════════════════════════════════════
 // CONFIG & DEBUG
@@ -407,14 +485,20 @@ const SRVS = [
   {name:'Mantenimiento completo',goal:120},
   {name:'Mantenimiento de caja automatica o manual',goal:null},
   {name:'Reparaciones generales',goal:null,needsDesc:true},
-  {name:'Lavado de vehiculos',goal:null},
-  {name:'Estandar de taller',goal:null},
-  {name:'Compras',goal:null},
+  {name:'Lavado de vehiculos',goal:null,noChecklist:true},
+  {name:'Estandar de taller',goal:null,noChecklist:true},
+  {name:'Compras',goal:null,noChecklist:true},
   {name:'Garantia',goal:null},
   {name:'Recuperacion de DPF',goal:null,subs:['Pack esencial','Pack avanzado','Pack premium','Pack integral (DPF + Limpieza admision)']},
   {name:'Servicio de frenos',goal:null,subs:['Evaluacion','Pastillas delanteras + rectificado','Pastillas delanteras + cambio de discos','Pastillas/balatas traseras + rectificado','Pastillas/balatas traseras + cambio tambor/disco','Cambio liquido de frenos','Ajuste de frenos']},
   {name:'Diagnostico',goal:null,subs:['Scanner','Diagnostico basico','Diagnostico avanzado'],subGoals:{'Scanner':20,'Diagnostico basico':90,'Diagnostico avanzado':180}}
 ];
+
+// Services that don't require checklist
+function srvNeedsChecklist(srvLabel) {
+  var noChk = ['Lavado de vehiculos','Estandar de taller','Compras'];
+  return !noChk.some(function(n) { return srvLabel.startsWith(n); });
+}
 
 // ═══════════════════════════════════════════════
 // STATE
@@ -439,8 +523,10 @@ const T = {
   interval: null,
   overAlerted: false,
   pauses: [],
-  plate: ''
+  plate: '',
+  comments: []
 };
+let activeSessionKey = null; // tracks which session is being managed in mis-servicios
 
 let selSrv = null, selSub = null, selDesc = '', selPlate = '';
 let dbSyncCtr = 0;
@@ -633,9 +719,9 @@ function techTab(t) {
   body.innerHTML = '';
   logR('TECH_TAB', {tab: t});
   if (t === 't-inicio') renderTechInicio(body);
+  else if (t === 't-misservicios') renderMisServicios(body);
   else if (t === 't-agenda') renderTechAgenda(body);
   else if (t === 't-alertas') { document.getElementById('tech-ndot').classList.remove('show'); renderTechAlertas(body); }
-  else if (t === 't-online') renderTechOnline();
 }
 
 function bossTab(t) {
@@ -785,8 +871,9 @@ function applyAssign(service, plate) {
 
 async function doStartSession() {
   if (!selPlate || selPlate.length < 4) { alert('Patente invalida (minimo 4 caracteres)'); return; }
-  var existing = liveData.find(function(s) { return s.username === CU.username; });
-  if (existing) { alert('Ya tienes un servicio activo. Pausalo o finaliza antes de iniciar uno nuevo.'); return; }
+  // Allow multiple paused - only block if one is RUNNING
+  var running = liveData.find(function(s) { return s.username === CU.username && s.status === 'running'; });
+  if (running) { alert('Ya tienes un servicio en curso: ' + running.service + '\nPausalo antes de iniciar otro.'); return; }
   
   var srv = SRVS.find(function(s) { return s.name === selSrv; });
   var label = selSub ? (selSrv + ' - ' + selSub) : (selDesc ? (selSrv + ' - ' + selDesc) : selSrv);
@@ -906,7 +993,21 @@ function updateProg(pct, over) {
 // ═══════════════════════════════════════════════
 async function confirmPause(reason) {
   closeModal('m-pause');
-  if (!T.sessionKey) { alert('No hay sesion activa'); return; }
+  if (!T.sessionKey) {
+    // Try to find running session
+    var myRunning = liveData.find(function(s) { return s.username === CU.username && s.status === 'running'; });
+    if (myRunning) {
+      T.sessionKey = myRunning.session_key;
+      T.srvLabel = myRunning.service;
+      T.srvGoal = myRunning.goal_minutes;
+      T.sec = myRunning.seconds;
+      T.pauses = myRunning.pauses || [];
+      T.plate = myRunning.plate || '';
+    } else {
+      alert('No hay sesion activa para pausar');
+      return;
+    }
+  }
   T.running = false;
   var entry = {reason: reason, at: fmtT(T.sec)};
   T.pauses.push(entry);
@@ -924,7 +1025,7 @@ async function confirmPause(reason) {
   
   await pushNotif('pau', CU.name + ' pauso el servicio', T.srvLabel + ' - Motivo: ' + reason);
   await fetchLive();
-  techTab('t-inicio');
+  techTab('t-misservicios');
 }
 
 async function doResume() {
@@ -947,6 +1048,33 @@ async function doResume() {
   }).eq('session_key', T.sessionKey);
   logR('RESUME_RESULT', {error: error ? error.message : null});
   if (error) { alert('Error al reanudar: ' + error.message); return; }
+  await pushNotif('resume', CU.name + ' reanudo servicio', T.srvLabel);
+  await fetchLive();
+  techTab('t-inicio');
+}
+
+// Resume from a specific session key (used in Mis Servicios)
+async function resumeSession(sessionKey) {
+  var sess = liveData.find(function(s) { return s.session_key === sessionKey; });
+  if (!sess) { alert('Sesion no encontrada'); return; }
+  // Check no other session is running
+  var running = liveData.find(function(s) { return s.username === CU.username && s.status === 'running' && s.session_key !== sessionKey; });
+  if (running) { alert('Tienes otro servicio en curso: ' + running.service + '\nPausalo primero.'); return; }
+  // Load into T
+  T.sessionKey = sessionKey;
+  T.srvLabel = sess.service;
+  T.srvGoal = sess.goal_minutes;
+  T.sec = sess.seconds;
+  T.pauses = sess.pauses || [];
+  T.plate = sess.plate || '';
+  T.comments = sess.comments || [];
+  T.running = true;
+  logR('RESUME_SESSION', {key: sessionKey, sec: T.sec});
+  var {error} = await sb.from('active_sessions').update({
+    running: true, status: 'running', updated_at: new Date().toISOString()
+  }).eq('session_key', sessionKey);
+  if (error) { alert('Error al reanudar: ' + error.message); return; }
+  await pushNotif('resume', CU.name + ' reanudo servicio', sess.service + ' - ' + (sess.plate||''));
   await fetchLive();
   techTab('t-inicio');
 }
@@ -962,14 +1090,54 @@ function pickRadio(field, val, el) {
   document.getElementById(field).value = val;
 }
 
-function openChecklist() {
+// checklistForKey: which session_key we're completing checklist for
+var checklistForKey = null;
+
+function deferChecklistFromModal() {
+  closeModal('m-checklist');
+  deferChecklist(checklistForKey);
+}
+
+function openChecklist(sessionKey) {
+  checklistForKey = sessionKey || T.sessionKey;
+  if (!checklistForKey) { alert('No hay sesion activa'); return; }
+  // Check if service needs checklist
+  var sess = liveData.find(function(s) { return s.session_key === checklistForKey; });
+  var srvName = sess ? sess.service : T.srvLabel;
+  if (!srvNeedsChecklist(srvName)) {
+    // Direct finish without checklist
+    doFinish(null, checklistForKey);
+    return;
+  }
   radioState = {};
   document.querySelectorAll('#m-checklist .radio-btn').forEach(function(b) { b.classList.remove('on'); });
   ['ck-litros','ck-aceite','ck-rt','ck-rr','ck-anom','ck-doble','ck-visado','ck-obs'].forEach(function(id) {
     var el = document.getElementById(id); if (el) el.value = '';
   });
   document.getElementById('ck-err').style.display = 'none';
+  // Update title with service name
+  var titleEl = document.getElementById('ck-service-name');
+  if (titleEl) titleEl.textContent = srvName ? srvName.slice(0,40) : 'Checklist';
   openModal('m-checklist');
+}
+
+function deferChecklist(sessionKey) {
+  // Mark as checklist_pending and alert boss
+  var key = sessionKey || T.sessionKey;
+  if (!key) { alert('No hay sesion'); return; }
+  var sess = liveData.find(function(s) { return s.session_key === key; });
+  // Stop timer if it's the active one
+  if (T.sessionKey === key) { T.running = false; }
+  sb.from('active_sessions').update({
+    running: false, status: 'checklist_pending', updated_at: new Date().toISOString()
+  }).eq('session_key', key).then(async function(r) {
+    if (r.error) { alert('Error: ' + r.error.message); return; }
+    var srvName = sess ? sess.service : T.srvLabel;
+    var plate = sess ? (sess.plate||'') : T.plate;
+    await pushNotif('checklist_pending', 'Checklist pendiente', CU.name + ' - ' + srvName + ' - ' + plate, null, true);
+    await fetchLive();
+    techTab('t-misservicios');
+  });
 }
 
 async function submitChecklist() {
@@ -996,28 +1164,44 @@ async function submitChecklist() {
   };
   
   closeModal('m-checklist');
-  await doFinish(checklist);
+  await doFinish(checklist, checklistForKey);
+  checklistForKey = null;
 }
 
-async function doFinish(checklist) {
-  if (!T.sessionKey) {
+async function doFinish(checklist, sessionKey) {
+  var useKey = sessionKey || T.sessionKey;
+  if (!useKey) {
     var mine = liveData.find(function(s) { return s.username === CU.username; });
     if (!mine) { alert('No se encontro la sesion activa'); return; }
-    T.sessionKey = mine.session_key;
-    T.srvLabel = mine.service;
-    T.srvGoal = mine.goal_minutes;
-    T.sec = mine.seconds;
-    T.pauses = mine.pauses || [];
-    T.plate = mine.plate || '';
+    useKey = mine.session_key;
   }
-  T.running = false;
+  // Load session data
+  var sess = liveData.find(function(s) { return s.session_key === useKey; });
+  if (useKey === T.sessionKey) {
+    T.running = false;
+  } else if (sess) {
+    // Finishing a different session from Mis Servicios
+    T.sessionKey = useKey;
+    T.srvLabel = sess.service;
+    T.srvGoal = sess.goal_minutes;
+    T.sec = sess.seconds;
+    T.pauses = sess.pauses || [];
+    T.plate = sess.plate || '';
+  }
   
+  // Use session data
+  var finSrv = T.srvLabel || (sess ? sess.service : '');
+  var finPlate = T.plate || (sess ? (sess.plate||'') : '');
+  var finSec = T.sec || (sess ? sess.seconds : 0);
+  var finGoal = T.srvGoal || (sess ? sess.goal_minutes : null);
+  var finPauses = T.pauses.length ? T.pauses : (sess ? (sess.pauses||[]) : []);
+
   var histPayload = {
     technician: CU.name, username: CU.username,
-    service: T.srvLabel, plate: T.plate,
-    duration: fmtT(T.sec), seconds: T.sec,
-    goal_minutes: T.srvGoal || null,
-    pauses: T.pauses, checklist: checklist,
+    service: finSrv, plate: finPlate,
+    duration: fmtT(finSec), seconds: finSec,
+    goal_minutes: finGoal || null,
+    pauses: finPauses, checklist: checklist,
     ended_at: new Date().toISOString()
   };
   logR('FINISH_HISTORY_PAYLOAD', histPayload);
@@ -1036,10 +1220,10 @@ async function doFinish(checklist) {
     ended_at: new Date().toISOString()
   });
   
-  var {error: dErr} = await sb.from('active_sessions').delete().eq('session_key', T.sessionKey);
-  logR('FINISH_DELETE_SESSION', {error: dErr ? dErr.message : null});
+  var {error: dErr} = await sb.from('active_sessions').delete().eq('session_key', useKey);
+  logR('FINISH_DELETE_SESSION', {key: useKey, error: dErr ? dErr.message : null});
   
-  await pushNotif('fin', CU.name + ' finalizo servicio', T.srvLabel + ' - ' + T.plate + ' - ' + fmtT(T.sec));
+  await pushNotif('fin', CU.name + ' finalizo servicio', finSrv + ' - ' + finPlate + ' - ' + fmtT(finSec));
   resetT();
   await fetchLive();
   techTab('t-inicio');
@@ -1054,6 +1238,217 @@ function resetT() {
 // ═══════════════════════════════════════════════
 // TECH: AGENDA
 // ═══════════════════════════════════════════════
+// ═══════════════════════════════════════════════
+// MIS SERVICIOS TAB - Central tech view
+// ═══════════════════════════════════════════════
+async function renderMisServicios(body) {
+  body.innerHTML = '<div class="empty"><span class="spin"></span>Cargando...</div>';
+
+  var myRows = liveData.filter(function(s) { return s.username === CU.username; });
+  var {data: histData} = await sb.from('history').select('*').eq('username', CU.username)
+    .order('ended_at', {ascending: false}).limit(20);
+  var {data: schedData} = await sb.from('scheduled_services').select('*')
+    .eq('technician_id', CU.id).neq('status','cancelado').neq('status','completado')
+    .order('scheduled_at').limit(10);
+
+  logR('MIS_SERVICIOS', {live: myRows.length, hist: histData ? histData.length : 0});
+  body.innerHTML = '';
+
+  // Summary bar
+  var running = myRows.filter(function(s) { return s.status === 'running'; });
+  var paused = myRows.filter(function(s) { return s.status === 'paused'; });
+  var ckPend = myRows.filter(function(s) { return s.status === 'checklist_pending'; });
+  var sumCard = mk('div','card-red');
+  sumCard.innerHTML = '<div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center">'
+    + '<div style="text-align:center"><div style="font-size:22px;font-weight:700;color:var(--green);font-family:var(--head)">' + running.length + '</div><div style="font-size:9px;color:#999;text-transform:uppercase;letter-spacing:.05em">En curso</div></div>'
+    + '<div style="text-align:center"><div style="font-size:22px;font-weight:700;color:var(--gold);font-family:var(--head)">' + paused.length + '</div><div style="font-size:9px;color:#999;text-transform:uppercase;letter-spacing:.05em">Pausados</div></div>'
+    + '<div style="text-align:center"><div style="font-size:22px;font-weight:700;color:var(--blue);font-family:var(--head)">' + ckPend.length + '</div><div style="font-size:9px;color:#999;text-transform:uppercase;letter-spacing:.05em">Checklist pend.</div></div>'
+    + '<div style="text-align:center"><div style="font-size:22px;font-weight:700;color:var(--red);font-family:var(--head)">' + (schedData ? schedData.length : 0) + '</div><div style="font-size:9px;color:#999;text-transform:uppercase;letter-spacing:.05em">Proximos</div></div>'
+    + '</div>';
+  body.appendChild(sumCard);
+
+  // RUNNING
+  if (running.length) {
+    body.appendChild(sectionHdr('En curso', 'var(--green)', running.length));
+    running.forEach(function(s) { body.appendChild(buildMisServCard(s, 'running')); });
+  }
+
+  // PAUSED
+  if (paused.length) {
+    body.appendChild(sectionHdr('Pausados', 'var(--gold)', paused.length));
+    paused.forEach(function(s) { body.appendChild(buildMisServCard(s, 'paused')); });
+  }
+
+  // CHECKLIST PENDING
+  if (ckPend.length) {
+    body.appendChild(sectionHdr('Checklist pendiente', 'var(--blue)', ckPend.length));
+    ckPend.forEach(function(s) { body.appendChild(buildMisServCard(s, 'checklist_pending')); });
+  }
+
+  // UPCOMING ASSIGNED
+  var now = new Date();
+  if (schedData && schedData.length) {
+    body.appendChild(sectionHdr('Proximos asignados', 'var(--blue)', schedData.length));
+    schedData.forEach(function(a) {
+      var dt = new Date(a.scheduled_at);
+      var dm = Math.round((dt - now) / 60000);
+      var past = dm < 0; var soon = dm >= 0 && dm <= 60;
+      var bc = past ? 'var(--red)' : soon ? 'var(--gold)' : 'var(--blue)';
+      var card = mk('div','card'); card.style.borderLeft = '4px solid ' + bc;
+      card.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:flex-start">'
+        + '<div><div style="font-size:13px;font-weight:700;font-family:var(--head);text-transform:uppercase;color:#111">' + a.service + '</div>'
+        + (a.plate ? '<span class="plate-tag">' + a.plate + '</span> ' : '')
+        + '<div style="font-size:11px;color:#666;margin-top:3px">' + dt.toLocaleDateString('es-CL',{weekday:'short',day:'2-digit',month:'short'}) + ' ' + dt.toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'}) + '</div>'
+        + (a.notes ? '<div style="font-size:11px;color:#999;margin-top:2px">' + a.notes + '</div>' : '')
+        + (a.goal_minutes ? '<div style="font-size:10px;color:#aaa;margin-top:2px">OBJ: ' + a.goal_minutes + ' min</div>' : '')
+        + '</div>'
+        + '<div style="text-align:right;flex-shrink:0">'
+        + (past ? '<span class="badge b-over">Atrasado</span>' : soon ? '<span class="badge b-pau">En ' + dm + ' min</span>' : '<span class="badge b-cal">Programado</span>')
+        + '</div></div>'
+        + '<div style="display:flex;gap:6px;margin-top:8px">'
+        + '<button class="btn-sm" style="border-color:var(--green);color:var(--green)" onclick="applyAssignAndGo('' + a.service + '','' + (a.plate||'') + '')">Iniciar este</button>'
+        + '</div>';
+      body.appendChild(card);
+    });
+  }
+
+  // RECENT HISTORY
+  if (histData && histData.length) {
+    body.appendChild(sectionHdr('Finalizados recientes', '#aaa', histData.length));
+    var card = mk('div','card');
+    histData.slice(0,8).forEach(function(r) {
+      var over = r.goal_minutes && r.seconds > r.goal_minutes * 60;
+      var row = mk('div','row');
+      row.innerHTML = '<div style="flex:1">'
+        + '<div style="font-size:12px;font-weight:700;font-family:var(--head);text-transform:uppercase;color:#111">' + r.service + '</div>'
+        + (r.plate ? '<span class="plate-tag">' + r.plate + '</span> ' : '')
+        + '<span class="badge b-done" style="font-size:9px">Finalizado</span>'
+        + (r.pauses && r.pauses.length ? '<div style="font-size:10px;color:var(--gold3);margin-top:2px">' + r.pauses.map(function(p){return '• '+p.reason;}).join(' ') + '</div>' : '')
+        + (r.checklist ? '<div style="font-size:10px;color:var(--green);margin-top:2px">✓ Checklist completo</div>' : '<div style="font-size:10px;color:var(--wh4);margin-top:2px">Sin checklist</div>')
+        + '</div>'
+        + '<div style="text-align:right;flex-shrink:0">'
+        + '<div style="font-size:16px;font-weight:700;font-family:var(--mono);color:' + (over?'var(--red)':'var(--green)') + '">' + r.duration + '</div>'
+        + '<div style="font-size:10px;color:#aaa">' + fmtD(r.ended_at) + '</div>'
+        + '</div>';
+      card.appendChild(row);
+    });
+    body.appendChild(card);
+  }
+
+  if (!myRows.length && (!schedData || !schedData.length) && (!histData || !histData.length)) {
+    body.innerHTML += '<div class="empty">No tienes servicios registrados aun</div>';
+  }
+}
+
+function sectionHdr(label, color, count) {
+  var d = document.createElement('div');
+  d.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:4px';
+  d.innerHTML = '<div class="lbl" style="margin-bottom:0;color:' + color + '">' + label + '</div>'
+    + '<span class="badge" style="background:' + color + ';color:#fff;border-color:' + color + '">' + count + '</span>';
+  return d;
+}
+
+function buildMisServCard(s, status) {
+  var over = s.goal_minutes && s.seconds > s.goal_minutes * 60;
+  var isRunning = status === 'running';
+  var isPaused = status === 'paused';
+  var isCkP = status === 'checklist_pending';
+  var isMe = T.sessionKey === s.session_key;
+  var sec = isMe ? T.sec : s.seconds;
+  var bc = over ? 'var(--red)' : isPaused ? 'var(--gold)' : isCkP ? 'var(--blue)' : 'var(--green)';
+  var lastPause = s.pauses && s.pauses.length ? s.pauses[s.pauses.length-1] : null;
+  var card = mk('div','card'); card.style.borderLeft = '4px solid ' + bc;
+
+  var h = '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px">'
+    + '<div style="flex:1">'
+    + '<div style="font-size:13px;font-weight:700;font-family:var(--head);text-transform:uppercase;color:#111">' + s.service + '</div>'
+    + (s.plate ? '<span class="plate-tag">' + s.plate + '</span> ' : '');
+
+  if (over) h += '<span class="badge b-over">Tiempo superado</span>';
+  else if (isPaused) h += '<span class="badge b-pau">Pausado</span>';
+  else if (isCkP) h += '<span class="badge b-cal">Checklist pendiente</span>';
+  else h += '<span class="badge b-run">En curso</span>';
+
+  h += '</div>'
+    + '<div style="text-align:right;flex-shrink:0;margin-left:8px">'
+    + '<div style="font-size:24px;font-weight:700;font-family:var(--mono);color:' + bc + ';letter-spacing:2px">' + fmtT(sec) + '</div>'
+    + (s.goal_minutes ? '<div style="font-size:9px;color:#aaa;text-transform:uppercase">OBJ: ' + s.goal_minutes + 'min</div>' : '')
+    + '</div></div>';
+
+  // Progress bar
+  if (s.goal_minutes) {
+    var pct = Math.min(100, Math.round(sec / (s.goal_minutes * 60) * 100));
+    h += '<div class="prog-bar" style="margin-bottom:8px"><div class="prog-fill" style="width:' + pct + '%;background:' + (over?'var(--red)':'var(--green)') + '"></div></div>';
+  }
+
+  // Pause reason
+  if (lastPause && isPaused) {
+    h += '<div style="background:var(--gold2);border:1px solid var(--gold);border-radius:3px;padding:5px 8px;margin-bottom:6px;font-size:11px;color:var(--gold3);font-weight:600">Pausa: ' + lastPause.reason + ' (' + lastPause.at + ')</div>';
+  }
+
+  // Pauses list
+  if (s.pauses && s.pauses.length > 1) {
+    h += '<div style="font-size:10px;color:#aaa;margin-bottom:6px">' + s.pauses.map(function(p){return '• '+p.reason;}).join(' · ') + '</div>';
+  }
+
+  // Start time
+  if (s.started_at) {
+    h += '<div style="font-size:10px;color:#aaa;margin-bottom:6px">Iniciado: ' + fmtD(s.started_at) + '</div>';
+  }
+
+  // Action buttons
+  h += '<div style="display:flex;gap:6px;flex-wrap:wrap">';
+
+  if (isRunning) {
+    h += '<button class="btn-sm" style="border-color:var(--gold);color:var(--gold)" onclick="openModal('m-pause')">Pausar</button>';
+    h += '<button class="btn-sm" style="border-color:var(--red);color:var(--red)" onclick="openChecklist('' + s.session_key + '')">Finalizar</button>';
+  } else if (isPaused) {
+    h += '<button class="btn-sm" style="border-color:var(--green);color:var(--green)" onclick="resumeSession('' + s.session_key + '')">Reanudar</button>';
+    h += '<button class="btn-sm" style="border-color:var(--red);color:var(--red)" onclick="openChecklist('' + s.session_key + '')">Finalizar</button>';
+  } else if (isCkP) {
+    h += '<button class="btn-sm" style="border-color:var(--blue);color:var(--blue)" onclick="openChecklist('' + s.session_key + '')">Completar checklist</button>';
+  }
+
+  h += '<button class="btn-sm" onclick="openCommentModal('' + s.session_key + '')">Comentar</button>';
+  h += '</div>';
+
+  card.innerHTML = h;
+  return card;
+}
+
+function applyAssignAndGo(service, plate) {
+  applyAssign(service, plate);
+  techTab('t-inicio');
+  setTimeout(function() { var e = document.getElementById('plate-inp'); if(e) e.scrollIntoView({behavior:'smooth'}); }, 100);
+}
+
+// Comment modal
+var commentForKey = null;
+function openCommentModal(sessionKey) {
+  commentForKey = sessionKey;
+  var inp = document.getElementById('cm-text');
+  if (inp) inp.value = '';
+  openModal('m-comment');
+}
+
+async function saveComment() {
+  var txt = document.getElementById('cm-text') ? document.getElementById('cm-text').value.trim() : '';
+  if (!txt) { alert('Escribe un comentario'); return; }
+  if (!commentForKey) { alert('No hay sesion'); return; }
+  var sess = liveData.find(function(s) { return s.session_key === commentForKey; });
+  var comments = (sess && sess.comments) || [];
+  comments.push({text: txt, at: fmtD(new Date().toISOString()), author: CU.name});
+  logR('ADD_COMMENT', {key: commentForKey, txt});
+  var {error} = await sb.from('active_sessions').update({
+    comments: comments, updated_at: new Date().toISOString()
+  }).eq('session_key', commentForKey);
+  if (error) { alert('Error: ' + error.message); return; }
+  if (T.sessionKey === commentForKey) T.comments = comments;
+  closeModal('m-comment');
+  await fetchLive();
+  techTab('t-misservicios');
+}
+
 async function renderTechAgenda(body) {
   body.innerHTML = '<div class="empty"><span class="spin"></span>Cargando agenda...</div>';
   var today = new Date(); today.setHours(0,0,0,0);
@@ -1664,6 +2059,578 @@ function fmtD(d) {
 }
 
 init();
+
+// ═══════════════════════════════════════════════
+// TECH TABS - EXTENDED (override techTab)
+// ═══════════════════════════════════════════════
+var _origTechTab = techTab;
+techTab = function(t) {
+  curTechTab = t;
+  document.querySelectorAll('#tech-tabbar .tab').forEach(function(el) {
+    el.classList.toggle('active', el.dataset.tab === t);
+  });
+  var body = document.getElementById('tech-body');
+  body.innerHTML = '';
+  logR('TECH_TAB', {tab: t});
+  if (t === 't-inicio') renderTechInicio(body);
+  else if (t === 't-agenda') renderTechAgenda(body);
+  else if (t === 't-alertas') { document.getElementById('tech-ndot').classList.remove('show'); renderTechAlertas(body); }
+  else if (t === 't-online') renderTechOnlineFull();
+  else if (t === 't-historial') renderTechHistorial(body);
+  // Refresh active dot
+  updateActiveDot();
+};
+
+// ═══════════════════════════════════════════════
+// ACTIVE DOT: show if tech has paused/active services
+// ═══════════════════════════════════════════════
+function updateActiveDot() {
+  if (!CU || CU.role !== 'tech') return;
+  var myActive = liveData.filter(function(s) { return s.username === CU.username; });
+  var dot = document.getElementById('tech-active-dot');
+  if (dot) dot.classList.toggle('on', myActive.length > 0);
+  // Also update badge count
+  var badge = document.getElementById('mis-srv-badge');
+  if (badge) { badge.textContent = myActive.length; badge.style.display = myActive.length ? 'inline-block' : 'none'; }
+}
+
+// Patch pollAll to also update active dot
+var _origPollAll = pollAll;
+pollAll = async function() {
+  if (!CU) return;
+  await Promise.all([fetchLive(), fetchNotifs()]);
+  updateActiveDot();
+};
+
+// ═══════════════════════════════════════════════
+// COMMENTS
+// ═══════════════════════════════════════════════
+var commentContext = null; // {type: 'active'|'pending'|'history', key, id}
+var commentRadioState = {};
+
+function openCommentModal(ctx, title) {
+  commentContext = ctx;
+  document.getElementById('m-comment-title').textContent = title || 'Agregar comentario';
+  document.getElementById('m-comment-text').value = '';
+  document.getElementById('m-comment-err').style.display = 'none';
+  openModal('m-comment');
+  setTimeout(function() { document.getElementById('m-comment-text').focus(); }, 200);
+}
+
+async function submitComment() {
+  var text = document.getElementById('m-comment-text').value.trim();
+  var err = document.getElementById('m-comment-err');
+  var btn = document.getElementById('m-comment-btn');
+  err.style.display = 'none';
+  if (!text) { err.textContent = 'Escribe un comentario'; err.style.display = 'block'; return; }
+  btn.innerHTML = '<span class="spin"></span>'; btn.disabled = true;
+  var entry = {text: text, at: fmtD(new Date().toISOString()), author: CU.name};
+  logR('COMMENT_SUBMIT', {ctx: commentContext, entry});
+  var error;
+  if (commentContext.type === 'active') {
+    // Get current comments first
+    var {data: sess} = await sb.from('active_sessions').select('comments').eq('session_key', commentContext.key).maybeSingle();
+    var comments = (sess && sess.comments) || [];
+    comments.push(entry);
+    T.comments = comments; // keep in memory too
+    ({error} = await sb.from('active_sessions').update({comments: comments, updated_at: new Date().toISOString()}).eq('session_key', commentContext.key));
+  } else if (commentContext.type === 'pending') {
+    var {data: ps} = await sb.from('pending_services').select('comments').eq('id', commentContext.id).maybeSingle();
+    var pComments = (ps && ps.comments) || [];
+    pComments.push(entry);
+    ({error} = await sb.from('pending_services').update({comments: pComments, updated_at: new Date().toISOString()}).eq('id', commentContext.id));
+  } else if (commentContext.type === 'history') {
+    var {data: hr} = await sb.from('history').select('comments').eq('id', commentContext.id).maybeSingle();
+    var hComments = (hr && hr.comments) || [];
+    hComments.push(entry);
+    ({error} = await sb.from('history').update({comments: hComments}).eq('id', commentContext.id));
+  }
+  logR('COMMENT_RESULT', {error: error ? error.message : null});
+  btn.innerHTML = 'Guardar comentario'; btn.disabled = false;
+  if (error) { err.textContent = 'Error: ' + error.message; err.style.display = 'block'; return; }
+  closeModal('m-comment');
+  // Refresh current view
+  if (curTechTab === 't-online') renderTechOnlineFull();
+  else if (curTechTab === 't-historial') renderTechHistorial(document.getElementById('tech-body'));
+  else if (curTechTab === 't-inicio') { var body = document.getElementById('tech-body'); body.innerHTML = ''; renderTechInicio(body); }
+}
+
+// ═══════════════════════════════════════════════
+// PAUSE WITH COMMENT OPTION
+// ═══════════════════════════════════════════════
+// Override confirmPause to move session to pending_services
+var _origConfirmPause = confirmPause;
+confirmPause = async function(reason) {
+  closeModal('m-pause');
+  if (!T.sessionKey) {
+    var mine = liveData.find(function(s) { return s.username === CU.username; });
+    if (!mine) { alert('No hay sesion activa'); return; }
+    T.sessionKey = mine.session_key; T.srvLabel = mine.service;
+    T.srvGoal = mine.goal_minutes; T.sec = mine.seconds;
+    T.pauses = mine.pauses || []; T.plate = mine.plate || '';
+    T.comments = mine.comments || [];
+  }
+  T.running = false;
+  var entry = {reason: reason, at: fmtT(T.sec)};
+  T.pauses.push(entry);
+  logR('PAUSE_WITH_PENDING', {key: T.sessionKey, reason, sec: T.sec});
+  // Update active_sessions status
+  var {error: upErr} = await sb.from('active_sessions').update({
+    running: false, status: 'paused',
+    pauses: T.pauses, seconds: T.sec,
+    comments: T.comments || [],
+    updated_at: new Date().toISOString()
+  }).eq('session_key', T.sessionKey);
+  if (upErr) { logR('PAUSE_UPDATE_ERR', {err: upErr.message}, 'err'); alert('Error al pausar: ' + upErr.message); return; }
+  // Also mirror to pending_services for persistence
+  var psPayload = {
+    session_key: T.sessionKey, technician: CU.name, username: CU.username,
+    service: T.srvLabel, plate: T.plate, seconds: T.sec, status: 'paused',
+    goal_minutes: T.srvGoal || null, pauses: T.pauses, comments: T.comments || [],
+    paused_at: new Date().toISOString(), updated_at: new Date().toISOString()
+  };
+  logR('PENDING_UPSERT', psPayload);
+  var {error: psErr} = await sb.from('pending_services').upsert(psPayload, {onConflict: 'session_key'});
+  logR('PENDING_UPSERT_RESULT', {error: psErr ? psErr.message : null});
+  await pushNotif('pau', CU.name + ' pauso el servicio', T.srvLabel + ' - Motivo: ' + reason);
+  await fetchLive();
+  techTab('t-misservicios');
+};
+
+// ═══════════════════════════════════════════════
+// PAUSE AND DEFER CHECKLIST
+// ═══════════════════════════════════════════════
+async function pauseAndDeferChecklist(reason) {
+  // Pause the service and mark checklist as pending
+  closeModal('m-pause');
+  if (!T.sessionKey) {
+    var mine = liveData.find(function(s) { return s.username === CU.username; });
+    if (mine) { T.sessionKey = mine.session_key; T.srvLabel = mine.service; T.srvGoal = mine.goal_minutes; T.sec = mine.seconds; T.pauses = mine.pauses || []; T.plate = mine.plate || ''; T.comments = mine.comments || []; }
+  }
+  T.running = false;
+  // Move to pending_services with checklist_pending status
+  var psPayload = {
+    session_key: T.sessionKey, technician: CU.name, username: CU.username,
+    service: T.srvLabel, plate: T.plate, seconds: T.sec, status: 'checklist_pending',
+    goal_minutes: T.srvGoal || null, pauses: T.pauses, comments: T.comments || [],
+    paused_at: new Date().toISOString(), updated_at: new Date().toISOString()
+  };
+  logR('DEFER_CHECKLIST', psPayload);
+  var {error} = await sb.from('pending_services').upsert(psPayload, {onConflict: 'session_key'});
+  if (error) { alert('Error: ' + error.message); return; }
+  // Remove from active_sessions
+  await sb.from('active_sessions').delete().eq('session_key', T.sessionKey);
+  await pushNotif('pau', CU.name + ' difiere checklist', T.srvLabel + ' - Checklist pendiente');
+  resetT();
+  await fetchLive();
+  techTab('t-online');
+}
+
+// ═══════════════════════════════════════════════
+// TECH: ONLINE TAB (full, with pending services)
+// ═══════════════════════════════════════════════
+async function renderTechOnlineFull() {
+  var body = document.getElementById('tech-body');
+  if (curTechTab !== 't-online') return;
+  body.innerHTML = '<div class="empty"><span class="spin"></span>Cargando...</div>';
+  // Fetch active sessions for this tech
+  var mine = liveData.filter(function(s) { return s.username === CU.username; });
+  // Fetch pending services for this tech
+  var {data: pending, error: pErr} = await sb.from('pending_services').select('*').eq('username', CU.username).order('updated_at', {ascending:false});
+  logR('TECH_ONLINE_FULL', {active: mine.length, pending: pending ? pending.length : 0, pErr: pErr ? pErr.message : null});
+  body.innerHTML = '';
+  if (!mine.length && (!pending || !pending.length)) {
+    body.innerHTML = '<div class="empty">No tienes servicios activos o pausados</div>';
+    return;
+  }
+  // Active sessions
+  if (mine.length) {
+    var ah = mk('div',''); ah.innerHTML = '<div class="lbl">Servicios activos</div>'; body.appendChild(ah);
+    mine.forEach(function(s) {
+      body.appendChild(buildActiveSessCard(s));
+    });
+  }
+  // Pending (paused + checklist_pending)
+  if (pending && pending.length) {
+    var ph = mk('div',''); ph.innerHTML = '<div class="lbl" style="margin-top:12px">' + pending.length + ' servicio' + (pending.length>1?'s':'') + ' pausado' + (pending.length>1?'s':'') + ' / pendiente' + (pending.length>1?'s':'') + '</div>'; body.appendChild(ph);
+    pending.forEach(function(s) {
+      body.appendChild(buildPendingCard(s));
+    });
+  }
+}
+
+function buildActiveSessCard(s) {
+  var over = s.goal_minutes && s.seconds > s.goal_minutes * 60;
+  var isPaused = !s.running || s.status === 'paused';
+  var bc = over ? 'var(--red)' : isPaused ? 'var(--gold)' : 'var(--green)';
+  var bg = over ? '#fff8f8' : isPaused ? '#fffdf5' : '#fff';
+  var lastPause = isPaused && s.pauses && s.pauses.length ? s.pauses[s.pauses.length-1] : null;
+  var card = mk('div','sess-row'); card.style.cssText = 'border-left:4px solid '+bc+';background:'+bg+';margin-bottom:8px';
+  var h = '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">';
+  h += '<div><div style="font-size:13px;font-weight:700;font-family:'Rajdhani',sans-serif;text-transform:uppercase;color:#111">'+s.service+'</div>';
+  if (s.plate) h += '<span class="plate-tag">'+s.plate+'</span> ';
+  h += '<span class="badge '+(over?'b-over':isPaused?'b-pau':'b-run')+'">'+(over?'Tiempo superado':isPaused?'Pausado':'En curso')+'</span></div>';
+  h += '<div style="font-size:22px;font-weight:700;font-family:var(--mono);color:'+(over?'var(--red)':isPaused?'var(--gold)':'#111')+'">'+fmtT(s.seconds)+'</div></div>';
+  if (lastPause) h += '<div style="background:var(--gold2);border:1px solid var(--gold);border-radius:3px;padding:5px 8px;margin-bottom:6px;font-size:11px;color:var(--gold3);font-weight:600">Pausa: '+lastPause.reason+'</div>';
+  // Comments
+  if (s.comments && s.comments.length) {
+    h += '<div style="margin-bottom:6px">';
+    s.comments.slice(-2).forEach(function(c) { h += '<div style="font-size:11px;color:#666;padding:3px 0;border-bottom:1px solid #f0f0f0">'+c.author+': '+c.text+' <span style="color:#aaa;font-size:10px">'+c.at+'</span></div>'; });
+    h += '</div>';
+  }
+  // Buttons
+  h += '<div class="g3" style="gap:6px">';
+  h += '<button class="btn btn-red" style="font-size:10px;padding:8px" onclick="openCommentModal({type:'active',key:''+s.session_key+''}, 'Comentario operativo')">Comentar</button>';
+  if (isPaused) {
+    h += '<button class="btn btn-blue" style="font-size:10px;padding:8px" onclick="resumeFromCard(''+s.session_key+'')">Reanudar</button>';
+    h += '<button class="btn btn-green" style="font-size:10px;padding:8px" onclick="openChecklistFromCard(''+s.session_key+'')">Finalizar</button>';
+  } else {
+    h += '<button class="btn btn-gold" style="font-size:10px;padding:8px" onclick="openModal('m-pause')">Pausar</button>';
+    h += '<button class="btn btn-red" style="font-size:10px;padding:8px" onclick="openChecklistFromCard(''+s.session_key+'')">Finalizar</button>';
+  }
+  h += '</div>';
+  card.innerHTML = h; return card;
+}
+
+function buildPendingCard(s) {
+  var isCkPending = s.status === 'checklist_pending';
+  var bc = isCkPending ? 'var(--blue)' : 'var(--gold)';
+  var bg = isCkPending ? 'var(--blue2)' : 'var(--gold2)';
+  var lastPause = s.pauses && s.pauses.length ? s.pauses[s.pauses.length-1] : null;
+  var card = mk('div','sess-row'); card.style.cssText = 'border-left:4px solid '+bc+';background:#fff;margin-bottom:8px';
+  var h = '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px">';
+  h += '<div><div style="font-size:13px;font-weight:700;font-family:'Rajdhani',sans-serif;text-transform:uppercase;color:#111">'+s.service+'</div>';
+  if (s.plate) h += '<span class="plate-tag">'+s.plate+'</span> ';
+  h += '<span class="badge '+(isCkPending?'b-cal':'b-pau')+'">'+(isCkPending?'Checklist pendiente':'Pausado')+'</span></div>';
+  h += '<div style="font-size:22px;font-weight:700;font-family:var(--mono);color:'+(isCkPending?'var(--blue)':'var(--gold)')+'">'+fmtT(s.seconds)+'</div></div>';
+  if (lastPause && !isCkPending) h += '<div style="background:var(--gold2);border:1px solid var(--gold);border-radius:3px;padding:5px 8px;margin-bottom:6px;font-size:11px;color:var(--gold3);font-weight:600">Pausa: '+lastPause.reason+'</div>';
+  if (s.paused_at) h += '<div style="font-size:10px;color:#aaa;margin-bottom:6px">Pausado: '+fmtD(s.paused_at)+'</div>';
+  // Comments
+  if (s.comments && s.comments.length) {
+    h += '<div style="margin-bottom:6px;background:#f8f8f8;border-radius:3px;padding:6px">';
+    h += '<div style="font-size:10px;font-weight:700;color:#999;margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em">Comentarios</div>';
+    s.comments.forEach(function(c) { h += '<div style="font-size:11px;color:#555;padding:2px 0;border-bottom:1px solid #eeeeee">'+c.author+': '+c.text+' <span style="color:#aaa;font-size:10px">'+c.at+'</span></div>'; });
+    h += '</div>';
+  }
+  // Buttons
+  h += '<div style="display:flex;gap:6px;flex-wrap:wrap">';
+  h += '<button class="btn-sm" onclick="openCommentModal({type:'pending',id:''+s.id+''}, 'Comentario')">Comentar</button>';
+  if (!isCkPending) {
+    h += '<button class="btn-sm" style="border-color:var(--green);color:var(--green)" onclick="resumeFromPending(''+s.id+'',''+s.session_key+'')">Reanudar</button>';
+    h += '<button class="btn-sm" style="border-color:var(--blue);color:var(--blue)" onclick="deferAndComplete(''+s.id+'')">Completar checklist</button>';
+  } else {
+    h += '<button class="btn-sm" style="border-color:var(--blue);color:var(--blue)" onclick="deferAndComplete(''+s.id+'')">Completar checklist pendiente</button>';
+  }
+  h += '</div>';
+  card.innerHTML = h; return card;
+}
+
+async function resumeFromCard(sessionKey) {
+  T.sessionKey = sessionKey;
+  var sess = liveData.find(function(s) { return s.session_key === sessionKey; });
+  if (sess) { T.srvLabel = sess.service; T.srvGoal = sess.goal_minutes; T.sec = sess.seconds; T.pauses = sess.pauses || []; T.plate = sess.plate || ''; T.comments = sess.comments || []; }
+  await doResume();
+}
+
+async function openChecklistFromCard(sessionKey) {
+  T.sessionKey = sessionKey;
+  var sess = liveData.find(function(s) { return s.session_key === sessionKey; });
+  if (sess) { T.srvLabel = sess.service; T.srvGoal = sess.goal_minutes; T.sec = sess.seconds; T.pauses = sess.pauses || []; T.plate = sess.plate || ''; T.comments = sess.comments || []; }
+  openChecklist();
+}
+
+async function resumeFromPending(pendingId, sessionKey) {
+  logR('RESUME_FROM_PENDING', {pendingId, sessionKey});
+  // Restore to active_sessions
+  var {data: ps} = await sb.from('pending_services').select('*').eq('id', pendingId).maybeSingle();
+  if (!ps) { alert('No se encontro el servicio pausado'); return; }
+  // Check if still in active_sessions
+  var {data: existing} = await sb.from('active_sessions').select('id').eq('session_key', sessionKey).maybeSingle();
+  if (!existing) {
+    // Re-insert to active_sessions
+    var {error: insErr} = await sb.from('active_sessions').insert({
+      session_key: ps.session_key, technician: ps.technician, username: ps.username,
+      service: ps.service, plate: ps.plate, seconds: ps.seconds, running: true, status: 'running',
+      goal_minutes: ps.goal_minutes, pauses: ps.pauses, comments: ps.comments || [],
+      over_alerted: false, started_at: ps.started_at || new Date().toISOString(), updated_at: new Date().toISOString()
+    });
+    logR('RESUME_PENDING_INSERT', {error: insErr ? insErr.message : null});
+    if (insErr) { alert('Error al reanudar: ' + insErr.message); return; }
+  } else {
+    await sb.from('active_sessions').update({running:true, status:'running', updated_at:new Date().toISOString()}).eq('session_key', sessionKey);
+  }
+  // Remove from pending_services
+  await sb.from('pending_services').delete().eq('id', pendingId);
+  // Restore timer state
+  T.sessionKey = ps.session_key; T.srvLabel = ps.service; T.srvGoal = ps.goal_minutes;
+  T.sec = ps.seconds; T.pauses = ps.pauses || []; T.plate = ps.plate || ''; T.comments = ps.comments || [];
+  T.running = true; T.overAlerted = false;
+  await fetchLive();
+  techTab('t-inicio');
+}
+
+var deferredPendingId = null;
+
+async function deferAndComplete(pendingId) {
+  deferredPendingId = pendingId;
+  var {data: ps} = await sb.from('pending_services').select('*').eq('id', pendingId).maybeSingle();
+  if (!ps) { alert('Servicio no encontrado'); return; }
+  document.getElementById('m-ckd-sub').textContent = ps.service + (ps.plate ? ' - ' + ps.plate : '');
+  // Reset deferred checklist fields
+  commentRadioState = {};
+  document.querySelectorAll('#m-checklist-deferred .radio-btn').forEach(function(b) { b.classList.remove('on'); });
+  ['ckd-litros','ckd-aceite','ckd-rt','ckd-rr','ckd-anom','ckd-doble','ckd-visado','ckd-obs'].forEach(function(id) {
+    var el = document.getElementById(id); if (el) el.value = '';
+  });
+  document.getElementById('ckd-err').style.display = 'none';
+  openModal('m-checklist-deferred');
+}
+
+function pickRadioD(field, val, el) {
+  commentRadioState[field] = val;
+  var grp = el.parentElement;
+  grp.querySelectorAll('.radio-btn').forEach(function(b) { b.classList.remove('on'); });
+  el.classList.add('on');
+  document.getElementById(field).value = val;
+}
+
+async function submitDeferredChecklist() {
+  var litros = document.getElementById('ckd-litros').value;
+  var aceite = document.getElementById('ckd-aceite').value;
+  var rt = document.getElementById('ckd-rt').value;
+  var rr = document.getElementById('ckd-rr').value;
+  var doble = document.getElementById('ckd-doble').value;
+  var visado = document.getElementById('ckd-visado').value;
+  var err = document.getElementById('ckd-err');
+  err.style.display = 'none';
+  if (!litros) { err.textContent = 'Indica los litros de aceite'; err.style.display='block'; return; }
+  if (!aceite) { err.textContent = 'Selecciona tipo de aceite'; err.style.display='block'; return; }
+  if (!rt) { err.textContent = 'Selecciona tipo de prueba de ruta'; err.style.display='block'; return; }
+  if (!rr) { err.textContent = 'Indica resultado de prueba de ruta'; err.style.display='block'; return; }
+  if (!doble) { err.textContent = 'Indica resultado de doble control'; err.style.display='block'; return; }
+  if (!visado) { err.textContent = 'Indica resultado de visado'; err.style.display='block'; return; }
+  var checklist = {
+    litros: parseFloat(litros), aceite: aceite,
+    prueba_ruta: {tipo: rt, resultado: rr, anomalias: document.getElementById('ckd-anom').value},
+    doble_control: doble, visado: visado,
+    observaciones: document.getElementById('ckd-obs').value
+  };
+  var btn = document.getElementById('ckd-btn');
+  btn.innerHTML = '<span class="spin"></span>'; btn.disabled = true;
+  // Get pending service data
+  var {data: ps} = await sb.from('pending_services').select('*').eq('id', deferredPendingId).maybeSingle();
+  if (!ps) { btn.innerHTML='Finalizar servicio'; btn.disabled=false; err.textContent='Servicio no encontrado'; err.style.display='block'; return; }
+  logR('DEFERRED_FINISH', {pendingId: deferredPendingId, service: ps.service});
+  // Save to history
+  var {error: hErr} = await sb.from('history').insert({
+    technician: ps.technician, username: ps.username, service: ps.service, plate: ps.plate,
+    duration: fmtT(ps.seconds), seconds: ps.seconds, goal_minutes: ps.goal_minutes,
+    pauses: ps.pauses, comments: ps.comments || [], checklist: checklist, status: 'completed',
+    ended_at: new Date().toISOString()
+  });
+  logR('DEFERRED_HISTORY', {error: hErr ? hErr.message : null});
+  if (hErr) { btn.innerHTML='Finalizar servicio'; btn.disabled=false; err.textContent='Error al guardar: '+hErr.message; err.style.display='block'; return; }
+  // Save checklist
+  await sb.from('service_checklists').insert({
+    session_key: ps.session_key, technician: ps.technician, username: ps.username,
+    service: ps.service, plate: ps.plate, duration: fmtT(ps.seconds), seconds: ps.seconds,
+    litros: checklist.litros, aceite: checklist.aceite, prueba_ruta: checklist.prueba_ruta,
+    doble_control: checklist.doble_control, visado: checklist.visado, observaciones: checklist.observaciones,
+    ended_at: new Date().toISOString()
+  });
+  // Remove from pending_services
+  await sb.from('pending_services').delete().eq('id', deferredPendingId);
+  // Also remove from active_sessions if still there
+  await sb.from('active_sessions').delete().eq('session_key', ps.session_key);
+  await pushNotif('fin', ps.technician + ' finalizo servicio (checklist diferido)', ps.service + ' - ' + (ps.plate||'') + ' - ' + fmtT(ps.seconds));
+  btn.innerHTML = 'Finalizar servicio'; btn.disabled = false;
+  closeModal('m-checklist-deferred');
+  deferredPendingId = null;
+  techTab('t-online');
+}
+
+// ═══════════════════════════════════════════════
+// OVERRIDE openChecklist to add "Diferir" option
+// ═══════════════════════════════════════════════
+var _origOpenChecklist = openChecklist;
+openChecklist = function() {
+  radioState = {};
+  document.querySelectorAll('#m-checklist .radio-btn').forEach(function(b) { b.classList.remove('on'); });
+  ['ck-litros','ck-aceite','ck-rt','ck-rr','ck-anom','ck-doble','ck-visado','ck-obs'].forEach(function(id) {
+    var el = document.getElementById(id); if (el) el.value = '';
+  });
+  document.getElementById('ck-err').style.display = 'none';
+  // Add defer button if not already there
+  var modal = document.querySelector('#m-checklist');
+  if (modal && !modal.querySelector('#ck-defer-btn')) {
+    var deferBtn = document.createElement('button');
+    deferBtn.id = 'ck-defer-btn';
+    deferBtn.className = 'btn btn-out';
+    deferBtn.style.marginTop = '8px';
+    deferBtn.textContent = 'Diferir checklist (completar despues)';
+    deferBtn.onclick = function() { closeModal('m-checklist'); promptDeferReason(); };
+    var volver = modal.querySelector('.btn-out');
+    modal.insertBefore(deferBtn, volver);
+  }
+  openModal('m-checklist');
+};
+
+function promptDeferReason() {
+  var reason = prompt('Motivo para diferir el checklist:
+1. Termino de jornada
+2. Servicio urgente
+3. Visado pendiente
+4. Otro
+
+Ingresa el motivo:');
+  if (reason) pauseAndDeferChecklist(reason);
+}
+
+// ═══════════════════════════════════════════════
+// TECH: HISTORIAL TAB
+// ═══════════════════════════════════════════════
+async function renderTechHistorial(body) {
+  body.innerHTML = '<div class="empty"><span class="spin"></span>Cargando historial...</div>';
+  // Fetch in parallel
+  var [histRes, pendRes] = await Promise.all([
+    sb.from('history').select('*').eq('username', CU.username).order('ended_at', {ascending:false}).limit(50),
+    sb.from('pending_services').select('*').eq('username', CU.username).order('updated_at', {ascending:false})
+  ]);
+  var hist = histRes.data || [];
+  var pend = pendRes.data || [];
+  logR('TECH_HISTORIAL', {hist: hist.length, pend: pend.length});
+  body.innerHTML = '';
+  // Summary header
+  var summary = mk('div','card-accent');
+  summary.style.marginBottom = '10px';
+  summary.innerHTML = '<div style="display:flex;gap:16px;flex-wrap:wrap">'
+    + '<div style="text-align:center"><div style="font-size:24px;font-weight:700;color:var(--red);font-family:'Rajdhani',sans-serif">'+(hist.length+pend.length)+'</div><div style="font-size:10px;color:#999;text-transform:uppercase;letter-spacing:.05em">Total</div></div>'
+    + '<div style="text-align:center"><div style="font-size:24px;font-weight:700;color:var(--green);font-family:'Rajdhani',sans-serif">'+hist.filter(function(r){return r.status==='completed';}).length+'</div><div style="font-size:10px;color:#999;text-transform:uppercase;letter-spacing:.05em">Finalizados</div></div>'
+    + '<div style="text-align:center"><div style="font-size:24px;font-weight:700;color:var(--gold);font-family:'Rajdhani',sans-serif">'+pend.filter(function(p){return p.status==='paused';}).length+'</div><div style="font-size:10px;color:#999;text-transform:uppercase;letter-spacing:.05em">Pausados</div></div>'
+    + '<div style="text-align:center"><div style="font-size:24px;font-weight:700;color:var(--blue);font-family:'Rajdhani',sans-serif">'+pend.filter(function(p){return p.status==='checklist_pending';}).length+'</div><div style="font-size:10px;color:#999;text-transform:uppercase;letter-spacing:.05em">Checklist pend.</div></div>'
+    + '</div>';
+  body.appendChild(summary);
+  // Pending (checklist_pending first, then paused)
+  var ckPend = pend.filter(function(p){return p.status==='checklist_pending';});
+  var paused = pend.filter(function(p){return p.status==='paused';});
+  if (ckPend.length) {
+    var ckH = mk('div',''); ckH.innerHTML = '<div class="lbl" style="color:var(--blue);margin-top:4px">Checklist pendiente ('+ckPend.length+')</div>'; body.appendChild(ckH);
+    ckPend.forEach(function(s) { body.appendChild(buildHistPendingRow(s)); });
+  }
+  if (paused.length) {
+    var pauH = mk('div',''); pauH.innerHTML = '<div class="lbl" style="color:var(--gold);margin-top:8px">Pausados ('+paused.length+')</div>'; body.appendChild(pauH);
+    paused.forEach(function(s) { body.appendChild(buildHistPendingRow(s)); });
+  }
+  // Completed history
+  if (hist.length) {
+    var histH = mk('div',''); histH.innerHTML = '<div class="lbl" style="margin-top:8px">Finalizados ('+hist.length+')</div>'; body.appendChild(histH);
+    var card = mk('div','card');
+    hist.forEach(function(r) {
+      card.appendChild(buildHistRow(r));
+    });
+    body.appendChild(card);
+  }
+  if (!hist.length && !pend.length) {
+    body.innerHTML = '<div class="empty">No tienes servicios registrados aun</div>';
+  }
+}
+
+function buildHistPendingRow(s) {
+  var isCkP = s.status === 'checklist_pending';
+  var bc = isCkP ? 'var(--blue)' : 'var(--gold)';
+  var card = mk('div','card'); card.style.cssText = 'border-left:4px solid '+bc+';margin-bottom:6px';
+  var lastPause = s.pauses && s.pauses.length ? s.pauses[s.pauses.length-1] : null;
+  var h = '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px">';
+  h += '<div><div style="font-size:13px;font-weight:700;font-family:'Rajdhani',sans-serif;text-transform:uppercase;color:#111">'+s.service+'</div>';
+  if (s.plate) h += '<span class="plate-tag">'+s.plate+'</span> ';
+  h += '<span class="badge '+(isCkP?'b-cal':'b-pau')+'">'+(isCkP?'Checklist pendiente':'Pausado')+'</span></div>';
+  h += '<div style="font-size:20px;font-weight:700;font-family:var(--mono);color:'+bc+'">'+fmtT(s.seconds)+'</div></div>';
+  if (lastPause && !isCkP) h += '<div style="font-size:11px;color:var(--gold3);margin-bottom:4px">Pausa: '+lastPause.reason+'</div>';
+  if (s.paused_at) h += '<div style="font-size:10px;color:#aaa;margin-bottom:6px">Desde: '+fmtD(s.paused_at)+'</div>';
+  if (s.comments && s.comments.length) {
+    h += '<div style="background:#f8f8f8;border-radius:3px;padding:6px;margin-bottom:6px">';
+    s.comments.forEach(function(c) { h += '<div style="font-size:11px;color:#555;padding:2px 0">'+c.author+': '+c.text+'</div>'; });
+    h += '</div>';
+  }
+  h += '<div style="display:flex;gap:6px;flex-wrap:wrap">';
+  h += '<button class="btn-sm" onclick="openCommentModal({type:'pending',id:''+s.id+''}, 'Comentar')">Comentar</button>';
+  if (!isCkP) h += '<button class="btn-sm" style="border-color:var(--green);color:var(--green)" onclick="resumeFromPending(''+s.id+'',''+s.session_key+'')">Reanudar</button>';
+  h += '<button class="btn-sm" style="border-color:var(--blue);color:var(--blue)" onclick="deferAndComplete(''+s.id+'')">Completar checklist</button>';
+  h += '</div>';
+  card.innerHTML = h; return card;
+}
+
+function buildHistRow(r) {
+  var over = r.goal_minutes && r.seconds > r.goal_minutes * 60;
+  var row = mk('div','row');
+  row.innerHTML = '<div style="flex:1">'
+    + '<div style="font-size:12px;font-weight:700;font-family:'Rajdhani',sans-serif;text-transform:uppercase;color:#111">'+r.service+'</div>'
+    + (r.plate ? '<span class="plate-tag">'+r.plate+'</span> ' : '')
+    + '<span class="badge b-done" style="font-size:9px">Finalizado</span>'
+    + (r.pauses && r.pauses.length ? '<div style="font-size:10px;color:var(--gold3);margin-top:2px">'+r.pauses.map(function(p){return '• '+p.reason;}).join(' ')+'</div>' : '')
+    + (r.comments && r.comments.length ? '<div style="font-size:10px;color:#888;margin-top:2px">'+r.comments.length+' comentario'+(r.comments.length>1?'s':'')+'</div>' : '')
+    + '</div>'
+    + '<div style="text-align:right;flex-shrink:0">'
+    + '<div style="font-size:17px;font-weight:700;font-family:var(--mono);color:'+(over?'var(--red)':'var(--green)')+'">'+r.duration+'</div>'
+    + (r.goal_minutes ? '<div style="font-size:9px;color:#aaa">OBJ:'+r.goal_minutes+'m</div>' : '')
+    + '<div style="font-size:10px;color:#aaa">'+fmtD(r.ended_at)+'</div>'
+    + '<button class="btn-sm" style="margin-top:4px;font-size:9px" onclick="openCommentModal({type:'history',id:''+r.id+''}, 'Agregar comentario')">Comentar</button>'
+    + '</div>';
+  return row;
+}
+
+// ═══════════════════════════════════════════════
+// PATCH doFinish to also clear from pending_services
+// ═══════════════════════════════════════════════
+var _origDoFinish = doFinish;
+doFinish = async function(checklist) {
+  if (!T.sessionKey) {
+    var mine = liveData.find(function(s) { return s.username === CU.username; });
+    if (!mine) { alert('No se encontro la sesion activa'); return; }
+    T.sessionKey = mine.session_key; T.srvLabel = mine.service; T.srvGoal = mine.goal_minutes;
+    T.sec = mine.seconds; T.pauses = mine.pauses || []; T.plate = mine.plate || ''; T.comments = mine.comments || [];
+  }
+  T.running = false;
+  var histPayload = {
+    technician: CU.name, username: CU.username, service: T.srvLabel, plate: T.plate,
+    duration: fmtT(T.sec), seconds: T.sec, goal_minutes: T.srvGoal || null,
+    pauses: T.pauses, comments: T.comments || [], checklist: checklist, status: 'completed',
+    ended_at: new Date().toISOString()
+  };
+  logR('FINISH_PAYLOAD', histPayload);
+  var {error: hErr} = await sb.from('history').insert(histPayload);
+  logR('FINISH_HISTORY', {error: hErr ? hErr.message : null});
+  if (hErr) { alert('Error al guardar historial: ' + hErr.message); return; }
+  await sb.from('service_checklists').insert({
+    session_key: T.sessionKey, technician: CU.name, username: CU.username,
+    service: T.srvLabel, plate: T.plate, duration: fmtT(T.sec), seconds: T.sec,
+    litros: checklist.litros, aceite: checklist.aceite, prueba_ruta: checklist.prueba_ruta,
+    doble_control: checklist.doble_control, visado: checklist.visado, observaciones: checklist.observaciones,
+    ended_at: new Date().toISOString()
+  });
+  var {error: dErr} = await sb.from('active_sessions').delete().eq('session_key', T.sessionKey);
+  logR('FINISH_DELETE', {error: dErr ? dErr.message : null});
+  // Also clean from pending_services if was there
+  await sb.from('pending_services').delete().eq('session_key', T.sessionKey);
+  await pushNotif('fin', CU.name + ' finalizo servicio', finSrv + ' - ' + finPlate + ' - ' + fmtT(finSec));
+  // Only reset T if we finished T's session
+  if (useKey === T.sessionKey) resetT();
+  await fetchLive();
+  techTab('t-misservicios');
+};
+
+// ═══════════════════════════════════════════════
+// Add T.comments to timer state
+// ═══════════════════════════════════════════════
+var _origResetT = resetT;
+resetT = function() {
+  T.sessionKey = null; T.srvLabel = ''; T.srvGoal = null;
+  T.sec = 0; T.running = false; T.overAlerted = false; T.pauses = []; T.plate = '';
+  T.comments = [];
+  dbSyncCtr = 0;
+};
+T.comments = [];
+
 </script>
 </body>
 </html>
