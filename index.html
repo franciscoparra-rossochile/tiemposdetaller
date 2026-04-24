@@ -5,7 +5,7 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
 <meta name="apple-mobile-web-app-capable" content="yes"/>
-<title>Rosso Control de Tiempos</title>
+<title>Rosso Control de Tiempos v2.0-FIXED</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" defer></script>
 <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Barlow+Condensed:wght@400;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet"/>
 <style>
@@ -519,6 +519,7 @@ let calYear = new Date().getFullYear(), calMonth = new Date().getMonth();
 // INIT & CONNECTION TEST
 // ═══════════════════════════════════════════════
 async function init() {
+  console.log('🚀 ROSSO v2.0-FIXED CARGADO CORRECTAMENTE');
   setMsg('Conectando...');
   var waited = 0;
   while (typeof supabase === 'undefined' && waited < 5000) {
