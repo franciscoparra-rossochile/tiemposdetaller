@@ -858,7 +858,7 @@ async function fetchLive() {
 }
 
 async function fetchNotifs() {
-  const {data, error} = await sb.from('notifications').select('id,type,title,sub,target_user_id').order('created_at', {ascending: false}).limit(1);
+  const {data, error} = await sb.from('notifications').select('id,type,title,sub,target_user_id,cancelled').order('created_at', {ascending: false}).limit(1);
   if (error || !data || !data.length) return;
   var latest = data[0];
   if (lastNotifId && latest.id !== lastNotifId) {
@@ -870,6 +870,8 @@ async function fetchNotifs() {
     } else {
       relevant = !latest.target_user_id || latest.target_user_id === CU.id;
     }
+    // No molestar con toasts si la notificacion ya viene marcada como cancelada.
+    if (latest.cancelled === true) relevant = false;
     if (relevant) {
       showToast(latest.type, latest.title, latest.sub);
       if (CU.role === 'tech') document.getElementById('tech-ndot').classList.add('show');
@@ -1704,10 +1706,25 @@ async function renderTechAlertas(body) {
   body.innerHTML = '<div class="lbl">Alertas</div>';
   if (!data || !data.length) { body.innerHTML += '<div class="empty">Sin alertas</div>'; return; }
   data.forEach(function(n) {
-    var card = mk('div','card'); card.style.borderLeft = '4px solid ' + (n.type==='over'?'var(--red)':n.type==='pau'?'var(--gold)':n.type==='resume'?'var(--green)':'var(--blue)');
+    var card = mk('div','card');
+    var accent = n.type==='over'?'var(--red)':n.type==='pau'?'var(--gold)':n.type==='resume'?'var(--green)':'var(--blue)';
+    // Si la notificacion esta cancelada, atenuar visualmente
+    var isCancelled = n.cancelled === true;
+    card.style.borderLeft = '4px solid ' + (isCancelled ? 'var(--border2)' : accent);
     card.style.marginBottom = '6px';
-    card.innerHTML = '<div style="font-size:12px;font-weight:700;color:#111;font-family:\'Rajdhani\',sans-serif">' + n.title + '</div>'
-      + '<div style="font-size:11px;color:#666;margin-top:2px">' + n.sub + '</div>'
+    if (isCancelled) { card.style.opacity = '0.55'; card.style.background = '#f5f5f5'; }
+    var titleStyle = isCancelled
+      ? 'font-size:12px;font-weight:700;color:#888;font-family:\'Rajdhani\',sans-serif;text-decoration:line-through'
+      : 'font-size:12px;font-weight:700;color:#111;font-family:\'Rajdhani\',sans-serif';
+    var subStyle = isCancelled
+      ? 'font-size:11px;color:#999;margin-top:2px;text-decoration:line-through'
+      : 'font-size:11px;color:#666;margin-top:2px';
+    var cancelBadge = isCancelled
+      ? '<div style="display:inline-block;background:#eee;color:#666;font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;margin-top:4px;letter-spacing:.06em;text-transform:uppercase;font-family:\'Rajdhani\',sans-serif">Cancelado</div>'
+      : '';
+    card.innerHTML = '<div style="' + titleStyle + '">' + n.title + '</div>'
+      + '<div style="' + subStyle + '">' + n.sub + '</div>'
+      + cancelBadge
       + '<div style="font-size:10px;color:#aaa;margin-top:4px">' + fmtD(n.created_at) + '</div>';
     body.appendChild(card);
   });
@@ -1799,10 +1816,24 @@ async function renderBossAlertas(body) {
   });
   if (!filtered.length) { body.innerHTML += '<div class="empty">Sin alertas</div>'; return; }
   filtered.forEach(function(n) {
-    var card = mk('div','card'); card.style.borderLeft = '4px solid ' + (n.type==='over'?'var(--red)':n.type==='pau'?'var(--gold)':n.type==='fin'?'var(--green)':n.type==='cal'?'var(--blue)':'var(--blue)');
+    var card = mk('div','card');
+    var accent = n.type==='over'?'var(--red)':n.type==='pau'?'var(--gold)':n.type==='fin'?'var(--green)':n.type==='cal'?'var(--blue)':'var(--blue)';
+    var isCancelled = n.cancelled === true;
+    card.style.borderLeft = '4px solid ' + (isCancelled ? 'var(--border2)' : accent);
     card.style.marginBottom = '6px';
-    card.innerHTML = '<div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;color:#111">' + n.title + '</div>'
-      + '<div style="font-size:11px;color:#666;margin-top:2px">' + n.sub + '</div>'
+    if (isCancelled) { card.style.opacity = '0.55'; card.style.background = '#f5f5f5'; }
+    var titleStyle = isCancelled
+      ? 'font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;color:#888;text-decoration:line-through'
+      : 'font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;color:#111';
+    var subStyle = isCancelled
+      ? 'font-size:11px;color:#999;margin-top:2px;text-decoration:line-through'
+      : 'font-size:11px;color:#666;margin-top:2px';
+    var cancelBadge = isCancelled
+      ? '<div style="display:inline-block;background:#eee;color:#666;font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;margin-top:4px;letter-spacing:.06em;text-transform:uppercase;font-family:\'Rajdhani\',sans-serif">Cancelado</div>'
+      : '';
+    card.innerHTML = '<div style="' + titleStyle + '">' + n.title + '</div>'
+      + '<div style="' + subStyle + '">' + n.sub + '</div>'
+      + cancelBadge
       + '<div style="font-size:10px;color:#aaa;margin-top:4px">' + fmtD(n.created_at) + '</div>';
     body.appendChild(card);
   });
@@ -2142,14 +2173,31 @@ async function saveEvent() {
   var payload = {service, plate, scheduled_at:new Date(dt).toISOString(), technician_id:techId, technician_name:techName, goal_minutes:goal, notes, status, created_by:CU.name};
   logR('SAVE_EVENT_PAYLOAD', payload);
   var error;
-  if (editEventId) { ({error} = await sb.from('scheduled_services').update(payload).eq('id',editEventId)); }
-  else { ({error} = await sb.from('scheduled_services').insert(payload)); }
-  logR('SAVE_EVENT_RESULT', {error: error ? error.message : null});
+  var savedId = editEventId;
+  if (editEventId) {
+    ({error} = await sb.from('scheduled_services').update(payload).eq('id',editEventId));
+  } else {
+    // Capturar el id generado para vincular las notificaciones
+    var insertRes = await sb.from('scheduled_services').insert(payload).select('id').single();
+    error = insertRes.error;
+    if (!error && insertRes.data) savedId = insertRes.data.id;
+  }
+  logR('SAVE_EVENT_RESULT', {error: error ? error.message : null, savedId: savedId});
   btn.innerHTML = 'Guardar'; btn.disabled = false;
   if (error) { err.textContent = 'Error: ' + error.message; err.style.display='block'; return; }
   var dtStr = new Date(dt).toLocaleDateString('es-CL',{day:'2-digit',month:'2-digit'}) + ' ' + new Date(dt).toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'});
-  await pushNotif('cal', 'Servicio ' + (editEventId?'actualizado':'agendado'), service + ' - ' + techName + ' - ' + dtStr + (plate?' - '+plate:''));
-  if (techId && !editEventId) { await sb.from('notifications').insert({type:'assign', title:'Se te asigno un servicio', sub:service + (plate?' - '+plate:'') + (notes?' - '+notes:'') + ' - ' + dtStr, target_user_id:techId}); }
+  // Notificacion global (cal) vinculada al servicio agendado
+  await pushNotif('cal', 'Servicio ' + (editEventId?'actualizado':'agendado'), service + ' - ' + techName + ' - ' + dtStr + (plate?' - '+plate:''), null, savedId);
+  // Notificacion dirigida al tecnico (assign) vinculada al mismo servicio
+  if (techId && !editEventId) {
+    await sb.from('notifications').insert({
+      type: 'assign',
+      title: 'Se te asigno un servicio',
+      sub: service + (plate?' - '+plate:'') + (notes?' - '+notes:'') + ' - ' + dtStr,
+      target_user_id: techId,
+      scheduled_service_id: savedId
+    });
+  }
   closeModal('m-event');
   if (curBossTab === 'b-calendario') renderBossCal(document.getElementById('boss-body'));
   if (curBossTab === 'b-plan') renderBossPlan(document.getElementById('boss-body'));
@@ -2158,6 +2206,12 @@ async function saveEvent() {
 async function deleteEvent() {
   if (!editEventId) return;
   if (!confirm('Eliminar este servicio agendado?')) return;
+  // Marcar notificaciones relacionadas como canceladas (no borrarlas - historial)
+  var {error: notifErr} = await sb.from('notifications')
+    .update({cancelled: true})
+    .eq('scheduled_service_id', editEventId);
+  if (notifErr) logR('CANCEL_NOTIF_ERR', {err: notifErr.message}, 'err');
+  // Borrar el servicio agendado
   await sb.from('scheduled_services').delete().eq('id', editEventId);
   closeModal('m-event');
   if (curBossTab === 'b-calendario') renderBossCal(document.getElementById('boss-body'));
@@ -2204,9 +2258,10 @@ async function saveMiCuenta() {
 // ═══════════════════════════════════════════════
 // NOTIFICATIONS
 // ═══════════════════════════════════════════════
-async function pushNotif(type, title, sub, targetId) {
+async function pushNotif(type, title, sub, targetId, scheduledId) {
   var payload = {type, title, sub};
   if (targetId) payload.target_user_id = targetId;
+  if (scheduledId) payload.scheduled_service_id = scheduledId;
   logR('PUSH_NOTIF', payload);
   var {error} = await sb.from('notifications').insert(payload);
   if (error) logR('PUSH_NOTIF_ERR', {err: error.message}, 'err');
