@@ -574,6 +574,57 @@ let lastNotifId = null;
 let editUserId = null, editEventId = null;
 let radioState = {};
 
+// Cache de avatares (username -> avatar_url). Se llena al iniciar la app con 1 query
+// y se refresca cuando se edita/crea un usuario. Evita pegarle a BD 15 veces al
+// renderizar la lista de servicios en curso.
+let AVATARS = {};  // {username: {url, role}, ...}
+let AVATARS_BY_ID = {};  // {user_id: {url, role, username}, ...} para lookup desde scheduled_services
+
+async function refreshAvatarsCache() {
+  try {
+    var {data, error} = await sb.from('users').select('id, username, avatar_url, role');
+    if (error || !data) return;
+    var newCache = {};
+    var newById = {};
+    data.forEach(function(u) {
+      var info = {url: u.avatar_url || null, role: u.role, username: u.username};
+      newCache[u.username] = info;
+      newById[u.id] = info;
+    });
+    AVATARS = newCache;
+    AVATARS_BY_ID = newById;
+    logR('AVATARS_CACHED', {count: Object.keys(AVATARS).length});
+  } catch(e) { logR('AVATARS_CACHE_ERR', {msg: e.message}, 'warn'); }
+}
+
+// Helper: buscar info de avatar por user_id (para scheduled_services y similares)
+function avatarHTMLById(name, userId, size, extraClass) {
+  var info = userId ? AVATARS_BY_ID[userId] : null;
+  var username = info ? info.username : null;
+  return avatarHTML(name, username, size, extraClass);
+}
+
+// Helper universal para renderizar un avatar. Acepta un nombre (para iniciales)
+// y opcionalmente un username (para buscar la foto en el cache).
+// size: tamano en px. Default 36.
+// extraClass: clase adicional para fallback de color (av-tech, av-adm, av-jef).
+function avatarHTML(name, username, size, extraClass) {
+  size = size || 36;
+  extraClass = extraClass || 'av-tech';
+  var init = (name || '?').split(' ').map(function(x) { return x[0]; }).join('').slice(0,2).toUpperCase();
+  var info = username ? AVATARS[username] : null;
+  var url = info ? info.url : null;
+  // Ajustar clase segun rol si hay info y no se forzo una
+  if (info && extraClass === 'av-tech') {
+    extraClass = info.role === 'admin' ? 'av-adm' : info.role === 'jefatura' ? 'av-jef' : 'av-tech';
+  }
+  var sizeStyle = 'width:' + size + 'px;height:' + size + 'px;font-size:' + Math.max(10, Math.floor(size * 0.35)) + 'px';
+  if (url) {
+    return '<div class="av ' + extraClass + '" style="' + sizeStyle + ';overflow:hidden"><img src="' + url + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%" alt=""/></div>';
+  }
+  return '<div class="av ' + extraClass + '" style="' + sizeStyle + '">' + init + '</div>';
+}
+
 // Timer state - all in one object to avoid scope issues
 const T = {
   sessionKey: null,
@@ -1033,6 +1084,9 @@ async function saveForcedPassword() {
 // ═══════════════════════════════════════════════
 function startPolling() {
   stopPolling();
+  // Cargar cache de avatares de todos los usuarios para que aparezcan
+  // en En Curso, Historial, listas, etc. Es UN solo query al arranque.
+  refreshAvatarsCache();
   pollAll();
   pollInt = setInterval(pollAll, 3000);
   tickInt = setInterval(function() {
@@ -1241,8 +1295,20 @@ function bossTab(t) {
 function renderTechNuevo(body) {
   var myActive = liveData.find(function(s) { return s.username === CU.username; });
   logR('TECH_INICIO', {hasActive: !!myActive, liveCount: liveData.length});
-  if (myActive) { renderTimerCard(body, myActive); return; }
-  
+  if (myActive) {
+    // SI YA HAY SERVICIO ACTIVO, no mostrar el formulario de "iniciar nuevo" aqui.
+    // Antes habia DOS lugares distintos (Nuevo Registro y Mis Servicios) mostrando
+    // controles para el mismo servicio, lo que generaba confusion ("donde pauso?").
+    // Ahora redirigimos al tecnico a Mis Servicios que es la fuente unica de verdad
+    // para servicios en curso.
+    body.innerHTML = '<div class="empty" style="padding:24px;text-align:center">'
+      + '<div style="font-size:16px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;margin-bottom:8px">Ya tienes un servicio en curso</div>'
+      + '<div style="font-size:12px;color:var(--wh3);margin-bottom:16px">Para iniciar uno nuevo, primero debes finalizar o completar el que tienes activo.</div>'
+      + '<button class="btn btn-red" onclick="techTab(\'t-misservicios\')">Ir a Mis Servicios</button>'
+      + '</div>';
+    return;
+  }
+
   // Plate input
   var pc = mk('div','card-accent');
   pc.innerHTML = '<div class="lbl">Patente del vehiculo</div>'
@@ -1433,8 +1499,23 @@ async function doStartSession() {
 // TIMER CARD RENDER
 // ═══════════════════════════════════════════════
 function renderTimerCard(body, sess) {
-  var isMe = T.sessionKey === sess.session_key;
-  var sec = isMe ? T.sec : sess.seconds;
+  // HIDRATAR T desde la sesion. Antes, si el tecnico cambiaba de pestana,
+  // recargaba o volvia despues de tiempo, T podia estar vacio y al tocar
+  // Pausar/Finalizar la app no sabia con que sesion trabajar.
+  // Ahora garantizamos que T siempre refleje la sesion que se esta mostrando.
+  T.sessionKey = sess.session_key;
+  T.srvLabel = sess.service;
+  T.srvGoal = sess.goal_minutes;
+  T.pauses = sess.pauses || [];
+  T.plate = sess.plate || '';
+  T.running = sess.status === 'running';
+  T.overAlerted = sess.over_alerted === true;
+
+  // Tiempo SIEMPRE desde la formula deterministica (timestamps).
+  // No confiamos en T.sec persistido ni en sess.seconds (que son snapshots).
+  var sec = liveSecondsNow(sess);
+  T.sec = sec;
+
   var isPaused = sess.status === 'paused' || !sess.running;
   var over = sess.goal_minutes && sec > sess.goal_minutes * 60;
   var lastPause = isPaused && sess.pauses && sess.pauses.length ? sess.pauses[sess.pauses.length-1] : null;
@@ -2296,12 +2377,11 @@ function buildSessCard(s, isTech) {
   var bc = over ? 'var(--red)' : paused ? 'var(--gold)' : 'var(--green)';
   var bg = over ? '#fff8f8' : paused ? '#fffdf5' : '#fff';
   var lastPause = paused && s.pauses && s.pauses.length ? s.pauses[s.pauses.length-1] : null;
-  var init = s.technician.split(' ').map(function(x) { return x[0]; }).join('').slice(0,2);
   var card = mk('div','sess-row');
   card.style.cssText = 'border-left:4px solid ' + bc + ';background:' + bg + ';margin-bottom:8px';
   var h = '<div style="display:flex;justify-content:space-between;align-items:flex-start">';
   h += '<div style="display:flex;align-items:center;gap:9px;flex:1">';
-  h += '<div style="position:relative"><div class="av av-tech">' + init + '</div>';
+  h += '<div style="position:relative">' + avatarHTML(s.technician, s.username, 36);
   if (paused) h += '<div style="position:absolute;top:-5px;right:-5px;background:var(--gold);border-radius:50%;width:14px;height:14px;border:2px solid #fff;display:flex;align-items:center;justify-content:center;font-size:8px;color:#fff;font-weight:700">II</div>';
   if (over && !paused) h += '<div style="position:absolute;top:-5px;right:-5px;background:var(--red);border-radius:50%;width:14px;height:14px;border:2px solid #fff;display:flex;align-items:center;justify-content:center;font-size:8px;color:#fff;font-weight:700">!</div>';
   h += '</div>';
@@ -2762,7 +2842,7 @@ function buildCalEventRow(e, mode) {
       + (e.notes ? '<div style="font-size:10px;color:#888;margin-top:4px;font-style:italic;line-height:1.4">' + escapeHTML(e.notes) + '</div>' : '')
       + '</div>'
       + '<div style="flex-shrink:0">'
-      + '<div class="av ' + (e.technician_id ? 'av-tech' : 'av-adm') + '" style="width:28px;height:28px;font-size:10px">' + techInit + '</div>'
+      + avatarHTMLById(e.technician_name || 'SA', e.technician_id, 28, e.technician_id ? 'av-tech' : 'av-adm')
       + '</div>'
       + '</div>';
   } else {
@@ -2825,10 +2905,9 @@ async function renderBossPlan(body) {
   var now = new Date();
   sorted.forEach(function(entry) {
     var tid = entry[0]; var grp = entry[1];
-    var init = grp.name.split(' ').map(function(x){return x[0];}).join('').slice(0,2);
     var gDiv = mk('div',''); gDiv.style.marginBottom = '16px';
     var h = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;padding-bottom:6px;border-bottom:2px solid var(--red)">';
-    h += '<div class="av ' + (tid==='__none__'?'av-adm':'av-tech') + '">' + init + '</div>';
+    h += avatarHTMLById(grp.name, tid==='__none__' ? null : tid, 36, tid==='__none__' ? 'av-adm' : 'av-tech');
     h += '<div style="font-size:14px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111">' + grp.name + '</div>';
     h += '<span class="badge b-over">' + grp.events.length + ' srv</span></div>';
     grp.events.forEach(function(e) {
@@ -2868,9 +2947,8 @@ async function renderBossHist(body) {
   var card = mk('div','card');
   data.forEach(function(r) {
     var over = r.goal_minutes && r.seconds > r.goal_minutes * 60;
-    var init = r.technician.split(' ').map(function(x){return x[0];}).join('').slice(0,2);
     var row = mk('div','row');
-    row.innerHTML = '<div class="av av-tech">' + init + '</div>'
+    row.innerHTML = avatarHTML(r.technician, r.username, 36)
       + '<div style="flex:1">'
       + '<div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111">' + r.technician + '</div>'
       + '<div style="font-size:11px;color:#666;text-transform:uppercase">' + r.service + '</div>'
@@ -3079,9 +3157,8 @@ async function renderBossReportes(body) {
     var listCard = mk('div','card');
     REP.data.forEach(function(r) {
       var over = r.goal_minutes && r.seconds > r.goal_minutes * 60;
-      var init = r.technician.split(' ').map(function(x){return x[0];}).join('').slice(0,2);
       var row = mk('div','row');
-      row.innerHTML = '<div class="av av-tech">' + init + '</div>'
+      row.innerHTML = avatarHTML(r.technician, r.username, 36)
         + '<div style="flex:1;min-width:0">'
         + '<div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111">' + r.technician + '</div>'
         + '<div style="font-size:11px;color:#666;text-transform:uppercase">' + r.service + '</div>'
@@ -3317,6 +3394,8 @@ async function saveUser() {
   logR('SAVE_USER', {error: error ? error.message : null});
   btn.innerHTML = 'Guardar'; btn.disabled = false;
   if (error) { err.textContent = error.code==='23505' ? 'El usuario ya existe: ' + username : 'Error: ' + error.message; err.style.display='block'; return; }
+  // Refrescar cache de avatares para que los cambios aparezcan en En Curso, Historial, etc.
+  await refreshAvatarsCache();
   closeModal('m-create-user');
   if (curBossTab === 'b-users') renderBossUsers(document.getElementById('boss-body'));
 }
@@ -3325,6 +3404,7 @@ async function deleteUser() {
   if (!editUserId) return;
   if (!confirm('Eliminar este usuario? Esta accion no se puede deshacer.')) return;
   await sb.from('users').delete().eq('id', editUserId);
+  await refreshAvatarsCache();
   closeModal('m-create-user');
   if (curBossTab === 'b-users') renderBossUsers(document.getElementById('boss-body'));
 }
