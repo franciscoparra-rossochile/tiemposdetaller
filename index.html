@@ -750,7 +750,7 @@ function initSupabase() {
 // init() no bloqueante: intenta conectar Supabase en background sin impedir render
 function init() {
   console.log('[INIT] INIT START');
-  console.log('🚀 ROSSO v2.1.8-HOTFIX CARGADO CORRECTAMENTE');
+  console.log('🚀 ROSSO v2.1.9-HOTFIX CARGADO CORRECTAMENTE');
   setMsg('Conectando...');
 
   // Intento inmediato si el SDK ya esta cargado
@@ -1876,11 +1876,31 @@ async function deferChecklist(sessionKey) {
   var sess = liveData.find(function(s) { return s.session_key === key; });
   var srvName = sess ? sess.service : T.srvLabel;
   var plate = sess ? (sess.plate||'') : T.plate;
-  logR('DEFER_CHECKLIST', {key: key, srv: srvName});
+
+  // BUGFIX 2026-04-24: CONGELAR el cronómetro antes de pasar a checklist_pending.
+  // Antes, solo cambiábamos status sin guardar seconds. Como liveSecondsNow()
+  // usa `s.seconds` cuando el estado es checklist_pending/completed (no recalcula),
+  // el servicio quedaba con el último snapshot del polling (podía ser minutos),
+  // perdiéndose horas de trabajo real.
+  // Ahora calculamos el tiempo REAL acumulado y lo persistimos antes del cambio.
+  var finalSec = 0;
+  if (sess) {
+    finalSec = liveSecondsNow(sess);
+    if (!finalSec && sess.seconds) finalSec = sess.seconds;
+  } else if (T.sessionKey === key && T.sec) {
+    finalSec = T.sec;
+  }
+  if (finalSec < 1) finalSec = 1;
+  logR('DEFER_CHECKLIST', {key: key, srv: srvName, frozenSec: finalSec});
+
   // Stop local timer if needed
-  if (T.sessionKey === key) { T.running = false; }
+  if (T.sessionKey === key) { T.running = false; T.sec = finalSec; }
+
   var {error} = await sb.from('active_sessions').update({
-    running: false, status: 'checklist_pending', updated_at: new Date().toISOString()
+    running: false,
+    status: 'checklist_pending',
+    seconds: finalSec,                    // snapshot definitivo, ya no cambia
+    updated_at: new Date().toISOString()
   }).eq('session_key', key);
   if (error) { alert('Error al diferir checklist: ' + error.message); return; }
   await pushNotif('checklist_pending', 'Checklist pendiente - ' + CU.name, srvName + ' - ' + plate + ' - Completar checklist requerido');
