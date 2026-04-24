@@ -434,6 +434,21 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
   </div>
 </div>
 
+<!-- Forced password change modal (sin boton cerrar - se cierra solo al guardar OK) -->
+<div class="overlay" id="m-force-pw" style="display:none">
+  <div class="modal" style="max-width:340px">
+    <div class="modal-t">Primer ingreso</div>
+    <div class="modal-s">Por seguridad, debes cambiar tu contrasena antes de continuar. Sera la unica que usaras de ahora en adelante.</div>
+    <div class="lbl">Nueva contrasena</div>
+    <input class="inp" type="password" id="fp-new" placeholder="Minimo 4 caracteres" autocomplete="new-password"/>
+    <div class="lbl">Confirmar contrasena</div>
+    <input class="inp" type="password" id="fp-conf" placeholder="Repite la contrasena" autocomplete="new-password"/>
+    <div id="fp-err" style="display:none;color:var(--red);font-size:12px;margin-bottom:8px;font-weight:600;padding:8px;background:var(--red4);border-radius:4px"></div>
+    <button class="btn btn-red" id="fp-btn" onclick="saveForcedPassword()">Guardar y entrar</button>
+    <div style="font-size:11px;color:var(--wh4);margin-top:10px;text-align:center;letter-spacing:.04em">No podras acceder sin completar este paso.</div>
+  </div>
+</div>
+
 <script>
 // ═══════════════════════════════════════════════
 // CONFIG & DEBUG
@@ -659,7 +674,15 @@ async function doLogin() {
   
   CU = data;
   logR('LOGIN_OK', {name: CU.name, role: CU.role, id: CU.id});
-  
+
+  // FUERZA cambio de contrasena al primer ingreso.
+  // Si la columna no existe (BD antigua), must_change_password sera undefined y el flujo sigue normal.
+  if (CU.must_change_password === true) {
+    logR('FORCE_PW_CHANGE', {user: CU.username});
+    openForcedPasswordChange();
+    return;
+  }
+
   if (CU.role === 'tech') {
     document.getElementById('tech-name').textContent = CU.name;
     showScreen('s-tech');
@@ -689,6 +712,86 @@ function doLogout() {
   document.getElementById('li-pass').value = '';
   document.getElementById('li-err').style.display = 'none';
   showScreen('s-login');
+}
+
+// ═══════════════════════════════════════════════
+// FORCED PASSWORD CHANGE (primer ingreso)
+// ═══════════════════════════════════════════════
+function openForcedPasswordChange() {
+  // Limpia campos de errores previos
+  document.getElementById('fp-new').value = '';
+  document.getElementById('fp-conf').value = '';
+  var err = document.getElementById('fp-err');
+  if (err) err.style.display = 'none';
+  // Muestra el modal; no hay boton de cerrar, no hay tecla Esc que lo cierre
+  // (el overlay no tiene handler de ESC; el unico camino es saveForcedPassword con exito).
+  document.getElementById('m-force-pw').style.display = 'flex';
+  // Focus en el primer campo
+  setTimeout(function() {
+    var fn = document.getElementById('fp-new');
+    if (fn) fn.focus();
+  }, 100);
+}
+
+async function saveForcedPassword() {
+  var nw = document.getElementById('fp-new').value;
+  var conf = document.getElementById('fp-conf').value;
+  var err = document.getElementById('fp-err');
+  var btn = document.getElementById('fp-btn');
+  err.style.display = 'none';
+
+  // Validaciones locales
+  if (!nw || nw.length < 4) {
+    err.textContent = 'Minimo 4 caracteres'; err.style.display = 'block'; return;
+  }
+  if (nw !== conf) {
+    err.textContent = 'Las contrasenas no coinciden'; err.style.display = 'block'; return;
+  }
+  if (nw === CU.password) {
+    err.textContent = 'La nueva contrasena debe ser distinta de la actual'; err.style.display = 'block'; return;
+  }
+
+  btn.innerHTML = '<span class="spin"></span> Guardando...'; btn.disabled = true;
+
+  // Actualiza password y quita la marca de cambio obligatorio en una sola operacion
+  var {error} = await sb.from('users')
+    .update({password: nw, must_change_password: false})
+    .eq('id', CU.id);
+
+  btn.innerHTML = 'Guardar y entrar'; btn.disabled = false;
+
+  if (error) {
+    logR('FORCE_PW_ERR', {err: error.message}, 'err');
+    err.textContent = 'Error al guardar: ' + error.message;
+    err.style.display = 'block';
+    return;
+  }
+
+  // Actualizar estado local
+  CU.password = nw;
+  CU.must_change_password = false;
+  logR('FORCE_PW_OK', {user: CU.username});
+
+  // Cerrar modal y continuar con el flujo normal post-login
+  document.getElementById('m-force-pw').style.display = 'none';
+
+  // Entrar a la pantalla correspondiente segun rol
+  if (CU.role === 'tech') {
+    document.getElementById('tech-name').textContent = CU.name;
+    showScreen('s-tech');
+    var myRows = liveData.filter(function(s) { return s.username === CU.username; });
+    techTab(myRows.length > 0 ? 't-misservicios' : 't-nuevo');
+  } else {
+    document.getElementById('boss-name').textContent = CU.name;
+    document.getElementById('boss-role').textContent = CU.role === 'admin' ? 'Administrador' : 'Jefatura';
+    if (CU.role === 'admin') {
+      document.getElementById('tab-users').style.display = '';
+      document.getElementById('tab-cfg').style.display = '';
+    }
+    showScreen('s-boss');
+    bossTab('b-online');
+  }
+  startPolling();
 }
 
 // ═══════════════════════════════════════════════
@@ -1938,10 +2041,15 @@ async function saveUser() {
   var error;
   if (editUserId) {
     var updates = {name, username, cargo, role, avatar_url};
-    if (pass.length >= 4) updates.password = pass;
+    if (pass.length >= 4) {
+      // Admin esta reseteando la contrasena -> forzar cambio en proximo login del usuario.
+      updates.password = pass;
+      updates.must_change_password = true;
+    }
     ({error} = await sb.from('users').update(updates).eq('id', editUserId));
   } else {
-    ({error} = await sb.from('users').insert({name, username, password:pass, cargo, role, avatar_url}));
+    // Usuario nuevo -> siempre debe cambiar contrasena al primer ingreso.
+    ({error} = await sb.from('users').insert({name, username, password:pass, cargo, role, avatar_url, must_change_password: true}));
   }
   logR('SAVE_USER', {error: error ? error.message : null});
   btn.innerHTML = 'Guardar'; btn.disabled = false;
@@ -2076,10 +2184,11 @@ async function saveMiCuenta() {
   if (nw.length < 4) { err.textContent='Minimo 4 caracteres'; err.style.display='block'; return; }
   if (nw !== conf) { err.textContent='Las contrasenas no coinciden'; err.style.display='block'; return; }
   btn.innerHTML='<span class="spin"></span>'; btn.disabled=true;
-  var {error} = await sb.from('users').update({password:nw}).eq('id',CU.id);
+  var {error} = await sb.from('users').update({password:nw, must_change_password: false}).eq('id',CU.id);
   btn.innerHTML='Actualizar'; btn.disabled=false;
   if (error) { err.textContent='Error: '+error.message; err.style.display='block'; return; }
   CU.password = nw;
+  CU.must_change_password = false;
   ok.style.display = 'block';
 }
 
