@@ -1727,6 +1727,17 @@ async function doFinish(checklist, sessionKey) {
     }
     // Load session data
     var sess = liveData.find(function(s) { return s.session_key === useKey; });
+
+    // GUARD: si NO encontramos la sesion en liveData Y tampoco tenemos estado local
+    // (T.sessionKey del mismo useKey), significa que ya se finalizo antes o hay un
+    // race condition. Abortar sin guardar basura en history/notifs.
+    if (!sess && (!T.sessionKey || T.sessionKey !== useKey || !T.srvLabel)) {
+      logR('FINISH_ABORTED_NO_SESS', {useKey: useKey, tKey: T.sessionKey}, 'warn');
+      // Intentar refrescar data por si se desfaso, y salir silencioso
+      await fetchLive();
+      return;
+    }
+
     if (useKey === T.sessionKey) {
       T.running = false;
     } else if (sess) {
@@ -1758,6 +1769,13 @@ async function doFinish(checklist, sessionKey) {
     var finGoal = T.srvGoal || (sess ? sess.goal_minutes : null);
     var finPauses = T.pauses.length ? T.pauses : (sess ? (sess.pauses||[]) : []);
 
+    // Guard extra: si algo sigue vacio, algo esta mal. No guardar basura.
+    if (!finSrv || finSec < 1) {
+      logR('FINISH_ABORTED_EMPTY_DATA', {finSrv: finSrv, finSec: finSec}, 'warn');
+      alert('No se pudo finalizar: los datos del servicio estan incompletos. Recarga la pagina y reintenta.');
+      return;
+    }
+
     var histPayload = {
       technician: CU.name, username: CU.username,
       service: finSrv, plate: finPlate,
@@ -1772,15 +1790,21 @@ async function doFinish(checklist, sessionKey) {
     logR('FINISH_HISTORY_RESULT', {error: hErr ? hErr.message : null});
     if (hErr) { alert('Error al guardar historial: ' + hErr.message); return; }
 
-    // Save checklist
-    await sb.from('service_checklists').insert({
-      session_key: useKey, technician: CU.name, username: CU.username,
-      service: finSrv, plate: finPlate, duration: fmtT(finSec), seconds: finSec,
-      litros: checklist.litros, aceite: checklist.aceite,
-      prueba_ruta: checklist.prueba_ruta, doble_control: checklist.doble_control,
-      visado: checklist.visado, observaciones: checklist.observaciones,
-      ended_at: new Date().toISOString()
-    });
+    // Save checklist SOLO si realmente hay checklist.
+    // Para servicios que no requieren checklist (ej: Reparaciones generales, Lavado),
+    // se llama doFinish(null, ...) y no hay que insertar nada en service_checklists.
+    // El bug anterior hacia checklist.litros sin guard -> null is not an object.
+    if (checklist && typeof checklist === 'object') {
+      var {error: ckErr} = await sb.from('service_checklists').insert({
+        session_key: useKey, technician: CU.name, username: CU.username,
+        service: finSrv, plate: finPlate, duration: fmtT(finSec), seconds: finSec,
+        litros: checklist.litros, aceite: checklist.aceite,
+        prueba_ruta: checklist.prueba_ruta, doble_control: checklist.doble_control,
+        visado: checklist.visado, observaciones: checklist.observaciones,
+        ended_at: new Date().toISOString()
+      });
+      if (ckErr) logR('CHECKLIST_INSERT_ERR', {err: ckErr.message}, 'warn');
+    }
 
     var {error: dErr} = await sb.from('active_sessions').delete().eq('session_key', useKey);
     logR('FINISH_DELETE_SESSION', {key: useKey, error: dErr ? dErr.message : null});
