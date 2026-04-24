@@ -925,13 +925,12 @@ function startPolling() {
   pollAll();
   pollInt = setInterval(pollAll, 3000);
   tickInt = setInterval(function() {
-    // Ya NO sumamos .seconds localmente a las sesiones ajenas - la funcion
-    // liveSecondsFromSession() calcula el tiempo real al momento de renderizar,
-    // usando s.seconds (de BD) + (now - s.updated_at). Asi todas las pantallas
-    // (Francisco, Oscar, cualquier otro) muestran el MISMO valor calculado.
+    // NO tocamos liveData[i].seconds aqui. El valor de .seconds siempre refleja
+    // el snapshot de la ultima lectura de BD (o calculo en fetchLive).
+    // El render es quien decide que valor mostrar usando liveSecondsNow(s).
     //
-    // Para la sesion propia (mi timer T), si sigue corriendo si se usa T.sec
-    // que es exacto al segundo. Eso se maneja aparte abajo.
+    // Esto evita el bug de mutacion acumulativa: si mutabamos .seconds cada segundo,
+    // el tiempo se duplicaba y se disparaba sin control.
     if (T.running) {
       T.sec++;
       dbSyncCtr++;
@@ -954,13 +953,7 @@ function startPolling() {
         }
       }
     }
-    // Recalcular segundos de las sesiones ajenas que estan corriendo (para que la UI
-    // muestre el tiempo en vivo tambien sin esperar al siguiente polling)
-    liveData.forEach(function(s) {
-      if (s.status === 'running' && (!T.sessionKey || s.session_key !== T.sessionKey)) {
-        s.seconds = liveSecondsFromSession(s);
-      }
-    });
+    // Refrescar UI cada segundo. Los calculos de tiempo se hacen en el render.
     refreshLiveUI();
   }, 1000);
 }
@@ -976,13 +969,14 @@ async function pollAll() {
 }
 
 // Calcula los segundos "en vivo" de una sesion basandose en BD + tiempo transcurrido.
-// Funciona desde cualquier pantalla, sin depender de contadores locales.
+// Se llama al momento de RENDERIZAR, no para mutar datos. Usando esta funcion en el
+// render nos aseguramos que todas las pantallas muestren el MISMO valor calculado
+// (no un contador acumulado local que diverge entre pantallas).
 //
 // Logica:
-//   - Si esta corriendo: seconds_BD + (ahora - updated_at). El tecnico dueno sincroniza
-//     cada 5s, entonces como mucho estamos atrasados 5s respecto al tiempo real.
+//   - Si esta corriendo: seconds_BD + (ahora - updated_at).
 //   - Si esta pausado o en otro estado: el valor de BD es el correcto (congelado).
-function liveSecondsFromSession(s) {
+function liveSecondsNow(s) {
   if (!s) return 0;
   var base = s.seconds || 0;
   if (s.status !== 'running' || !s.updated_at) return base;
@@ -997,21 +991,16 @@ async function fetchLive() {
   const {data, error} = await sb.from('active_sessions').select('*').order('started_at');
   logR('FETCH_LIVE', {count: data ? data.length : 0, error: error ? error.message : null});
   if (error) { logR('FETCH_LIVE_ERR', {msg: error.message}, 'err'); return; }
-  // Para cada sesion:
-  //  - Si es la del usuario actual (tiene timer local T activo): usar T.sec que es exacto.
-  //  - Si es de otro usuario corriendo: recalcular desde BD + tiempo transcurrido.
-  //  - Si esta pausada: el valor de BD es autoridad (no cambia).
+  // Guardamos los datos TAL CUAL vienen de BD. No mutamos .seconds.
+  // Para la sesion del usuario actual, conservamos su T.pauses y status local si es mas reciente.
   liveData = (data || []).map(function(s) {
     var local = Object.assign({}, s);
     if (T.sessionKey && s.session_key === T.sessionKey) {
-      // Mi sesion: T.sec es el valor mas reciente
+      // Mi sesion: T.sec es el valor local mas reciente
       local.seconds = Math.max(s.seconds, T.sec);
       local.status = T.running ? 'running' : (T.pauses.length ? 'paused' : s.status);
       local.pauses = T.pauses.length ? T.pauses : s.pauses;
-      return local;
     }
-    // Sesion de otro tecnico: calcular tiempo vivo desde metadata
-    local.seconds = liveSecondsFromSession(s);
     return local;
   });
   refreshLiveUI();
@@ -1700,12 +1689,13 @@ function sectionHdr(label, color, count) {
 }
 
 function buildMisServCard(s, status) {
-  var over = s.goal_minutes && s.seconds > s.goal_minutes * 60;
+  var isMe = T.sessionKey === s.session_key;
+  // Para mi sesion: T.sec. Para otras: calcular desde metadata BD.
+  var sec = isMe ? T.sec : liveSecondsNow(s);
+  var over = s.goal_minutes && sec > s.goal_minutes * 60;
   var isRunning = status === 'running';
   var isPaused = status === 'paused';
   var isCkP = status === 'checklist_pending';
-  var isMe = T.sessionKey === s.session_key;
-  var sec = isMe ? T.sec : s.seconds;
   var bc = over ? 'var(--red)' : isPaused ? 'var(--gold)' : isCkP ? 'var(--blue)' : 'var(--green)';
   var lastPause = s.pauses && s.pauses.length ? s.pauses[s.pauses.length-1] : null;
   var card = mk('div','card'); card.style.borderLeft = '4px solid ' + bc;
@@ -2010,9 +2000,14 @@ function renderBossOnline() {
 }
 
 function buildSessCard(s, isTech) {
-  var over = s.goal_minutes && s.seconds > s.goal_minutes * 60;
+  // Calculamos el tiempo "vivo" al momento de renderizar.
+  // Para la sesion del usuario actual: T.sec (exacto al segundo).
+  // Para cualquier otra: BD + (now - updated_at).
+  var isMine = T.sessionKey && s.session_key === T.sessionKey;
+  var sec = isMine ? T.sec : liveSecondsNow(s);
+  var over = s.goal_minutes && sec > s.goal_minutes * 60;
   var paused = s.status === 'paused' || !s.running;
-  var pct = s.goal_minutes ? Math.min(100, Math.round(s.seconds / (s.goal_minutes*60)*100)) : null;
+  var pct = s.goal_minutes ? Math.min(100, Math.round(sec / (s.goal_minutes*60)*100)) : null;
   var bc = over ? 'var(--red)' : paused ? 'var(--gold)' : 'var(--green)';
   var bg = over ? '#fff8f8' : paused ? '#fffdf5' : '#fff';
   var lastPause = paused && s.pauses && s.pauses.length ? s.pauses[s.pauses.length-1] : null;
@@ -2033,11 +2028,11 @@ function buildSessCard(s, isTech) {
   h += '</div></div>';
   h += '<div style="text-align:right;flex-shrink:0">';
   h += '<span class="badge ' + (over?'b-over':paused?'b-pau':'b-run') + '">' + (over?'Superado':paused?'Pausado':'En curso') + '</span>';
-  h += '<div style="font-size:26px;font-weight:700;font-family:var(--mono);color:' + (over?'var(--red)':paused?'var(--gold)':'#111') + ';letter-spacing:2px;margin-top:3px">' + fmtT(s.seconds) + '</div>';
+  h += '<div style="font-size:26px;font-weight:700;font-family:var(--mono);color:' + (over?'var(--red)':paused?'var(--gold)':'#111') + ';letter-spacing:2px;margin-top:3px">' + fmtT(sec) + '</div>';
   if (s.goal_minutes) h += '<div style="font-size:9px;color:#aaa;text-transform:uppercase">OBJ:' + s.goal_minutes + 'm</div>';
   h += '</div></div>';
   if (pct !== null) h += '<div class="prog-bar" style="margin-top:8px"><div class="prog-fill" style="width:' + pct + '%;background:' + (over?'var(--red)':'var(--green)') + '"></div></div>';
-  if (!isTech && paused) h += '<div style="margin-top:8px"><button class="btn btn-green" style="padding:8px;font-size:11px" onclick="resolveContingency(\'' + s.session_key + '\',\'' + s.username + '\',\'' + s.technician.replace(/'/g,'') + '\')">Resolver contingencia</button></div>';
+  if (!isTech && paused) h += '<div style="margin-top:8px"><button class="btn btn-green" style="padding:8px;font-size:11px" onclick="resolveContingency(\'' + s.session_key + '\',\'' + s.username + '\',\'' + s.technician.replace(/\'/g,'') + '\')">Resolver contingencia</button></div>';
   card.innerHTML = h;
   return card;
 }
