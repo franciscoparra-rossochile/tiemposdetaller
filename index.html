@@ -7,6 +7,8 @@
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <title>Rosso Centro de Operaciones v2.0-FIXED</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" defer></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" defer></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js" defer></script>
 <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Barlow+Condensed:wght@400;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet"/>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
@@ -160,6 +162,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     <div class="tab" data-tab="t-agenda" onclick="techTab('t-agenda')">Agenda</div>
     <div class="tab" data-tab="t-alertas" onclick="techTab('t-alertas')">Alertas<span class="ndot" id="tech-ndot"></span></div>
     <div class="tab" data-tab="t-historial" onclick="techTab('t-historial')">Historial</div>
+    <div class="tab" data-tab="t-midia" onclick="techTab('t-midia')">Mi dia</div>
   </div>
   <div class="body" id="tech-body"></div>
 </div>
@@ -182,6 +185,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     <div class="tab" data-tab="b-calendario" onclick="bossTab('b-calendario')">Calendario</div>
     <div class="tab" data-tab="b-plan" onclick="bossTab('b-plan')">Planificacion</div>
     <div class="tab" data-tab="b-hist" onclick="bossTab('b-hist')">Historial</div>
+    <div class="tab" data-tab="b-reportes" onclick="bossTab('b-reportes')">Reportes</div>
     <div class="tab" data-tab="b-users" onclick="bossTab('b-users')" id="tab-users" style="display:none">Usuarios</div>
     <div class="tab" data-tab="b-cfg" onclick="bossTab('b-cfg')" id="tab-cfg" style="display:none">Config</div>
   </div>
@@ -905,6 +909,7 @@ function techTab(t) {
   else if (t === 't-misservicios') renderMisServicios(body);
   else if (t === 't-agenda') renderTechAgenda(body);
   else if (t === 't-alertas') { document.getElementById('tech-ndot').classList.remove('show'); renderTechAlertas(body); }
+  else if (t === 't-midia') renderTechMiDia(body);
 }
 
 function bossTab(t) {
@@ -920,6 +925,7 @@ function bossTab(t) {
   else if (t === 'b-calendario') renderBossCal(body);
   else if (t === 'b-plan') renderBossPlan(body);
   else if (t === 'b-hist') renderBossHist(body);
+  else if (t === 'b-reportes') renderBossReportes(body);
   else if (t === 'b-users') renderBossUsers(body);
   else if (t === 'b-cfg') renderBossCfg(body);
 }
@@ -1731,8 +1737,101 @@ async function renderTechAlertas(body) {
 }
 
 // ═══════════════════════════════════════════════
-// TECH: ONLINE
+// TECH: MI DIA (resumen personal del dia)
 // ═══════════════════════════════════════════════
+async function renderTechMiDia(body) {
+  body.innerHTML = '<div class="empty"><span class="spin"></span>Cargando...</div>';
+
+  var now = new Date();
+  var from = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0).toISOString();
+  var to = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59).toISOString();
+
+  var {data: rows} = await sb.from('history').select('*')
+    .eq('username', CU.username)
+    .gte('ended_at', from).lte('ended_at', to)
+    .order('ended_at', {ascending: false});
+  rows = rows || [];
+
+  var active = liveData.filter(function(s) { return s.username === CU.username; });
+  var kpis = computeKPIs(rows);
+
+  body.innerHTML = '';
+
+  // Saludo personalizado
+  var greet = mk('div','card-accent');
+  greet.style.marginBottom = '10px';
+  var hour = now.getHours();
+  var saludo = hour < 12 ? 'Buenos dias' : (hour < 19 ? 'Buenas tardes' : 'Buenas noches');
+  var firstName = CU.name.split(' ')[0];
+  greet.innerHTML = '<div style="font-size:14px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.05em;color:#111">' + saludo + ', ' + firstName + '</div>'
+    + '<div style="font-size:11px;color:var(--wh3);margin-top:2px">' + now.toLocaleDateString('es-CL',{weekday:'long',day:'numeric',month:'long'}) + '</div>';
+  body.appendChild(greet);
+
+  // KPIs del dia
+  var grid = mk('div','');
+  grid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:10px';
+  grid.appendChild(kpiBox('Finalizados', kpis.total, '#111'));
+  grid.appendChild(kpiBox('En objetivo', kpis.withGoal > 0 ? kpis.pctOnTime + '%' : '-', kpis.pctOnTime >= 70 ? 'var(--green)' : 'var(--red)'));
+  grid.appendChild(kpiBox('Productivo', fmtHM(kpis.productiveSec), 'var(--blue)'));
+  grid.appendChild(kpiBox('En pausa', fmtHM(kpis.pauseSec), 'var(--gold3)'));
+  body.appendChild(grid);
+
+  // Servicios activos ahora
+  if (active.length) {
+    var actCard = mk('div','');
+    actCard.innerHTML = '<div class="lbl">Activo ahora (' + active.length + ')</div>';
+    active.forEach(function(s) {
+      var card = mk('div','card');
+      card.style.borderLeft = '4px solid ' + (s.status === 'running' ? 'var(--green)' : 'var(--gold)');
+      card.style.marginBottom = '6px';
+      card.innerHTML = '<div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111">' + s.service + '</div>'
+        + (s.plate ? '<span class="plate-tag" style="margin-top:4px">' + s.plate + '</span>' : '')
+        + '<div style="font-size:10px;color:var(--wh3);margin-top:4px;text-transform:uppercase">' + (s.status === 'running' ? 'En curso' : 'Pausado') + '</div>';
+      actCard.appendChild(card);
+    });
+    body.appendChild(actCard);
+  }
+
+  // Servicios finalizados hoy
+  var finCard = mk('div','');
+  finCard.innerHTML = '<div class="lbl" style="margin-top:10px">Finalizados hoy (' + rows.length + ')</div>';
+  if (!rows.length) {
+    var emp = mk('div','empty');
+    emp.textContent = active.length ? 'Aun no has cerrado servicios hoy' : 'Sin actividad registrada';
+    finCard.appendChild(emp);
+  } else {
+    var listCard = mk('div','card');
+    rows.forEach(function(r) {
+      var over = r.goal_minutes && r.seconds > r.goal_minutes * 60;
+      var row = mk('div','row');
+      row.innerHTML = '<div style="flex:1;min-width:0">'
+        + '<div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111">' + r.service + '</div>'
+        + (r.plate ? '<span class="plate-tag">' + r.plate + '</span>' : '')
+        + '</div>'
+        + '<div style="text-align:right;flex-shrink:0">'
+        + '<div style="font-size:16px;font-weight:700;font-family:var(--mono);color:' + (over?'var(--red)':'var(--green)') + '">' + r.duration + '</div>'
+        + (r.goal_minutes ? '<div style="font-size:9px;color:#aaa;text-transform:uppercase">OBJ:' + r.goal_minutes + 'm</div>' : '')
+        + '<div style="font-size:10px;color:#aaa">' + new Date(r.ended_at).toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'}) + '</div>'
+        + '</div>';
+      listCard.appendChild(row);
+    });
+    finCard.appendChild(listCard);
+  }
+  body.appendChild(finCard);
+
+  // Mensaje motivacional o feedback
+  if (rows.length >= 3) {
+    var msgCard = mk('div','card-green');
+    msgCard.style.marginTop = '10px';
+    var msg = 'Buen ritmo! Llevas ' + rows.length + ' servicios finalizados hoy.';
+    if (kpis.pctOnTime >= 80 && kpis.withGoal >= 2) {
+      msg = 'Excelente jornada. Ya van ' + rows.length + ' servicios y la mayoria dentro del objetivo.';
+    }
+    msgCard.innerHTML = '<div style="font-size:11px;color:var(--green);font-weight:600">' + msg + '</div>';
+    body.appendChild(msgCard);
+  }
+}
+
 function renderTechOnline() {
   var body = document.getElementById('tech-body');
   if (curTechTab !== 't-online') return;
@@ -1976,8 +2075,276 @@ async function renderBossHist(body) {
 }
 
 // ═══════════════════════════════════════════════
-// BOSS: USUARIOS
+// BOSS: REPORTES
 // ═══════════════════════════════════════════════
+
+// Estado de filtros para reportes (compartido entre vista y exports)
+var REP = {
+  range: 'hoy',          // 'hoy' | 'semana' | 'mes' | 'custom'
+  dateFrom: null,        // ISO string si custom
+  dateTo: null,
+  technicianId: '',      // '' = todos
+  service: '',           // '' = todos
+  data: []               // filas filtradas vigentes
+};
+
+function repRangeBounds() {
+  var now = new Date();
+  var from, to;
+  if (REP.range === 'hoy') {
+    from = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+    to = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+  } else if (REP.range === 'semana') {
+    // ultimos 7 dias incluyendo hoy
+    to = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+    from = new Date(to.getTime() - 6 * 86400000);
+    from.setHours(0, 0, 0, 0);
+  } else if (REP.range === 'mes') {
+    // ultimos 30 dias
+    to = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+    from = new Date(to.getTime() - 29 * 86400000);
+    from.setHours(0, 0, 0, 0);
+  } else if (REP.range === 'custom' && REP.dateFrom && REP.dateTo) {
+    from = new Date(REP.dateFrom + 'T00:00:00');
+    to = new Date(REP.dateTo + 'T23:59:59');
+  } else {
+    from = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+    to = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+  }
+  return {from: from, to: to};
+}
+
+function repRangeLabel() {
+  var b = repRangeBounds();
+  var f = b.from.toLocaleDateString('es-CL', {day:'2-digit',month:'2-digit',year:'numeric'});
+  var t = b.to.toLocaleDateString('es-CL', {day:'2-digit',month:'2-digit',year:'numeric'});
+  if (REP.range === 'hoy') return 'Hoy ' + f;
+  return f + ' al ' + t;
+}
+
+async function renderBossReportes(body) {
+  body.innerHTML = '<div class="empty"><span class="spin"></span>Cargando...</div>';
+
+  // Cargar listado de tecnicos para el filtro
+  var {data: techs} = await sb.from('users').select('id,name,role').in('role',['tech','jefatura','admin']).order('name');
+  techs = techs || [];
+
+  body.innerHTML = '';
+
+  // ──────────────────────────────────────────────
+  // Card: FILTROS
+  // ──────────────────────────────────────────────
+  var filtCard = mk('div','card-accent');
+  filtCard.style.marginBottom = '10px';
+  filtCard.innerHTML = '<div class="lbl">Filtros</div>';
+
+  // Rango de fechas (chips)
+  var rangeRow = mk('div','');
+  rangeRow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px';
+  var ranges = [['hoy','Hoy'],['semana','7 dias'],['mes','30 dias'],['custom','Rango']];
+  ranges.forEach(function(r) {
+    var b = mk('button', 'sel-btn');
+    b.textContent = r[1];
+    b.style.minHeight = '38px';
+    b.style.flex = '1 1 auto';
+    b.style.minWidth = '70px';
+    if (REP.range === r[0]) b.classList.add('on');
+    b.onclick = function() { REP.range = r[0]; renderBossReportes(body); };
+    rangeRow.appendChild(b);
+  });
+  filtCard.appendChild(rangeRow);
+
+  // Rango custom (solo si corresponde)
+  if (REP.range === 'custom') {
+    var customRow = mk('div','');
+    customRow.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:10px';
+    var fromIn = mk('input','inp');
+    fromIn.type = 'date'; fromIn.id = 'rep-from';
+    fromIn.style.marginBottom = '0';
+    if (REP.dateFrom) fromIn.value = REP.dateFrom;
+    fromIn.onchange = function() { REP.dateFrom = this.value; renderBossReportes(body); };
+    var toIn = mk('input','inp');
+    toIn.type = 'date'; toIn.id = 'rep-to';
+    toIn.style.marginBottom = '0';
+    if (REP.dateTo) toIn.value = REP.dateTo;
+    toIn.onchange = function() { REP.dateTo = this.value; renderBossReportes(body); };
+    customRow.appendChild(fromIn);
+    customRow.appendChild(toIn);
+    filtCard.appendChild(customRow);
+  }
+
+  // Tecnico y servicio (selects)
+  var selRow = mk('div','');
+  selRow.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:6px';
+  var techSel = mk('select','inp');
+  techSel.style.marginBottom = '0';
+  var optAll = mk('option',''); optAll.value = ''; optAll.textContent = 'Todos los tecnicos'; techSel.appendChild(optAll);
+  techs.forEach(function(u) {
+    var o = mk('option',''); o.value = u.name; o.textContent = u.name;
+    if (REP.technicianId === u.name) o.selected = true;
+    techSel.appendChild(o);
+  });
+  techSel.onchange = function() { REP.technicianId = this.value; renderBossReportes(body); };
+
+  var srvSel = mk('select','inp');
+  srvSel.style.marginBottom = '0';
+  var optAll2 = mk('option',''); optAll2.value = ''; optAll2.textContent = 'Todos los servicios'; srvSel.appendChild(optAll2);
+  SRVS.forEach(function(s) {
+    var o = mk('option',''); o.value = s.name; o.textContent = s.name;
+    if (REP.service === s.name) o.selected = true;
+    srvSel.appendChild(o);
+  });
+  srvSel.onchange = function() { REP.service = this.value; renderBossReportes(body); };
+
+  selRow.appendChild(techSel);
+  selRow.appendChild(srvSel);
+  filtCard.appendChild(selRow);
+
+  body.appendChild(filtCard);
+
+  // ──────────────────────────────────────────────
+  // Consulta con filtros aplicados
+  // ──────────────────────────────────────────────
+  var b2 = repRangeBounds();
+  var q = sb.from('history').select('*')
+    .gte('ended_at', b2.from.toISOString())
+    .lte('ended_at', b2.to.toISOString())
+    .order('ended_at', {ascending: false});
+  if (REP.technicianId) q = q.eq('technician', REP.technicianId);
+  if (REP.service) q = q.eq('service', REP.service);
+  var {data: rows} = await q;
+  REP.data = rows || [];
+
+  // ──────────────────────────────────────────────
+  // Card: KPIs
+  // ──────────────────────────────────────────────
+  var kpis = computeKPIs(REP.data);
+  var kpiCard = mk('div','');
+  kpiCard.style.marginBottom = '10px';
+  kpiCard.innerHTML = '<div class="lbl" style="margin-left:4px">Indicadores · ' + repRangeLabel() + '</div>';
+  var grid = mk('div','');
+  grid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:6px';
+  grid.appendChild(kpiBox('Servicios', kpis.total, '#111'));
+  grid.appendChild(kpiBox('En objetivo', kpis.pctOnTime + '%', kpis.pctOnTime >= 70 ? 'var(--green)' : 'var(--red)'));
+  grid.appendChild(kpiBox('Tiempo productivo', fmtHM(kpis.productiveSec), 'var(--blue)'));
+  grid.appendChild(kpiBox('Tiempo en pausa', fmtHM(kpis.pauseSec), 'var(--gold3)'));
+  kpiCard.appendChild(grid);
+  body.appendChild(kpiCard);
+
+  // ──────────────────────────────────────────────
+  // Card: EXPORTAR
+  // ──────────────────────────────────────────────
+  var expCard = mk('div','card');
+  expCard.style.marginBottom = '10px';
+  expCard.innerHTML = '<div class="lbl">Exportar reporte</div>';
+  var expGrid = mk('div','');
+  expGrid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:6px';
+  expGrid.appendChild(exportBtn('PDF Diario', 'var(--red)', function() { generatePDFDiario(); }));
+  expGrid.appendChild(exportBtn('PDF Tecnico', 'var(--blue)', function() { generatePDFTecnico(); }));
+  expGrid.appendChild(exportBtn('PDF Gestion', 'var(--green)', function() { generatePDFGestion(); }));
+  expGrid.appendChild(exportBtn('CSV / Excel', 'var(--gold)', function() { exportCSVFromRep(); }));
+  expCard.appendChild(expGrid);
+  var hint = mk('div','');
+  hint.style.cssText = 'font-size:10px;color:var(--wh4);margin-top:8px;letter-spacing:.04em;line-height:1.5';
+  hint.innerHTML = '<b>Diario:</b> foto operativa del dia para cierre de jornada.<br>'
+    + '<b>Tecnico:</b> rendimiento individual para conversaciones 1:1.<br>'
+    + '<b>Gestion:</b> tendencias y decisiones estrategicas.<br>'
+    + '<b>CSV:</b> datos crudos para Excel o analisis externo.';
+  expCard.appendChild(hint);
+  body.appendChild(expCard);
+
+  // ──────────────────────────────────────────────
+  // Card: TABLA DE SERVICIOS (filtrada)
+  // ──────────────────────────────────────────────
+  var tblCard = mk('div','');
+  tblCard.innerHTML = '<div class="lbl" style="margin-left:4px">Servicios (' + REP.data.length + ')</div>';
+  if (!REP.data.length) {
+    var emp = mk('div','empty');
+    emp.textContent = 'Sin servicios en este periodo';
+    tblCard.appendChild(emp);
+  } else {
+    var listCard = mk('div','card');
+    REP.data.forEach(function(r) {
+      var over = r.goal_minutes && r.seconds > r.goal_minutes * 60;
+      var init = r.technician.split(' ').map(function(x){return x[0];}).join('').slice(0,2);
+      var row = mk('div','row');
+      row.innerHTML = '<div class="av av-tech">' + init + '</div>'
+        + '<div style="flex:1;min-width:0">'
+        + '<div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111">' + r.technician + '</div>'
+        + '<div style="font-size:11px;color:#666;text-transform:uppercase">' + r.service + '</div>'
+        + (r.plate ? '<span class="plate-tag">' + r.plate + '</span>' : '')
+        + '</div>'
+        + '<div style="text-align:right;flex-shrink:0">'
+        + '<div style="font-size:16px;font-weight:700;font-family:var(--mono);color:' + (over?'var(--red)':'var(--green)') + '">' + r.duration + '</div>'
+        + (r.goal_minutes ? '<div style="font-size:9px;color:#aaa;text-transform:uppercase">OBJ:' + r.goal_minutes + 'm</div>' : '')
+        + '<div style="font-size:10px;color:#aaa">' + fmtD(r.ended_at) + '</div>'
+        + '</div>';
+      listCard.appendChild(row);
+    });
+    tblCard.appendChild(listCard);
+  }
+  body.appendChild(tblCard);
+}
+
+// Helper: box de KPI
+function kpiBox(label, value, color) {
+  var box = mk('div','card');
+  box.style.cssText = 'text-align:center;padding:14px 8px';
+  box.innerHTML = '<div style="font-size:22px;font-weight:700;font-family:var(--mono);color:' + color + ';line-height:1">' + value + '</div>'
+    + '<div style="font-size:9px;color:var(--wh3);margin-top:6px;letter-spacing:.08em;text-transform:uppercase;font-family:var(--head);font-weight:600">' + label + '</div>';
+  return box;
+}
+
+// Helper: boton de export
+function exportBtn(label, color, handler) {
+  var b = mk('button','btn-sm');
+  b.textContent = label;
+  b.style.cssText = 'border-color:' + color + ';color:' + color + ';font-size:11px;min-height:42px';
+  b.onclick = handler;
+  return b;
+}
+
+// Helper: formato h:mm
+function fmtHM(sec) {
+  var h = Math.floor(sec/3600);
+  var m = Math.floor((sec%3600)/60);
+  if (h === 0) return m + 'm';
+  return h + 'h ' + (m < 10 ? '0' : '') + m + 'm';
+}
+
+// Computar KPIs a partir de filas del historial
+function computeKPIs(rows) {
+  var total = rows.length;
+  var productive = 0;
+  var pause = 0;
+  var onTime = 0;
+  var withGoal = 0;
+  var pauseReasons = {};
+  rows.forEach(function(r) {
+    var sec = r.seconds || 0;
+    productive += sec;
+    if (r.pauses && r.pauses.length) {
+      r.pauses.forEach(function(p) {
+        var ps = p.seconds || p.duration_seconds || 0;
+        pause += ps;
+        var key = p.reason || 'Sin motivo';
+        if (!pauseReasons[key]) pauseReasons[key] = {count:0, seconds:0};
+        pauseReasons[key].count += 1;
+        pauseReasons[key].seconds += ps;
+      });
+    }
+    if (r.goal_minutes) {
+      withGoal += 1;
+      if (r.seconds <= r.goal_minutes * 60) onTime += 1;
+    }
+  });
+  var pctOnTime = withGoal > 0 ? Math.round((onTime / withGoal) * 100) : 0;
+  return {
+    total: total, productiveSec: productive, pauseSec: pause,
+    onTime: onTime, withGoal: withGoal, pctOnTime: pctOnTime,
+    pauseReasons: pauseReasons
+  };
+}
 async function renderBossUsers(body) {
   body.innerHTML = '<div class="empty"><span class="spin"></span>Cargando...</div>';
   var {data} = await sb.from('users').select('*').order('role').order('name');
@@ -2315,6 +2682,497 @@ async function exportTXT() {
   var a = document.createElement('a');
   a.href = 'data:text/plain;charset=utf-8,' + encodeURIComponent(txt);
   a.download = 'historial_rosso.txt'; a.click();
+}
+
+// ═══════════════════════════════════════════════
+// REPORTES: PDFs
+// ═══════════════════════════════════════════════
+
+// Colores base (deben coincidir con paleta Rosso)
+var PDF_COLORS = {
+  red: [204, 26, 26],
+  redDark: [168, 20, 20],
+  black: [10, 10, 10],
+  grayDark: [51, 51, 51],
+  grayMid: [102, 102, 102],
+  grayLight: [180, 180, 180],
+  grayBorder: [229, 229, 229],
+  grayBg: [248, 248, 248],
+  gold: [200, 134, 10],
+  green: [30, 138, 14],
+  white: [255, 255, 255]
+};
+
+// Helper: dibujar header uniforme en todas las paginas de PDF
+function pdfDrawHeader(doc, subtitle) {
+  var w = doc.internal.pageSize.getWidth();
+  // Banda superior negra
+  doc.setFillColor.apply(doc, PDF_COLORS.black);
+  doc.rect(0, 0, w, 16, 'F');
+  // Franja roja decorativa
+  doc.setFillColor.apply(doc, PDF_COLORS.red);
+  doc.rect(0, 16, w, 1, 'F');
+  // Texto ROSSO
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(14);
+  doc.setTextColor.apply(doc, PDF_COLORS.white);
+  doc.text('ROSSO', 14, 11);
+  // Subtitulo
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8);
+  doc.setTextColor(180, 180, 180);
+  doc.text('CENTRO DE OPERACIONES', 32, 8);
+  doc.setTextColor.apply(doc, PDF_COLORS.white);
+  doc.text(subtitle.toUpperCase(), 32, 13);
+}
+
+// Helper: dibujar footer con numero de pagina
+function pdfDrawFooter(doc, pageNum, totalPages) {
+  var w = doc.internal.pageSize.getWidth();
+  var h = doc.internal.pageSize.getHeight();
+  doc.setDrawColor.apply(doc, PDF_COLORS.grayBorder);
+  doc.setLineWidth(0.2);
+  doc.line(14, h - 12, w - 14, h - 12);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7);
+  doc.setTextColor.apply(doc, PDF_COLORS.grayMid);
+  doc.text('ROSSO · CENTRO DE OPERACIONES', 14, h - 7);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor.apply(doc, PDF_COLORS.red);
+  doc.text(String(pageNum).padStart(2,'0') + ' / ' + String(totalPages).padStart(2,'0'), w - 14, h - 7, {align: 'right'});
+}
+
+// Helper: titulo de seccion estilo "/ 01"
+function pdfSectionTitle(doc, num, title, y) {
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(8);
+  doc.setTextColor.apply(doc, PDF_COLORS.red);
+  doc.text('/ ' + String(num).padStart(2,'0'), 14, y);
+  doc.setFontSize(14);
+  doc.setTextColor.apply(doc, PDF_COLORS.black);
+  doc.text(title, 14, y + 6);
+  // Linea divisoria
+  doc.setDrawColor.apply(doc, PDF_COLORS.grayBorder);
+  doc.setLineWidth(0.3);
+  var w = doc.internal.pageSize.getWidth();
+  doc.line(14, y + 9, w - 14, y + 9);
+  return y + 15;
+}
+
+// Helper: caja de KPI en el PDF
+function pdfKPIBox(doc, x, y, w, h, label, value, color) {
+  doc.setFillColor.apply(doc, PDF_COLORS.grayBg);
+  doc.rect(x, y, w, h, 'F');
+  doc.setDrawColor.apply(doc, PDF_COLORS.grayBorder);
+  doc.setLineWidth(0.2);
+  doc.rect(x, y, w, h, 'S');
+  // Valor
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(18);
+  doc.setTextColor.apply(doc, color || PDF_COLORS.black);
+  doc.text(value, x + w/2, y + h/2 + 1, {align: 'center'});
+  // Label
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7);
+  doc.setTextColor.apply(doc, PDF_COLORS.grayMid);
+  doc.text(label.toUpperCase(), x + w/2, y + h - 4, {align: 'center'});
+}
+
+// Helper: verificar que jsPDF esté cargado
+function pdfCheckLoaded() {
+  if (typeof window.jspdf === 'undefined' || !window.jspdf.jsPDF) {
+    alert('La libreria de PDF no cargo. Recarga la pagina e intenta de nuevo.');
+    return false;
+  }
+  return true;
+}
+
+// Helper: paginar KPIs + info comun de header
+function pdfRenderHeaderBlock(doc, title, subtitle, kpis) {
+  pdfDrawHeader(doc, title);
+  // Metadata de generacion
+  var now = new Date();
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8);
+  doc.setTextColor.apply(doc, PDF_COLORS.grayMid);
+  doc.text('Generado: ' + now.toLocaleDateString('es-CL') + ' ' + now.toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'}) + ' · por ' + CU.name, 14, 24);
+  doc.text('Periodo: ' + subtitle, 14, 29);
+  // KPIs
+  var y = 36;
+  var w = doc.internal.pageSize.getWidth();
+  var boxW = (w - 28 - 6) / 4;
+  var boxH = 22;
+  pdfKPIBox(doc, 14, y, boxW, boxH, 'Servicios', String(kpis.total), PDF_COLORS.black);
+  pdfKPIBox(doc, 14 + boxW + 2, y, boxW, boxH, 'En objetivo', kpis.pctOnTime + '%', kpis.pctOnTime >= 70 ? PDF_COLORS.green : PDF_COLORS.red);
+  pdfKPIBox(doc, 14 + (boxW + 2)*2, y, boxW, boxH, 'Productivo', fmtHM(kpis.productiveSec), [48, 80, 176]);
+  pdfKPIBox(doc, 14 + (boxW + 2)*3, y, boxW, boxH, 'En pausa', fmtHM(kpis.pauseSec), PDF_COLORS.gold);
+  return y + boxH + 8;
+}
+
+// ──────────────────────────────────────────────
+// REPORTE DIARIO — foto del dia para cierre operativo
+// ──────────────────────────────────────────────
+function generatePDFDiario() {
+  if (!pdfCheckLoaded()) return;
+  var rows = REP.data;
+  if (!rows.length) { alert('No hay servicios en el periodo seleccionado para generar reporte.'); return; }
+  var doc = new window.jspdf.jsPDF({unit:'mm', format:'a4'});
+  var kpis = computeKPIs(rows);
+  var y = pdfRenderHeaderBlock(doc, 'Reporte Diario Operativo', repRangeLabel(), kpis);
+
+  // Tabla: servicios del dia
+  y = pdfSectionTitle(doc, 1, 'Servicios realizados', y);
+  doc.autoTable({
+    startY: y,
+    head: [['Tecnico','Servicio','Patente','Duracion','Obj.','Estado','Hora']],
+    body: rows.map(function(r) {
+      var over = r.goal_minutes && r.seconds > r.goal_minutes * 60;
+      var estado = !r.goal_minutes ? 'Sin meta' : (over ? 'Atrasado' : 'En objetivo');
+      var hora = new Date(r.ended_at).toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'});
+      return [r.technician, r.service, r.plate || '-', r.duration, r.goal_minutes ? r.goal_minutes+'m' : '-', estado, hora];
+    }),
+    theme: 'plain',
+    styles: {fontSize: 8, cellPadding: 2, lineColor: PDF_COLORS.grayBorder, lineWidth: 0.1},
+    headStyles: {fillColor: PDF_COLORS.black, textColor: PDF_COLORS.white, fontStyle: 'bold', fontSize: 8},
+    alternateRowStyles: {fillColor: PDF_COLORS.grayBg},
+    columnStyles: {
+      3: {font: 'courier', halign: 'right'},
+      4: {halign: 'center'},
+      5: {halign: 'center', fontStyle: 'bold'}
+    },
+    didParseCell: function(data) {
+      if (data.section === 'body' && data.column.index === 5) {
+        var txt = data.cell.raw;
+        if (txt === 'Atrasado') data.cell.styles.textColor = PDF_COLORS.red;
+        else if (txt === 'En objetivo') data.cell.styles.textColor = PDF_COLORS.green;
+      }
+    }
+  });
+
+  y = doc.lastAutoTable.finalY + 10;
+
+  // Top motivos de pausa
+  var reasons = Object.keys(kpis.pauseReasons);
+  if (reasons.length) {
+    if (y > 240) { doc.addPage(); y = 20; pdfDrawHeader(doc, 'Reporte Diario Operativo'); y = 28; }
+    y = pdfSectionTitle(doc, 2, 'Motivos de pausa', y);
+    var reasonRows = reasons
+      .map(function(k) { return [k, kpis.pauseReasons[k].count, fmtHM(kpis.pauseReasons[k].seconds)]; })
+      .sort(function(a,b) { return b[1] - a[1]; });
+    doc.autoTable({
+      startY: y,
+      head: [['Motivo','Ocurrencias','Tiempo total']],
+      body: reasonRows,
+      theme: 'plain',
+      styles: {fontSize: 9, cellPadding: 3, lineColor: PDF_COLORS.grayBorder, lineWidth: 0.1},
+      headStyles: {fillColor: PDF_COLORS.black, textColor: PDF_COLORS.white, fontStyle: 'bold'},
+      alternateRowStyles: {fillColor: PDF_COLORS.grayBg},
+      columnStyles: {1: {halign: 'center'}, 2: {halign: 'right', font: 'courier'}}
+    });
+    y = doc.lastAutoTable.finalY + 10;
+  }
+
+  // Alertas de calidad
+  var alertas = rows.filter(function(r) {
+    if (!r.checklist) return false;
+    var c = r.checklist;
+    if (c.doble_control === 'Rechazado' || c.visado === 'Rechazado') return true;
+    if (c.prueba_ruta && c.prueba_ruta.resultado === 'Con observaciones') return true;
+    return false;
+  });
+  if (alertas.length) {
+    if (y > 230) { doc.addPage(); y = 28; pdfDrawHeader(doc, 'Reporte Diario Operativo'); }
+    y = pdfSectionTitle(doc, 3, 'Alertas de calidad', y);
+    doc.autoTable({
+      startY: y,
+      head: [['Tecnico','Servicio','Patente','Hallazgo']],
+      body: alertas.map(function(r) {
+        var c = r.checklist;
+        var hallazgos = [];
+        if (c.doble_control === 'Rechazado') hallazgos.push('Doble control rechazado');
+        if (c.visado === 'Rechazado') hallazgos.push('Visado rechazado');
+        if (c.prueba_ruta && c.prueba_ruta.resultado === 'Con observaciones') hallazgos.push('Ruta: ' + (c.anomalias || 'con obs.'));
+        return [r.technician, r.service, r.plate || '-', hallazgos.join(' · ')];
+      }),
+      theme: 'plain',
+      styles: {fontSize: 8, cellPadding: 2, lineColor: PDF_COLORS.grayBorder, lineWidth: 0.1},
+      headStyles: {fillColor: PDF_COLORS.red, textColor: PDF_COLORS.white, fontStyle: 'bold'},
+      alternateRowStyles: {fillColor: [252, 232, 232]}
+    });
+  }
+
+  // Footer paginas
+  var pages = doc.internal.getNumberOfPages();
+  for (var i = 1; i <= pages; i++) { doc.setPage(i); pdfDrawFooter(doc, i, pages); }
+
+  var fileName = 'reporte_diario_rosso_' + new Date().toISOString().slice(0,10) + '.pdf';
+  doc.save(fileName);
+}
+
+// ──────────────────────────────────────────────
+// REPORTE POR TECNICO — detalle individual, para 1:1
+// ──────────────────────────────────────────────
+function generatePDFTecnico() {
+  if (!pdfCheckLoaded()) return;
+  var rows = REP.data;
+  if (!rows.length) { alert('No hay servicios en el periodo para generar reporte.'); return; }
+  var doc = new window.jspdf.jsPDF({unit:'mm', format:'a4'});
+
+  // Agrupar por tecnico
+  var byTech = {};
+  rows.forEach(function(r) {
+    if (!byTech[r.technician]) byTech[r.technician] = [];
+    byTech[r.technician].push(r);
+  });
+  var techs = Object.keys(byTech).sort();
+
+  pdfDrawHeader(doc, 'Reporte por Tecnico');
+  var now = new Date();
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8);
+  doc.setTextColor.apply(doc, PDF_COLORS.grayMid);
+  doc.text('Generado: ' + now.toLocaleDateString('es-CL') + ' ' + now.toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'}) + ' · por ' + CU.name, 14, 24);
+  doc.text('Periodo: ' + repRangeLabel() + ' · ' + techs.length + ' tecnico(s)', 14, 29);
+
+  var y = 36;
+
+  techs.forEach(function(techName, idx) {
+    var tRows = byTech[techName];
+    var tKpis = computeKPIs(tRows);
+
+    // Si no cabe el bloque minimo, nueva pagina
+    if (y > 230) { doc.addPage(); pdfDrawHeader(doc, 'Reporte por Tecnico'); y = 28; }
+
+    y = pdfSectionTitle(doc, idx + 1, techName, y);
+
+    // Mini KPIs del tecnico en 3 cajas
+    var w = doc.internal.pageSize.getWidth();
+    var boxW = (w - 28 - 4) / 3;
+    var boxH = 18;
+    pdfKPIBox(doc, 14, y, boxW, boxH, 'Servicios', String(tKpis.total), PDF_COLORS.black);
+    pdfKPIBox(doc, 14 + boxW + 2, y, boxW, boxH, 'En objetivo', tKpis.pctOnTime + '%', tKpis.pctOnTime >= 70 ? PDF_COLORS.green : PDF_COLORS.red);
+    pdfKPIBox(doc, 14 + (boxW+2)*2, y, boxW, boxH, 'Productivo', fmtHM(tKpis.productiveSec), [48, 80, 176]);
+    y += boxH + 5;
+
+    // Tabla
+    doc.autoTable({
+      startY: y,
+      head: [['Fecha','Servicio','Patente','Duracion','Objetivo','Pausas']],
+      body: tRows.map(function(r) {
+        var fecha = new Date(r.ended_at).toLocaleDateString('es-CL',{day:'2-digit',month:'2-digit',year:'2-digit'});
+        var pauseTxt = (r.pauses && r.pauses.length) ? r.pauses.map(function(p){return p.reason;}).join(', ') : '-';
+        var over = r.goal_minutes && r.seconds > r.goal_minutes * 60;
+        return [fecha, r.service, r.plate || '-', r.duration, r.goal_minutes ? r.goal_minutes+'m' : '-', pauseTxt];
+      }),
+      theme: 'plain',
+      styles: {fontSize: 7.5, cellPadding: 1.8, lineColor: PDF_COLORS.grayBorder, lineWidth: 0.1},
+      headStyles: {fillColor: PDF_COLORS.black, textColor: PDF_COLORS.white, fontStyle: 'bold', fontSize: 7.5},
+      alternateRowStyles: {fillColor: PDF_COLORS.grayBg},
+      columnStyles: {
+        3: {halign: 'right', font: 'courier'},
+        4: {halign: 'center'}
+      },
+      didParseCell: function(data) {
+        if (data.section === 'body' && data.column.index === 3) {
+          var row = tRows[data.row.index];
+          if (row && row.goal_minutes && row.seconds > row.goal_minutes * 60) {
+            data.cell.styles.textColor = PDF_COLORS.red;
+            data.cell.styles.fontStyle = 'bold';
+          }
+        }
+      }
+    });
+    y = doc.lastAutoTable.finalY + 10;
+  });
+
+  // Footer
+  var pages = doc.internal.getNumberOfPages();
+  for (var i = 1; i <= pages; i++) { doc.setPage(i); pdfDrawFooter(doc, i, pages); }
+
+  var fileName = 'reporte_tecnicos_rosso_' + new Date().toISOString().slice(0,10) + '.pdf';
+  doc.save(fileName);
+}
+
+// ──────────────────────────────────────────────
+// REPORTE DE GESTION — tendencias y decisiones
+// ──────────────────────────────────────────────
+function generatePDFGestion() {
+  if (!pdfCheckLoaded()) return;
+  var rows = REP.data;
+  if (!rows.length) { alert('No hay servicios en el periodo para generar reporte.'); return; }
+  var doc = new window.jspdf.jsPDF({unit:'mm', format:'a4'});
+  var kpis = computeKPIs(rows);
+  var y = pdfRenderHeaderBlock(doc, 'Reporte de Gestion', repRangeLabel(), kpis);
+
+  // Distribucion de carga por tecnico
+  y = pdfSectionTitle(doc, 1, 'Distribucion de carga por tecnico', y);
+  var byTech = {};
+  rows.forEach(function(r) {
+    if (!byTech[r.technician]) byTech[r.technician] = {count: 0, seconds: 0, onTime: 0, withGoal: 0};
+    byTech[r.technician].count += 1;
+    byTech[r.technician].seconds += (r.seconds || 0);
+    if (r.goal_minutes) {
+      byTech[r.technician].withGoal += 1;
+      if (r.seconds <= r.goal_minutes * 60) byTech[r.technician].onTime += 1;
+    }
+  });
+  var techRows = Object.keys(byTech).map(function(n) {
+    var t = byTech[n];
+    var pct = t.withGoal > 0 ? Math.round(t.onTime / t.withGoal * 100) : 0;
+    return [n, t.count, fmtHM(t.seconds), t.withGoal ? pct + '%' : '-'];
+  }).sort(function(a,b) { return b[1] - a[1]; });
+
+  doc.autoTable({
+    startY: y,
+    head: [['Tecnico','Servicios','Tiempo productivo','% en objetivo']],
+    body: techRows,
+    theme: 'plain',
+    styles: {fontSize: 9, cellPadding: 2.5, lineColor: PDF_COLORS.grayBorder, lineWidth: 0.1},
+    headStyles: {fillColor: PDF_COLORS.black, textColor: PDF_COLORS.white, fontStyle: 'bold'},
+    alternateRowStyles: {fillColor: PDF_COLORS.grayBg},
+    columnStyles: {
+      1: {halign: 'center'},
+      2: {halign: 'right', font: 'courier'},
+      3: {halign: 'center', fontStyle: 'bold'}
+    }
+  });
+  y = doc.lastAutoTable.finalY + 10;
+
+  // Tipos de servicio mas frecuentes
+  if (y > 230) { doc.addPage(); y = 28; pdfDrawHeader(doc, 'Reporte de Gestion'); }
+  y = pdfSectionTitle(doc, 2, 'Tipos de servicio mas frecuentes', y);
+  var bySrv = {};
+  rows.forEach(function(r) {
+    if (!bySrv[r.service]) bySrv[r.service] = {count: 0, seconds: 0, onTime: 0, withGoal: 0};
+    bySrv[r.service].count += 1;
+    bySrv[r.service].seconds += (r.seconds || 0);
+    if (r.goal_minutes) {
+      bySrv[r.service].withGoal += 1;
+      if (r.seconds <= r.goal_minutes * 60) bySrv[r.service].onTime += 1;
+    }
+  });
+  var srvRows = Object.keys(bySrv).map(function(n) {
+    var t = bySrv[n];
+    var avg = t.count > 0 ? Math.round(t.seconds / t.count / 60) : 0;
+    var pct = t.withGoal > 0 ? Math.round(t.onTime / t.withGoal * 100) : 0;
+    return [n, t.count, avg + 'm', t.withGoal ? pct + '%' : '-'];
+  }).sort(function(a,b) { return b[1] - a[1]; });
+
+  doc.autoTable({
+    startY: y,
+    head: [['Servicio','Cantidad','Tiempo promedio','% en objetivo']],
+    body: srvRows,
+    theme: 'plain',
+    styles: {fontSize: 9, cellPadding: 2.5, lineColor: PDF_COLORS.grayBorder, lineWidth: 0.1},
+    headStyles: {fillColor: PDF_COLORS.black, textColor: PDF_COLORS.white, fontStyle: 'bold'},
+    alternateRowStyles: {fillColor: PDF_COLORS.grayBg},
+    columnStyles: {1: {halign: 'center'}, 2: {halign: 'right'}, 3: {halign: 'center'}}
+  });
+  y = doc.lastAutoTable.finalY + 10;
+
+  // Motivos de pausa
+  var reasons = Object.keys(kpis.pauseReasons);
+  if (reasons.length) {
+    if (y > 230) { doc.addPage(); y = 28; pdfDrawHeader(doc, 'Reporte de Gestion'); }
+    y = pdfSectionTitle(doc, 3, 'Motivos de pausa (ordenados por tiempo)', y);
+    var reasonRows = reasons
+      .map(function(k) { return [k, kpis.pauseReasons[k].count, fmtHM(kpis.pauseReasons[k].seconds)]; })
+      .sort(function(a,b) {
+        var as = kpis.pauseReasons[a[0]].seconds;
+        var bs = kpis.pauseReasons[b[0]].seconds;
+        return bs - as;
+      });
+    doc.autoTable({
+      startY: y,
+      head: [['Motivo','Ocurrencias','Tiempo acumulado']],
+      body: reasonRows,
+      theme: 'plain',
+      styles: {fontSize: 9, cellPadding: 2.5, lineColor: PDF_COLORS.grayBorder, lineWidth: 0.1},
+      headStyles: {fillColor: PDF_COLORS.gold, textColor: PDF_COLORS.white, fontStyle: 'bold'},
+      alternateRowStyles: {fillColor: PDF_COLORS.grayBg},
+      columnStyles: {1: {halign: 'center'}, 2: {halign: 'right', font: 'courier'}}
+    });
+    y = doc.lastAutoTable.finalY + 10;
+  }
+
+  // Observaciones interpretativas
+  if (y > 260) { doc.addPage(); y = 28; pdfDrawHeader(doc, 'Reporte de Gestion'); }
+  y = pdfSectionTitle(doc, reasons.length ? 4 : 3, 'Observaciones', y);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(9);
+  doc.setTextColor.apply(doc, PDF_COLORS.grayDark);
+  var obs = [];
+  if (kpis.pctOnTime < 60 && kpis.withGoal >= 3) obs.push('Menos del 60% de los servicios con objetivo se completaron en tiempo. Revisar calibracion de objetivos o identificar bloqueos frecuentes.');
+  else if (kpis.pctOnTime >= 85) obs.push('Mas del 85% de los servicios en objetivo. Operacion saludable en este periodo.');
+  if (kpis.pauseSec > kpis.productiveSec * 0.3) obs.push('El tiempo en pausa supera el 30% del tiempo productivo. Revisar motivos principales de pausa para detectar cuellos de botella.');
+  if (techRows.length >= 2) {
+    var maxT = techRows[0][1];
+    var minT = techRows[techRows.length-1][1];
+    if (maxT >= minT * 2 && minT > 0) obs.push('Desbalance de carga: el tecnico con mas servicios realizo al menos el doble que el de menos carga. Considerar redistribucion.');
+  }
+  if (reasons.length) {
+    var topReason = Object.keys(kpis.pauseReasons).sort(function(a,b) { return kpis.pauseReasons[b].seconds - kpis.pauseReasons[a].seconds; })[0];
+    var topSec = kpis.pauseReasons[topReason].seconds;
+    if (topSec > 3600) obs.push('Motivo dominante de pausa: "' + topReason + '" con ' + fmtHM(topSec) + ' acumulados. Evaluar accion correctiva en ese frente.');
+  }
+  if (!obs.length) obs.push('Sin observaciones criticas en este periodo. Mantener el seguimiento habitual.');
+  obs.forEach(function(o) {
+    var lines = doc.splitTextToSize('• ' + o, 180);
+    lines.forEach(function(ln) { doc.text(ln, 14, y); y += 5; });
+    y += 1;
+  });
+
+  // Footer
+  var pages = doc.internal.getNumberOfPages();
+  for (var i = 1; i <= pages; i++) { doc.setPage(i); pdfDrawFooter(doc, i, pages); }
+
+  var fileName = 'reporte_gestion_rosso_' + new Date().toISOString().slice(0,10) + '.pdf';
+  doc.save(fileName);
+}
+
+// ──────────────────────────────────────────────
+// EXPORT CSV — datos crudos filtrados
+// ──────────────────────────────────────────────
+function exportCSVFromRep() {
+  var rows = REP.data;
+  if (!rows.length) { alert('No hay servicios en el periodo para exportar.'); return; }
+  var headers = ['Fecha','Tecnico','Usuario','Servicio','Patente','Duracion','Segundos','Objetivo_min','En_objetivo','Pausas','Motivos_pausa','Aceite_litros','Tipo_aceite','Prueba_ruta_tipo','Prueba_ruta_resultado','Doble_control','Visado','Anomalias','Observaciones'];
+  var lines = [headers.join(',')];
+  rows.forEach(function(r) {
+    var c = r.checklist || {};
+    var pr = c.prueba_ruta || {};
+    var over = r.goal_minutes && r.seconds > r.goal_minutes * 60;
+    var pauseCount = r.pauses ? r.pauses.length : 0;
+    var pauseReasons = r.pauses && r.pauses.length ? r.pauses.map(function(p){return p.reason;}).join('; ') : '';
+    var line = [
+      new Date(r.ended_at).toISOString(),
+      csvEsc(r.technician), csvEsc(r.username), csvEsc(r.service), csvEsc(r.plate||''),
+      r.duration, r.seconds, r.goal_minutes||'', (r.goal_minutes ? (over?'No':'Si') : ''),
+      pauseCount, csvEsc(pauseReasons),
+      csvEsc(c.litros||''), csvEsc(c.aceite||''),
+      csvEsc(pr.tipo||''), csvEsc(pr.resultado||''),
+      csvEsc(c.doble_control||''), csvEsc(c.visado||''),
+      csvEsc(c.anomalias||''), csvEsc(c.observaciones||'')
+    ].join(',');
+    lines.push(line);
+  });
+  var csv = '\uFEFF' + lines.join('\n'); // BOM para Excel con acentos
+  var blob = new Blob([csv], {type: 'text/csv;charset=utf-8'});
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = 'rosso_export_' + new Date().toISOString().slice(0,10) + '.csv';
+  a.click();
+  setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+}
+
+function csvEsc(v) {
+  if (v === null || v === undefined) return '';
+  var s = String(v);
+  if (s.indexOf(',') !== -1 || s.indexOf('"') !== -1 || s.indexOf('\n') !== -1) {
+    return '"' + s.replace(/"/g,'""') + '"';
+  }
+  return s;
 }
 
 // ═══════════════════════════════════════════════
