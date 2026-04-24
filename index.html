@@ -925,35 +925,30 @@ function startPolling() {
   pollAll();
   pollInt = setInterval(pollAll, 3000);
   tickInt = setInterval(function() {
-    // NO tocamos liveData[i].seconds aqui. El valor de .seconds siempre refleja
-    // el snapshot de la ultima lectura de BD (o calculo en fetchLive).
-    // El render es quien decide que valor mostrar usando liveSecondsNow(s).
-    //
-    // Esto evita el bug de mutacion acumulativa: si mutabamos .seconds cada segundo,
-    // el tiempo se duplicaba y se disparaba sin control.
-    if (T.running) {
-      T.sec++;
-      dbSyncCtr++;
-      var disp = document.getElementById('timer-disp');
-      if (disp) disp.textContent = fmtT(T.sec);
-      if (T.srvGoal) {
-        var pct = Math.min(100, Math.round(T.sec / (T.srvGoal * 60) * 100));
-        updateProg(pct, T.sec > T.srvGoal * 60);
-        if (T.sec > T.srvGoal * 60 && !T.overAlerted) {
-          T.overAlerted = true;
-          pushNotif('over', CU.name + ' supero el tiempo objetivo', T.srvLabel + ' - ' + T.plate + ' - llevaba ' + T.srvGoal + ' min');
-          showToast('over', 'Tiempo superado', T.srvLabel);
-        }
-      }
-      if (dbSyncCtr >= 5) {
-        dbSyncCtr = 0;
-        if (T.sessionKey) {
-          sb.from('active_sessions').update({seconds: T.sec, updated_at: new Date().toISOString()}).eq('session_key', T.sessionKey)
-            .then(function(r) { if (r.error) logR('TICK_SYNC_ERR', {err: r.error.message}, 'warn'); });
+    // Este interval corre cada 1 segundo y hace UNA sola cosa: repintar la UI.
+    // Todos los numeros de tiempo se calculan derivados de timestamps con
+    // liveSecondsNow(). No hay mutacion de contadores, no hay sync a BD.
+    // La BD solo se actualiza en EVENTOS (start/pause/resume/finish).
+
+    // Timer grande del panel del tecnico activo (T.sec derivado del mismo criterio)
+    if (T.running && T.sessionKey) {
+      // Buscar mi sesion en liveData (ya viene con started_at, paused_at, etc.)
+      var mine = liveData.find(function(x) { return x.session_key === T.sessionKey; });
+      if (mine) {
+        T.sec = liveSecondsNow(mine);
+        var disp = document.getElementById('timer-disp');
+        if (disp) disp.textContent = fmtT(T.sec);
+        if (T.srvGoal) {
+          var pct = Math.min(100, Math.round(T.sec / (T.srvGoal * 60) * 100));
+          updateProg(pct, T.sec > T.srvGoal * 60);
+          if (T.sec > T.srvGoal * 60 && !T.overAlerted) {
+            T.overAlerted = true;
+            pushNotif('over', CU.name + ' supero el tiempo objetivo', T.srvLabel + ' - ' + T.plate + ' - llevaba ' + T.srvGoal + ' min');
+            showToast('over', 'Tiempo superado', T.srvLabel);
+          }
         }
       }
     }
-    // Refrescar UI cada segundo. Los calculos de tiempo se hacen en el render.
     refreshLiveUI();
   }, 1000);
 }
@@ -968,36 +963,62 @@ async function pollAll() {
   await Promise.all([fetchLive(), fetchNotifs()]);
 }
 
-// Calcula los segundos "en vivo" de una sesion basandose en BD + tiempo transcurrido.
-// Se llama al momento de RENDERIZAR, no para mutar datos. Usando esta funcion en el
-// render nos aseguramos que todas las pantallas muestren el MISMO valor calculado
-// (no un contador acumulado local que diverge entre pantallas).
+// ═══════════════════════════════════════════════════════════════════
+// CALCULO DE TIEMPO DETERMINISTICO
+// ═══════════════════════════════════════════════════════════════════
+// El tiempo NUNCA se acumula en un contador. Siempre se deriva de
+// timestamps UTC. Cualquier pantalla, cualquier momento, misma formula
+// = mismo resultado. Sobrevive cierre de navegador, refresh, multiples
+// observadores, etc.
 //
-// Logica:
-//   - Si esta corriendo: seconds_BD + (ahora - updated_at).
-//   - Si esta pausado o en otro estado: el valor de BD es el correcto (congelado).
+// Formula:
+//   tiempo_activo = (ahora - started_at) - tiempo_total_pausado
+//
+// donde tiempo_total_pausado:
+//   = accumulated_paused_ms (de pausas ya cerradas)
+//   + (si esta pausado ahora): (ahora - paused_at)
+//
+// Retorna SEGUNDOS enteros.
 function liveSecondsNow(s) {
   if (!s) return 0;
-  var base = s.seconds || 0;
-  if (s.status !== 'running' || !s.updated_at) return base;
+  // Estados congelados: usa el snapshot guardado
+  if (s.status === 'completed' || s.status === 'checklist_pending') {
+    return s.seconds || 0;
+  }
+  // Si no hay started_at (sesion legacy), caer a valor guardado
+  if (!s.started_at) return s.seconds || 0;
+
+  var started = new Date(s.started_at).getTime();
+  if (isNaN(started)) return s.seconds || 0;
+
   var now = Date.now();
-  var up = new Date(s.updated_at).getTime();
-  if (isNaN(up)) return base;
-  var elapsed = Math.max(0, Math.floor((now - up) / 1000));
-  return base + elapsed;
+  var elapsedMs = now - started;
+
+  // Restar pausas ya cerradas
+  elapsedMs -= (s.accumulated_paused_ms || 0);
+
+  // Si esta pausado ahora, restar tambien el tiempo desde que empezo la pausa actual
+  if (s.status === 'paused' && s.paused_at) {
+    var pausedAt = new Date(s.paused_at).getTime();
+    if (!isNaN(pausedAt)) {
+      elapsedMs -= (now - pausedAt);
+    }
+  }
+
+  return Math.max(0, Math.floor(elapsedMs / 1000));
 }
 
 async function fetchLive() {
   const {data, error} = await sb.from('active_sessions').select('*').order('started_at');
   logR('FETCH_LIVE', {count: data ? data.length : 0, error: error ? error.message : null});
   if (error) { logR('FETCH_LIVE_ERR', {msg: error.message}, 'err'); return; }
-  // Guardamos los datos TAL CUAL vienen de BD. No mutamos .seconds.
-  // Para la sesion del usuario actual, conservamos su T.pauses y status local si es mas reciente.
+  // liveData guarda el snapshot tal cual de BD. El tiempo se calcula en el render
+  // usando liveSecondsNow(). No mutamos .seconds aqui.
   liveData = (data || []).map(function(s) {
     var local = Object.assign({}, s);
+    // Para MI sesion, si tengo state local T mas reciente, preservarlo.
+    // Principalmente para mantener T.pauses sincronizado antes de que llegue el refresh de BD.
     if (T.sessionKey && s.session_key === T.sessionKey) {
-      // Mi sesion: T.sec es el valor local mas reciente
-      local.seconds = Math.max(s.seconds, T.sec);
       local.status = T.running ? 'running' : (T.pauses.length ? 'paused' : s.status);
       local.pauses = T.pauses.length ? T.pauses : s.pauses;
     }
@@ -1227,7 +1248,9 @@ async function doStartSession() {
     over_alerted: false,
     pauses: [],
     started_at: new Date().toISOString(),
-    updated_at: new Date().toISOString()
+    updated_at: new Date().toISOString(),
+    paused_at: null,
+    accumulated_paused_ms: 0
   };
   
   logR('INSERT_SESSION_PAYLOAD', payload);
@@ -1343,20 +1366,30 @@ async function confirmPause(reason) {
     }
   }
   T.running = false;
-  var entry = {reason: reason, at: fmtT(T.sec)};
+  var pausedAtISO = new Date().toISOString();
+  // Entrada enriquecida: guardamos timestamps reales para calculo exacto
+  var entry = {
+    reason: reason,
+    at: fmtT(T.sec),              // formato legible para manuales/reportes
+    paused_at: pausedAtISO,        // UTC timestamp exacto
+    resumed_at: null,              // se llenara al reanudar
+    duration_ms: null              // se llenara al reanudar
+  };
   T.pauses.push(entry);
-  
+
   logR('PAUSE_ATTEMPT', {key: T.sessionKey, reason, sec: T.sec, pauses: T.pauses});
-  
+
   var {error} = await sb.from('active_sessions').update({
     running: false, status: 'paused',
-    pauses: T.pauses, seconds: T.sec,
+    pauses: T.pauses,
+    seconds: T.sec,                // snapshot solo como referencia; calculo real viene de timestamps
+    paused_at: pausedAtISO,        // NUEVO: timestamp de inicio de pausa actual
     updated_at: new Date().toISOString()
   }).eq('session_key', T.sessionKey);
-  
+
   logR('PAUSE_RESULT', {error: error ? error.message : null});
   if (error) { alert('Error al pausar: ' + error.message); return; }
-  
+
   await pushNotif('pau', CU.name + ' pauso el servicio', T.srvLabel + ' - Motivo: ' + reason);
   await fetchLive();
   techTab('t-misservicios');
@@ -1375,10 +1408,31 @@ async function doResume() {
     T.plate = mine.plate || '';
     logR('RESUME_RECOVERED_STATE', {key: T.sessionKey, sec: T.sec});
   }
+  // Calcular duracion de la pausa actual y cerrarla
+  var sess = liveData.find(function(s) { return s.session_key === T.sessionKey; }) || {};
+  var extraPausedMs = 0;
+  if (sess.paused_at) {
+    extraPausedMs = Date.now() - new Date(sess.paused_at).getTime();
+    if (extraPausedMs < 0) extraPausedMs = 0;
+    // Cerrar ultima pausa en T.pauses con duracion real
+    if (T.pauses.length > 0) {
+      var last = T.pauses[T.pauses.length - 1];
+      if (!last.resumed_at) {
+        last.resumed_at = new Date().toISOString();
+        last.duration_ms = extraPausedMs;
+      }
+    }
+  }
+  var newAccum = (sess.accumulated_paused_ms || 0) + extraPausedMs;
   T.running = true;
-  logR('RESUME_ATTEMPT', {key: T.sessionKey});
+  logR('RESUME_ATTEMPT', {key: T.sessionKey, extraPausedMs: extraPausedMs, newAccum: newAccum});
   var {error} = await sb.from('active_sessions').update({
-    running: true, status: 'running', updated_at: new Date().toISOString()
+    running: true,
+    status: 'running',
+    paused_at: null,                         // limpia pausa actual
+    accumulated_paused_ms: newAccum,         // acumula lo que duro
+    pauses: T.pauses,                        // guarda pausas con resumed_at/duration_ms
+    updated_at: new Date().toISOString()
   }).eq('session_key', T.sessionKey);
   logR('RESUME_RESULT', {error: error ? error.message : null});
   if (error) { alert('Error al reanudar: ' + error.message); return; }
@@ -1398,14 +1452,33 @@ async function resumeSession(sessionKey) {
   T.sessionKey = sessionKey;
   T.srvLabel = sess.service;
   T.srvGoal = sess.goal_minutes;
-  T.sec = sess.seconds;
+  T.sec = liveSecondsNow(sess);  // tiempo real al momento de reanudar
   T.pauses = sess.pauses || [];
   T.plate = sess.plate || '';
   T.comments = sess.comments || [];
   T.running = true;
-  logR('RESUME_SESSION', {key: sessionKey, sec: T.sec});
+  // Calcular duracion de la pausa actual y cerrarla
+  var extraPausedMs = 0;
+  if (sess.paused_at) {
+    extraPausedMs = Date.now() - new Date(sess.paused_at).getTime();
+    if (extraPausedMs < 0) extraPausedMs = 0;
+    if (T.pauses.length > 0) {
+      var last = T.pauses[T.pauses.length - 1];
+      if (!last.resumed_at) {
+        last.resumed_at = new Date().toISOString();
+        last.duration_ms = extraPausedMs;
+      }
+    }
+  }
+  var newAccum = (sess.accumulated_paused_ms || 0) + extraPausedMs;
+  logR('RESUME_SESSION', {key: sessionKey, extraPausedMs: extraPausedMs, newAccum: newAccum});
   var {error} = await sb.from('active_sessions').update({
-    running: true, status: 'running', updated_at: new Date().toISOString()
+    running: true,
+    status: 'running',
+    paused_at: null,
+    accumulated_paused_ms: newAccum,
+    pauses: T.pauses,
+    updated_at: new Date().toISOString()
   }).eq('session_key', sessionKey);
   if (error) { alert('Error al reanudar: ' + error.message); return; }
   await pushNotif('resume', CU.name + ' reanudo servicio', sess.service + ' - ' + (sess.plate||''));
@@ -2039,7 +2112,33 @@ function buildSessCard(s, isTech) {
 
 async function resolveContingency(sessionKey, techUsername, techName) {
   logR('RESOLVE_CONTINGENCY', {sessionKey, techUsername});
-  var {error} = await sb.from('active_sessions').update({running:true, status:'running', updated_at:new Date().toISOString()}).eq('session_key', sessionKey);
+  // Reanudacion iniciada por jefatura: misma logica de cierre de pausa que resumeSession
+  var sess = liveData.find(function(s) { return s.session_key === sessionKey; });
+  var updates = {
+    running: true,
+    status: 'running',
+    paused_at: null,
+    updated_at: new Date().toISOString()
+  };
+  if (sess && sess.paused_at) {
+    var extraPausedMs = Date.now() - new Date(sess.paused_at).getTime();
+    if (extraPausedMs < 0) extraPausedMs = 0;
+    updates.accumulated_paused_ms = (sess.accumulated_paused_ms || 0) + extraPausedMs;
+    // Tambien cerrar la ultima pausa con resumed_at + duration_ms
+    if (sess.pauses && sess.pauses.length > 0) {
+      var pauses = sess.pauses.slice();
+      var last = pauses[pauses.length - 1];
+      if (!last.resumed_at) {
+        last = Object.assign({}, last, {
+          resumed_at: new Date().toISOString(),
+          duration_ms: extraPausedMs
+        });
+        pauses[pauses.length - 1] = last;
+        updates.pauses = pauses;
+      }
+    }
+  }
+  var {error} = await sb.from('active_sessions').update(updates).eq('session_key', sessionKey);
   if (error) { alert('Error: ' + error.message); return; }
   var {data:tu} = await sb.from('users').select('id').eq('username', techUsername).maybeSingle();
   var tid = tu ? tu.id : null;
