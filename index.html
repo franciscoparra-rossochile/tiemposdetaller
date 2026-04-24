@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" crossorigin="anonymous"></script>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
 <meta name="apple-mobile-web-app-capable" content="yes"/>
@@ -103,11 +104,11 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 .radio-btn{background:var(--bg3);border:1.5px solid var(--border2);border-radius:4px;padding:7px 12px;font-size:12px;font-weight:600;cursor:pointer;font-family:var(--body);touch-action:manipulation;user-select:none}
 .radio-btn.on{background:var(--red4);border-color:var(--red);color:var(--red)}
 /* DEBUG PANEL */
-.dbg-panel{position:fixed;bottom:0;left:0;right:0;background:#000;border-top:2px solid #ff4444;z-index:400;max-height:180px;overflow-y:auto;font-family:var(--mono);font-size:10px;padding:6px 10px;display:none}
-.dbg-panel.show{display:block}
-.dbg-line{padding:2px 0;border-bottom:1px solid #222;color:#0f0}
-.dbg-line.err{color:#f44}.dbg-line.warn{color:#fa0}.dbg-line.info{color:#4af}
-.dbg-toggle{position:fixed;bottom:8px;right:8px;background:#cc1a1a;color:#fff;border:none;border-radius:50%;width:36px;height:36px;font-size:12px;cursor:pointer;z-index:401;font-weight:700}
+
+
+
+
+
 </style>
 </head>
 <body>
@@ -440,7 +441,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 const DEBUG = true;
 const SURL = 'https://jczmupcmeixpwjedfgtk.supabase.co';
 const SKEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impjem11cGNtZWl4cHdqZWRmZ3RrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY5NzMxOTMsImV4cCI6MjA5MjU0OTE5M30.DuICC_pCQGv27lZivieXRRvGz9A1GNkgmhvTvyKo25o';
-const sb = supabase.createClient(SURL, SKEY);
+var sb = null; // initialized in init()
 
 window.onerror = function(msg, url, line, col, err) {
   logR('GLOBAL_ERROR', {msg, line, col, err: err ? err.toString() : ''}, 'err');
@@ -451,15 +452,7 @@ window.onunhandledrejection = function(e) {
 };
 
 let dbgLines = [];
-function logR(l,d,lv){if(lv==='err'||lv==='e')console.error('[R]',l,d||'');}
-
-function refreshDebugPanel() {
-  const p = document.getElementById('dbg-panel');
-  if (!p) return;
-  p.innerHTML = dbgLines.map(function(l) {
-    return '<div class="dbg-line ' + l.level + '">' + l.msg + '</div>';
-  }).join('');
-}
+function logR(l,d,lv){if(lv==='err'||lv==='e')console.error('[Rosso]',l,d||'');}
 
 function toggleDebug() {
   const p = document.getElementById('dbg-panel');
@@ -526,33 +519,22 @@ let calYear = new Date().getFullYear(), calMonth = new Date().getMonth();
 // INIT & CONNECTION TEST
 // ═══════════════════════════════════════════════
 async function init() {
-  setMsg('Cargando...');
-  var connOk = false;
-
-  // Dynamically load Supabase - never block page render
-  var sbLoaded = await new Promise(function(resolve) {
-    if (typeof supabase !== 'undefined' && supabase) { resolve(true); return; }
-    var s = document.createElement('script');
-    s.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2';
-    s.crossOrigin = 'anonymous';
-    var t = setTimeout(function() { resolve(false); }, 10000);
-    s.onload = function() { clearTimeout(t); resolve(true); };
-    s.onerror = function() { clearTimeout(t); resolve(false); };
-    document.head.appendChild(s);
-  });
-
-  if (sbLoaded && typeof supabase !== 'undefined') {
-    try {
-      sb = supabase.createClient(SURL, SKEY);
-      // Test connection - 6s timeout
-      var r = await Promise.race([
-        sb.from('users').select('count').limit(1),
-        new Promise(function(_, rej) { setTimeout(function() { rej(new Error('timeout')); }, 6000); })
-      ]);
-      connOk = !r.error;
-    } catch(e) { connOk = false; }
+  setMsg('Conectando...');
+  var waited = 0;
+  while (typeof supabase === 'undefined' && waited < 5000) {
+    await new Promise(function(r) { setTimeout(r, 100); });
+    waited += 100;
   }
-
+  if (typeof supabase === 'undefined') { setMsg('Error: Supabase no cargo.'); showLogin(false); return; }
+  try { sb = supabase.createClient(SURL, SKEY); } catch(e) { setMsg('Error: ' + e.message); showLogin(false); return; }
+  var connOk = false;
+  try {
+    var r = await Promise.race([
+      sb.from('users').select('count').limit(1),
+      new Promise(function(_, rej) { setTimeout(function() { rej(new Error('timeout')); }, 5000); })
+    ]);
+    connOk = !(r && r.error);
+  } catch(e) { connOk = false; }
   showLogin(connOk);
 }
 
@@ -566,7 +548,7 @@ function showLogin(ok) {
   if (ls) ls.style.display = 'none';
   if (app) app.style.display = 'block';
   var cs = document.getElementById('conn-status');
-  if (cs) cs.textContent = ok ? 'Conectado' : 'Sin conexion - verifica internet';
+  if (cs) cs.textContent = ok ? 'Conectado' : 'Sin conexion - toca Reintentar';
   var rb = document.getElementById('retry-btn');
   if (rb) rb.style.display = ok ? 'none' : 'block';
 }
