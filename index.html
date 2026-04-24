@@ -546,9 +546,9 @@ const SRVS = [
   {name:'Mantenimiento de caja automatica o manual',goal:null},
   {name:'Reparaciones generales',goal:null,needsDesc:true},
   {name:'Lavado de vehiculos',goal:null,noChecklist:true},
-  {name:'Estandar de taller',goal:null,noChecklist:true},
-  {name:'Compras',goal:null,noChecklist:true},
-  {name:'Movimiento de vehiculos',goal:null,noChecklist:true},
+  {name:'Estandar de taller',goal:null,noChecklist:true,noPlate:true},
+  {name:'Compras',goal:null,noChecklist:true,noPlate:true},
+  {name:'Movimiento de vehiculos',goal:null,noChecklist:true,noPlate:true},
   {name:'Garantia',goal:null},
   {name:'Recuperacion de DPF',goal:null,subs:['Pack esencial','Pack avanzado','Pack premium','Pack integral (DPF + Limpieza admision)']},
   {name:'Servicio de frenos',goal:null,subs:['Evaluacion','Pastillas delanteras + rectificado','Pastillas delanteras + cambio de discos','Pastillas/balatas traseras + rectificado','Pastillas/balatas traseras + cambio tambor/disco','Cambio liquido de frenos','Ajuste de frenos']},
@@ -1309,12 +1309,22 @@ function renderTechNuevo(body) {
     return;
   }
 
-  // Plate input
-  var pc = mk('div','card-accent');
+  // Plate input - se oculta automaticamente cuando el servicio es "logistica de taller"
+  // (sin checklist). En ese caso, la patente se pone "Logistica de taller" automaticamente.
+  var pc = mk('div','card-accent'); pc.id = 'plate-card';
   pc.innerHTML = '<div class="lbl">Patente del vehiculo</div>'
     + '<input class="inp-plate" id="plate-inp" maxlength="8" placeholder="ABCD12" oninput="selPlate=this.value.toUpperCase().replace(/[^A-Z0-9]/g,\'\');this.value=selPlate;chkBtn()"/>'
     + '<div style="font-size:10px;color:var(--wh4);margin-top:4px">Obligatorio - min 4 caracteres - mayusculas auto</div>';
   body.appendChild(pc);
+
+  // Aviso alternativo que se muestra cuando el servicio NO requiere patente.
+  // Empieza oculto; updateSubWrap lo muestra/oculta segun el servicio elegido.
+  var pcAuto = mk('div','card-accent'); pcAuto.id = 'plate-auto';
+  pcAuto.style.cssText = 'display:none;border-left:4px solid var(--blue)';
+  pcAuto.innerHTML = '<div class="lbl">Patente</div>'
+    + '<div style="font-size:14px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:var(--blue);letter-spacing:.03em">Logistica de taller</div>'
+    + '<div style="font-size:10px;color:var(--wh4);margin-top:4px">Este servicio no requiere patente - se registra como trabajo operativo de taller</div>';
+  body.appendChild(pcAuto);
   
   // Service grid
   var sc = mk('div','card'); sc.innerHTML = '<div class="lbl">Servicio / Actividad</div><div class="g2" id="srv-grid"></div>';
@@ -1357,6 +1367,27 @@ function updateSubWrap(srv) {
   var sw = document.getElementById('sub-wrap');
   var dw = document.getElementById('desc-wrap');
   if (!sw || !dw) return;
+
+  // Alternar entre campo de patente manual vs aviso "Logistica de taller".
+  // Los servicios con noPlate=true son actividades operativas del taller sin vehiculo
+  // especifico (Compras, Movimiento de vehiculos, Estandar de taller).
+  // NOTA: Lavado de vehiculos SI requiere patente porque se lava un auto especifico.
+  var pc = document.getElementById('plate-card');
+  var pcAuto = document.getElementById('plate-auto');
+  if (pc && pcAuto) {
+    if (srv && srv.noPlate === true) {
+      pc.style.display = 'none';
+      pcAuto.style.display = 'block';
+      selPlate = 'Logistica de taller';
+    } else {
+      pc.style.display = 'block';
+      pcAuto.style.display = 'none';
+      if (selPlate === 'Logistica de taller') selPlate = '';
+      var inp = document.getElementById('plate-inp');
+      if (inp) inp.value = selPlate;
+    }
+  }
+
   if (srv && srv.subs) {
     document.getElementById('sub-lbl').textContent = 'Tipo: ' + srv.name;
     var sg = document.getElementById('sub-grid'); sg.innerHTML = '';
@@ -1382,7 +1413,10 @@ function updateSubWrap(srv) {
 function chkBtn() {
   var btn = document.getElementById('ini-btn'); if (!btn) return;
   var srv = SRVS.find(function(s) { return s.name === selSrv; });
-  var ok = !!(selSrv && selPlate.length >= 4);
+  // Patente requerida excepto para servicios con noPlate (actividades operativas
+  // sin vehiculo asociado). Lavado SI requiere patente porque se lava un auto especifico.
+  var needsPlate = !(srv && srv.noPlate === true);
+  var ok = !!selSrv && (!needsPlate || selPlate.length >= 4);
   if (ok && srv && srv.subs) ok = !!selSub;
   if (ok && srv && srv.needsDesc) ok = selDesc.trim().length >= 3;
   btn.disabled = !ok;
@@ -1430,12 +1464,21 @@ function applyAssign(service, plate) {
 }
 
 async function doStartSession() {
-  if (!selPlate || selPlate.length < 4) { alert('Patente invalida (minimo 4 caracteres)'); return; }
+  var srv = SRVS.find(function(s) { return s.name === selSrv; });
+  if (!srv) { alert('Selecciona un servicio'); return; }
+
+  // Servicios con noPlate (actividades operativas) -> patente automatica.
+  // Resto de servicios (incluido Lavado) -> patente manual requerida.
+  if (srv.noPlate === true) {
+    selPlate = 'Logistica de taller';
+  } else {
+    if (!selPlate || selPlate.length < 4) { alert('Patente invalida (minimo 4 caracteres)'); return; }
+  }
+
   // Allow multiple paused - only block if one is RUNNING
   var running = liveData.find(function(s) { return s.username === CU.username && s.status === 'running'; });
   if (running) { alert('Ya tienes un servicio en curso: ' + running.service + '\nPausalo antes de iniciar otro.'); return; }
-  
-  var srv = SRVS.find(function(s) { return s.name === selSrv; });
+
   var label = selSub ? (selSrv + ' - ' + selSub) : (selDesc ? (selSrv + ' - ' + selDesc) : selSrv);
   var goal = (srv && srv.subGoals && selSub) ? srv.subGoals[selSub] : (srv ? srv.goal : null);
   var key = CU.username + '_' + Date.now();
