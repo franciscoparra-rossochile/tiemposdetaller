@@ -750,7 +750,7 @@ function initSupabase() {
 // init() no bloqueante: intenta conectar Supabase en background sin impedir render
 function init() {
   console.log('[INIT] INIT START');
-  console.log('🚀 ROSSO v2.1-HOTFIX CARGADO CORRECTAMENTE');
+  console.log('🚀 ROSSO v2.1.2-HOTFIX CARGADO CORRECTAMENTE');
   setMsg('Conectando...');
 
   // Intento inmediato si el SDK ya esta cargado
@@ -2518,36 +2518,114 @@ function buildSessCard(s, isTech) {
   if (s.goal_minutes) h += '<div style="font-size:9px;color:#aaa;text-transform:uppercase">OBJ:' + s.goal_minutes + 'm</div>';
   h += '</div></div>';
   if (pct !== null) h += '<div class="prog-bar" style="margin-top:8px"><div class="prog-fill" style="width:' + pct + '%;background:' + (over?'var(--red)':'var(--green)') + '"></div></div>';
-  if (!isTech && paused) {
-    var lp = (s.pauses && s.pauses.length) ? s.pauses[s.pauses.length - 1] : null;
-    var reasonClean = lp ? (lp.reason || 'Sin motivo').replace(/'/g, '\\\'').replace(/"/g, '') : 'Sin motivo';
-    var srvClean = (s.service || '').replace(/'/g, '\\\'').replace(/"/g, '');
-    var plateClean = (s.plate || '').replace(/'/g, '\\\'').replace(/"/g, '');
-    var techClean = (s.technician || '').replace(/'/g, '');
-    h += '<div style="margin-top:8px"><button class="btn btn-green" style="padding:8px;font-size:11px" onclick="openResolveContingencyModal(\'' + s.session_key + '\',\'' + s.username + '\',\'' + techClean + '\',\'' + srvClean + '\',\'' + plateClean + '\',\'' + reasonClean + '\')">Resolver contingencia</button></div>';
-  }
 
-  // ══ ADMIN PANEL: botones para francisco.parra y felipe.parra ══
-  // Acciones destructivas sobre servicios activos. Con confirmacion simple
-  // y auditoria completa en service_events (si ROSSO_UPGRADE esta activo).
-  if (!isTech && isSuperAdmin()) {
-    var srvAdmClean = (s.service || '').replace(/'/g, '\\\'').replace(/"/g, '');
-    var plateAdmClean = (s.plate || '').replace(/'/g, '\\\'').replace(/"/g, '');
-    var techAdmClean = (s.technician || '').replace(/'/g, '');
-    h += '<div style="margin-top:6px;padding-top:6px;border-top:1px dashed #ddd;display:flex;flex-wrap:wrap;gap:4px">';
-    h += '<div style="font-size:9px;color:#999;text-transform:uppercase;letter-spacing:.1em;width:100%;margin-bottom:2px">Admin</div>';
-    if (!paused) {
-      h += '<button class="btn btn-out" style="padding:5px 10px;font-size:10px;flex:1" onclick="adminForcePause(\'' + s.session_key + '\',\'' + techAdmClean + '\',\'' + srvAdmClean + '\')">⏸ Forzar pausa</button>';
-    }
-    h += '<button class="btn btn-out" style="padding:5px 10px;font-size:10px;flex:1" onclick="adminForceFinish(\'' + s.session_key + '\',\'' + techAdmClean + '\',\'' + srvAdmClean + '\',\'' + plateAdmClean + '\')">✓ Forzar fin</button>';
-    h += '<button class="btn btn-out" style="padding:5px 10px;font-size:10px;flex:1;color:#c00;border-color:#c00" onclick="adminDeleteActive(\'' + s.session_key + '\',\'' + techAdmClean + '\',\'' + srvAdmClean + '\')">✕ Borrar</button>';
-    h += '</div>';
+  // IMPORTANTE: los botones de accion se agregan DESPUES via event listeners
+  // (no como HTML inline) para evitar problemas de escapado con comillas,
+  // apostrofes y caracteres especiales en nombres/servicios.
+  if (!isTech && paused) {
+    h += '<div class="contingency-slot" style="margin-top:8px"></div>';
   }
-  // ══ FIN ADMIN PANEL ══
 
   card.innerHTML = h;
+
+  // Boton "Resolver contingencia"
+  if (!isTech && paused) {
+    var contSlot = card.querySelector('.contingency-slot');
+    if (contSlot) {
+      var lp = (s.pauses && s.pauses.length) ? s.pauses[s.pauses.length - 1] : null;
+      var reason = lp ? (lp.reason || 'Sin motivo') : 'Sin motivo';
+      var contBtn = document.createElement('button');
+      contBtn.className = 'btn btn-green';
+      contBtn.style.cssText = 'padding:8px;font-size:11px';
+      contBtn.textContent = 'Resolver contingencia';
+      contBtn.onclick = function() {
+        openResolveContingencyModal(
+          s.session_key,
+          s.username,
+          s.technician || '',
+          s.service || '',
+          s.plate || '',
+          reason
+        );
+      };
+      contSlot.appendChild(contBtn);
+    }
+  }
+
+  // ADMIN: menu discreto arriba-derecha (solo francisco.parra / felipe.parra)
+  // Diseno minimalista para evitar toques accidentales:
+  // - Un solo boton "..." pequeno en esquina superior derecha
+  // - Al tocar, se despliega un menu con las acciones
+  // - Las acciones destructivas estan ocultas hasta que el admin las busca
+  if (!isTech && isSuperAdmin()) {
+    card.style.position = 'relative'; // garantiza contenedor posicional
+
+    var admMenu = document.createElement('div');
+    admMenu.style.cssText = 'position:absolute;top:6px;right:6px;z-index:5';
+
+    var admToggle = document.createElement('button');
+    admToggle.title = 'Acciones admin';
+    admToggle.style.cssText = 'width:26px;height:26px;border-radius:50%;border:1px solid #ddd;background:rgba(255,255,255,.95);cursor:pointer;font-size:14px;line-height:1;color:#666;padding:0;display:flex;align-items:center;justify-content:center';
+    admToggle.textContent = '⋯';
+
+    var admDropdown = document.createElement('div');
+    admDropdown.style.cssText = 'display:none;position:absolute;top:30px;right:0;background:#fff;border:1px solid #ddd;border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,.15);min-width:150px;overflow:hidden';
+
+    var makeAdmItem = function(label, color, onclickFn) {
+      var item = document.createElement('button');
+      item.style.cssText = 'display:block;width:100%;padding:10px 14px;border:none;background:#fff;text-align:left;font-size:11px;cursor:pointer;color:' + (color || '#333') + ';border-bottom:1px solid #f0f0f0';
+      item.textContent = label;
+      item.onmouseover = function() { item.style.background = '#f7f7f7'; };
+      item.onmouseout = function() { item.style.background = '#fff'; };
+      item.onclick = function(e) {
+        e.stopPropagation();
+        admDropdown.style.display = 'none';
+        onclickFn();
+      };
+      return item;
+    };
+
+    if (!paused) {
+      admDropdown.appendChild(makeAdmItem('⏸  Forzar pausa', '#555', function() {
+        adminForcePause(s.session_key, s.technician || '', s.service || '');
+      }));
+    }
+    admDropdown.appendChild(makeAdmItem('✓  Forzar finalización', '#555', function() {
+      adminForceFinish(s.session_key, s.technician || '', s.service || '', s.plate || '');
+    }));
+    admDropdown.appendChild(makeAdmItem('✕  Borrar servicio', '#c00', function() {
+      adminDeleteActive(s.session_key, s.technician || '', s.service || '');
+    }));
+    // Quitar border al ultimo item
+    if (admDropdown.lastChild) admDropdown.lastChild.style.borderBottom = 'none';
+
+    admToggle.onclick = function(e) {
+      e.stopPropagation();
+      // Cerrar otros dropdowns abiertos
+      document.querySelectorAll('.adm-dropdown-open').forEach(function(d) {
+        if (d !== admDropdown) { d.style.display = 'none'; d.classList.remove('adm-dropdown-open'); }
+      });
+      var isOpen = admDropdown.style.display === 'block';
+      admDropdown.style.display = isOpen ? 'none' : 'block';
+      if (isOpen) admDropdown.classList.remove('adm-dropdown-open');
+      else admDropdown.classList.add('adm-dropdown-open');
+    };
+
+    admMenu.appendChild(admToggle);
+    admMenu.appendChild(admDropdown);
+    card.appendChild(admMenu);
+  }
+
   return card;
 }
+
+// Cerrar dropdowns admin al clickear fuera
+document.addEventListener('click', function() {
+  document.querySelectorAll('.adm-dropdown-open').forEach(function(d) {
+    d.style.display = 'none';
+    d.classList.remove('adm-dropdown-open');
+  });
+});
 
 // Abre modal de confirmacion para resolver contingencia.
 // Antes: un solo click resolvia directamente (peligroso - un toque accidental
@@ -3359,26 +3437,33 @@ async function renderBossHist(body) {
   data.forEach(function(r) {
     var over = r.goal_minutes && r.seconds > r.goal_minutes * 60;
     var row = mk('div','row');
-    // Escapado defensivo para el onclick
-    var techSafe = (r.technician || '').replace(/'/g, '\\\'').replace(/"/g, '');
-    var srvSafe = (r.service || '').replace(/'/g, '\\\'').replace(/"/g, '');
-    var plateSafe = (r.plate || '').replace(/'/g, '\\\'').replace(/"/g, '');
-    var adminBtn = canAdmin
-      ? '<button class="btn btn-out" style="padding:3px 8px;font-size:9px;color:#c00;border-color:#c00;margin-top:4px" onclick="adminDeleteHistory(' + r.id + ',\'' + techSafe + '\',\'' + srvSafe + '\',\'' + plateSafe + '\',\'' + r.duration + '\')">✕ Borrar</button>'
-      : '';
     row.innerHTML = avatarHTML(r.technician, r.username, 36)
       + '<div style="flex:1">'
-      + '<div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111">' + r.technician + '</div>'
-      + '<div style="font-size:11px;color:#666;text-transform:uppercase">' + r.service + '</div>'
-      + (r.plate ? '<span class="plate-tag">' + r.plate + '</span>' : '')
-      + (r.pauses && r.pauses.length ? '<div style="font-size:10px;color:var(--gold3);margin-top:2px">' + r.pauses.map(function(p){return '• '+p.reason;}).join(' ') + '</div>' : '')
+      + '<div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111">' + escapeHTML(r.technician) + '</div>'
+      + '<div style="font-size:11px;color:#666;text-transform:uppercase">' + escapeHTML(r.service) + '</div>'
+      + (r.plate ? '<span class="plate-tag">' + escapeHTML(r.plate) + '</span>' : '')
+      + (r.pauses && r.pauses.length ? '<div style="font-size:10px;color:var(--gold3);margin-top:2px">' + r.pauses.map(function(p){return '• '+escapeHTML(p.reason || '');}).join(' ') + '</div>' : '')
       + '</div>'
       + '<div style="text-align:right;flex-shrink:0">'
       + '<div style="font-size:18px;font-weight:700;font-family:var(--mono);color:' + (over?'var(--red)':'var(--green)') + '">' + r.duration + '</div>'
       + (r.goal_minutes ? '<div style="font-size:9px;color:#aaa;text-transform:uppercase">OBJ:' + r.goal_minutes + 'm</div>' : '')
       + '<div style="font-size:10px;color:#aaa">' + fmtD(r.ended_at) + '</div>'
-      + adminBtn
       + '</div>';
+
+    // Admin: boton borrar con event listener (evita problemas de escapado en onclick inline)
+    if (canAdmin) {
+      var rightCol = row.querySelector('div[style*="text-align:right"]');
+      if (rightCol) {
+        var delBtn = document.createElement('button');
+        delBtn.className = 'btn btn-out';
+        delBtn.style.cssText = 'padding:3px 8px;font-size:9px;color:#c00;border-color:#c00;margin-top:4px';
+        delBtn.textContent = '✕ Borrar';
+        delBtn.onclick = function() {
+          adminDeleteHistory(r.id, r.technician || '', r.service || '', r.plate || '', r.duration || '');
+        };
+        rightCol.appendChild(delBtn);
+      }
+    }
     card.appendChild(row);
   });
   body.appendChild(card);
