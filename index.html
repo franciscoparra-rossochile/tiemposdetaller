@@ -557,7 +557,7 @@ async function retryConn() {
 
 
 
-// ═══════════════════════════════════════════════
+async // ═══════════════════════════════════════════════
 // SCREENS & MODALS
 // ═══════════════════════════════════════════════
 function showScreen(id) {
@@ -597,12 +597,7 @@ async function doLogin() {
   logR('LOGIN_RESULT', {found: !!data, error: error ? error.message : null});
   
   btn.innerHTML = 'Ingresar'; btn.disabled = false;
-  if (error) { 
-    console.error('SUPABASE ERROR:', error);
-    errEl.textContent = 'Error: ' + error.message + (error.hint ? ' | ' + error.hint : '') + (error.code ? ' (código: ' + error.code + ')' : ''); 
-    errEl.style.display = 'block'; 
-    return; 
-  }
+  if (error) { errEl.textContent = 'Error de conexion: ' + error.message; errEl.style.display = 'block'; return; }
   if (!data) { errEl.textContent = 'Usuario o contrasena incorrectos'; errEl.style.display = 'block'; return; }
   
   CU = data;
