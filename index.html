@@ -925,8 +925,13 @@ function startPolling() {
   pollAll();
   pollInt = setInterval(pollAll, 3000);
   tickInt = setInterval(function() {
-    liveData.forEach(function(s) { if (s.status === 'running') s.seconds++; });
-    // Also update local timer
+    // Ya NO sumamos .seconds localmente a las sesiones ajenas - la funcion
+    // liveSecondsFromSession() calcula el tiempo real al momento de renderizar,
+    // usando s.seconds (de BD) + (now - s.updated_at). Asi todas las pantallas
+    // (Francisco, Oscar, cualquier otro) muestran el MISMO valor calculado.
+    //
+    // Para la sesion propia (mi timer T), si sigue corriendo si se usa T.sec
+    // que es exacto al segundo. Eso se maneja aparte abajo.
     if (T.running) {
       T.sec++;
       dbSyncCtr++;
@@ -949,6 +954,13 @@ function startPolling() {
         }
       }
     }
+    // Recalcular segundos de las sesiones ajenas que estan corriendo (para que la UI
+    // muestre el tiempo en vivo tambien sin esperar al siguiente polling)
+    liveData.forEach(function(s) {
+      if (s.status === 'running' && (!T.sessionKey || s.session_key !== T.sessionKey)) {
+        s.seconds = liveSecondsFromSession(s);
+      }
+    });
     refreshLiveUI();
   }, 1000);
 }
@@ -963,37 +975,43 @@ async function pollAll() {
   await Promise.all([fetchLive(), fetchNotifs()]);
 }
 
+// Calcula los segundos "en vivo" de una sesion basandose en BD + tiempo transcurrido.
+// Funciona desde cualquier pantalla, sin depender de contadores locales.
+//
+// Logica:
+//   - Si esta corriendo: seconds_BD + (ahora - updated_at). El tecnico dueno sincroniza
+//     cada 5s, entonces como mucho estamos atrasados 5s respecto al tiempo real.
+//   - Si esta pausado o en otro estado: el valor de BD es el correcto (congelado).
+function liveSecondsFromSession(s) {
+  if (!s) return 0;
+  var base = s.seconds || 0;
+  if (s.status !== 'running' || !s.updated_at) return base;
+  var now = Date.now();
+  var up = new Date(s.updated_at).getTime();
+  if (isNaN(up)) return base;
+  var elapsed = Math.max(0, Math.floor((now - up) / 1000));
+  return base + elapsed;
+}
+
 async function fetchLive() {
   const {data, error} = await sb.from('active_sessions').select('*').order('started_at');
   logR('FETCH_LIVE', {count: data ? data.length : 0, error: error ? error.message : null});
   if (error) { logR('FETCH_LIVE_ERR', {msg: error.message}, 'err'); return; }
-  // Merge: preservar contadores locales para evitar saltos hacia atras.
-  // La BD solo guarda 'seconds' cada 5s (solo para la sesion del usuario logueado).
-  // Las sesiones de OTROS tecnicos no tienen a nadie actualizando su 'seconds' en BD,
-  // entonces el polling traeria valores obsoletos y el tickInt local ya avanzo.
-  // Conservamos el mayor de (BD, local) para cada sesion.
-  var prevMap = {};
-  liveData.forEach(function(s) { prevMap[s.session_key] = s; });
-
+  // Para cada sesion:
+  //  - Si es la del usuario actual (tiene timer local T activo): usar T.sec que es exacto.
+  //  - Si es de otro usuario corriendo: recalcular desde BD + tiempo transcurrido.
+  //  - Si esta pausada: el valor de BD es autoridad (no cambia).
   liveData = (data || []).map(function(s) {
     var local = Object.assign({}, s);
-    var prev = prevMap[s.session_key];
-
-    // Caso 1: es la sesion del usuario actual (con timer local activo T)
     if (T.sessionKey && s.session_key === T.sessionKey) {
+      // Mi sesion: T.sec es el valor mas reciente
       local.seconds = Math.max(s.seconds, T.sec);
       local.status = T.running ? 'running' : (T.pauses.length ? 'paused' : s.status);
       local.pauses = T.pauses.length ? T.pauses : s.pauses;
       return local;
     }
-
-    // Caso 2: sesion existente de OTRO tecnico - preservar contador local si es mayor.
-    // Esto evita que la UI retroceda en segundos cuando el polling trae datos obsoletos.
-    if (prev && s.status === 'running' && prev.status === 'running') {
-      local.seconds = Math.max(s.seconds, prev.seconds);
-    }
-    // Si la BD reporta un cambio de estado (paused/finished/etc), aceptamos el valor de BD
-    // porque refleja una accion real que ocurrio.
+    // Sesion de otro tecnico: calcular tiempo vivo desde metadata
+    local.seconds = liveSecondsFromSession(s);
     return local;
   });
   refreshLiveUI();
