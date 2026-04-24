@@ -750,7 +750,7 @@ function initSupabase() {
 // init() no bloqueante: intenta conectar Supabase en background sin impedir render
 function init() {
   console.log('[INIT] INIT START');
-  console.log('🚀 ROSSO v2.1.2-HOTFIX CARGADO CORRECTAMENTE');
+  console.log('🚀 ROSSO v2.1.5-HOTFIX CARGADO CORRECTAMENTE');
   setMsg('Conectando...');
 
   // Intento inmediato si el SDK ya esta cargado
@@ -2552,27 +2552,30 @@ function buildSessCard(s, isTech) {
     }
   }
 
-  // ADMIN: menu discreto arriba-derecha (solo francisco.parra / felipe.parra)
+  // ADMIN: menu discreto (solo francisco.parra / felipe.parra)
   // Diseno minimalista para evitar toques accidentales:
-  // - Un solo boton "..." pequeno en esquina superior derecha
-  // - Al tocar, se despliega un menu con las acciones
-  // - Las acciones destructivas estan ocultas hasta que el admin las busca
+  // - Boton ".." pequeno esquina INFERIOR derecha (fuera del area util)
+  // - Dropdown se abre hacia arriba para no tapar otras tarjetas
   if (!isTech && isSuperAdmin()) {
-    card.style.position = 'relative'; // garantiza contenedor posicional
+    card.style.position = 'relative';
 
     var admMenu = document.createElement('div');
-    admMenu.style.cssText = 'position:absolute;top:6px;right:6px;z-index:5';
+    admMenu.style.cssText = 'position:absolute;bottom:6px;right:6px;z-index:5';
 
     var admToggle = document.createElement('button');
     admToggle.title = 'Acciones admin';
-    admToggle.style.cssText = 'width:26px;height:26px;border-radius:50%;border:1px solid #ddd;background:rgba(255,255,255,.95);cursor:pointer;font-size:14px;line-height:1;color:#666;padding:0;display:flex;align-items:center;justify-content:center';
+    admToggle.type = 'button';
+    admToggle.style.cssText = 'width:24px;height:24px;border-radius:50%;border:1px solid #ddd;background:#fff;cursor:pointer;font-size:12px;line-height:1;color:#999;padding:0;display:flex;align-items:center;justify-content:center;opacity:.5;transition:opacity .15s';
     admToggle.textContent = '⋯';
+    admToggle.onmouseover = function() { admToggle.style.opacity = '1'; };
+    admToggle.onmouseout = function() { admToggle.style.opacity = '.5'; };
 
     var admDropdown = document.createElement('div');
-    admDropdown.style.cssText = 'display:none;position:absolute;top:30px;right:0;background:#fff;border:1px solid #ddd;border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,.15);min-width:150px;overflow:hidden';
+    admDropdown.style.cssText = 'display:none;position:absolute;bottom:28px;right:0;background:#fff;border:1px solid #ddd;border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,.15);min-width:170px;overflow:hidden;z-index:10';
 
     var makeAdmItem = function(label, color, onclickFn) {
       var item = document.createElement('button');
+      item.type = 'button';
       item.style.cssText = 'display:block;width:100%;padding:10px 14px;border:none;background:#fff;text-align:left;font-size:11px;cursor:pointer;color:' + (color || '#333') + ';border-bottom:1px solid #f0f0f0';
       item.textContent = label;
       item.onmouseover = function() { item.style.background = '#f7f7f7'; };
@@ -2580,6 +2583,7 @@ function buildSessCard(s, isTech) {
       item.onclick = function(e) {
         e.stopPropagation();
         admDropdown.style.display = 'none';
+        admDropdown.classList.remove('adm-dropdown-open');
         onclickFn();
       };
       return item;
@@ -2596,20 +2600,35 @@ function buildSessCard(s, isTech) {
     admDropdown.appendChild(makeAdmItem('✕  Borrar servicio', '#c00', function() {
       adminDeleteActive(s.session_key, s.technician || '', s.service || '');
     }));
-    // Quitar border al ultimo item
     if (admDropdown.lastChild) admDropdown.lastChild.style.borderBottom = 'none';
 
+    // IMPORTANTE: el listener global de cierre (al final del archivo) detecta clicks
+    // que vienen DE AFUERA del menu. Aqui marcamos este elemento como "menu abierto"
+    // para que el global sepa distinguirlo. El stopPropagation sobre el toggle
+    // evita que el mismo click que abre el menu lo cierre (race condition).
     admToggle.onclick = function(e) {
       e.stopPropagation();
-      // Cerrar otros dropdowns abiertos
+      e.preventDefault();
+      // Cerrar otros menus abiertos
       document.querySelectorAll('.adm-dropdown-open').forEach(function(d) {
-        if (d !== admDropdown) { d.style.display = 'none'; d.classList.remove('adm-dropdown-open'); }
+        if (d !== admDropdown) {
+          d.style.display = 'none';
+          d.classList.remove('adm-dropdown-open');
+        }
       });
-      var isOpen = admDropdown.style.display === 'block';
-      admDropdown.style.display = isOpen ? 'none' : 'block';
-      if (isOpen) admDropdown.classList.remove('adm-dropdown-open');
-      else admDropdown.classList.add('adm-dropdown-open');
+      var isOpen = admDropdown.classList.contains('adm-dropdown-open');
+      if (isOpen) {
+        admDropdown.style.display = 'none';
+        admDropdown.classList.remove('adm-dropdown-open');
+      } else {
+        admDropdown.style.display = 'block';
+        admDropdown.classList.add('adm-dropdown-open');
+      }
     };
+
+    // Click DENTRO del dropdown no debe cerrarlo (solo los items, que llaman
+    // a la accion y cierran explicitamente)
+    admDropdown.onclick = function(e) { e.stopPropagation(); };
 
     admMenu.appendChild(admToggle);
     admMenu.appendChild(admDropdown);
@@ -2619,13 +2638,17 @@ function buildSessCard(s, isTech) {
   return card;
 }
 
-// Cerrar dropdowns admin al clickear fuera
-document.addEventListener('click', function() {
-  document.querySelectorAll('.adm-dropdown-open').forEach(function(d) {
-    d.style.display = 'none';
-    d.classList.remove('adm-dropdown-open');
+// Cerrar dropdowns admin al clickear fuera. Se instala UNA SOLA VEZ
+// (flag global) para evitar acumular listeners cada vez que se re-renderiza.
+if (!window._admDropdownListenerInstalled) {
+  window._admDropdownListenerInstalled = true;
+  document.addEventListener('click', function() {
+    document.querySelectorAll('.adm-dropdown-open').forEach(function(d) {
+      d.style.display = 'none';
+      d.classList.remove('adm-dropdown-open');
+    });
   });
-});
+}
 
 // Abre modal de confirmacion para resolver contingencia.
 // Antes: un solo click resolvia directamente (peligroso - un toque accidental
@@ -3719,7 +3742,28 @@ function computeKPIs(rows) {
     productive += sec;
     if (r.pauses && r.pauses.length) {
       r.pauses.forEach(function(p) {
-        var ps = p.seconds || p.duration_seconds || 0;
+        // BUGFIX 2026-04-24: En toda la app las pausas se guardan con
+        // duration_ms (milisegundos). Antes leiamos p.seconds o
+        // p.duration_seconds que NO EXISTEN como campos, por eso el
+        // reporte mostraba "0m" en todos los motivos de pausa.
+        // Ahora leemos duration_ms y convertimos. Fallback a seconds
+        // por compatibilidad con datos legados (si existieran).
+        var ps = 0;
+        if (typeof p.duration_ms === 'number' && p.duration_ms > 0) {
+          ps = Math.round(p.duration_ms / 1000);
+        } else if (typeof p.seconds === 'number') {
+          ps = p.seconds;
+        } else if (typeof p.duration_seconds === 'number') {
+          ps = p.duration_seconds;
+        }
+        // Caso edge: pausas sin reanudar (paused_at sin resumed_at).
+        // Si paused_at existe pero no hay duration_ms, calculamos desde
+        // paused_at hasta ended_at del servicio (asumimos que al
+        // finalizar se "cerro" la pausa).
+        if (ps === 0 && p.paused_at && !p.resumed_at && r.ended_at) {
+          var ms = new Date(r.ended_at).getTime() - new Date(p.paused_at).getTime();
+          if (ms > 0) ps = Math.round(ms / 1000);
+        }
         pause += ps;
         var key = p.reason || 'Sin motivo';
         if (!pauseReasons[key]) pauseReasons[key] = {count:0, seconds:0};
@@ -4366,6 +4410,9 @@ function generatePDFDiario() {
     var c = r.checklist;
     if (c.doble_control === 'Rechazado' || c.visado === 'Rechazado') return true;
     if (c.prueba_ruta && c.prueba_ruta.resultado === 'Con observaciones') return true;
+    // BUGFIX 2026-04-24: tambien incluir servicios con observaciones generales
+    // (el tecnico escribio algo en el campo "observaciones" del checklist).
+    if (c.observaciones && String(c.observaciones).trim().length > 0) return true;
     return false;
   });
   if (alertas.length) {
@@ -4379,13 +4426,27 @@ function generatePDFDiario() {
         var hallazgos = [];
         if (c.doble_control === 'Rechazado') hallazgos.push('Doble control rechazado');
         if (c.visado === 'Rechazado') hallazgos.push('Visado rechazado');
-        if (c.prueba_ruta && c.prueba_ruta.resultado === 'Con observaciones') hallazgos.push('Ruta: ' + (c.anomalias || 'con obs.'));
+        // BUGFIX: las anomalias de prueba de ruta estan anidadas en prueba_ruta.anomalias,
+        // NO en c.anomalias (campo que no existe). Por eso antes siempre salia
+        // "Ruta: con obs." generico en vez del detalle real.
+        if (c.prueba_ruta && c.prueba_ruta.resultado === 'Con observaciones') {
+          var rutaText = 'Ruta con obs.';
+          var ruteAnom = (c.prueba_ruta.anomalias || '').toString().trim();
+          if (ruteAnom) rutaText += ': ' + ruteAnom;
+          hallazgos.push(rutaText);
+        }
+        // BUGFIX: observaciones generales del checklist nunca se mostraban.
+        // Si el tecnico escribio algo en "observaciones", incluirlo en el hallazgo.
+        if (c.observaciones && String(c.observaciones).trim().length > 0) {
+          hallazgos.push('Obs: ' + String(c.observaciones).trim());
+        }
         return [r.technician, r.service, r.plate || '-', hallazgos.join(' · ')];
       }),
       theme: 'plain',
       styles: {fontSize: 8, cellPadding: 2, lineColor: PDF_COLORS.grayBorder, lineWidth: 0.1},
       headStyles: {fillColor: PDF_COLORS.red, textColor: PDF_COLORS.white, fontStyle: 'bold'},
-      alternateRowStyles: {fillColor: [252, 232, 232]}
+      alternateRowStyles: {fillColor: [252, 232, 232]},
+      columnStyles: {3: {cellWidth: 70}}
     });
   }
 
@@ -4640,7 +4701,7 @@ function exportCSVFromRep() {
       csvEsc(c.litros||''), csvEsc(c.aceite||''),
       csvEsc(pr.tipo||''), csvEsc(pr.resultado||''),
       csvEsc(c.doble_control||''), csvEsc(c.visado||''),
-      csvEsc(c.anomalias||''), csvEsc(c.observaciones||'')
+      csvEsc(pr.anomalias||''), csvEsc(c.observaciones||'')
     ].join(',');
     lines.push(line);
   });
