@@ -279,6 +279,8 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     <button class="btn btn-gold" style="margin-bottom:8px" onclick="confirmPause('Espera de aprobacion')">Espera de aprobacion</button>
     <button class="btn btn-gold" style="margin-bottom:8px" onclick="confirmPause('Termino de jornada')">Termino de jornada</button>
     <button class="btn btn-gold" style="margin-bottom:8px" onclick="confirmPause('Espera de visado')">Espera de visado</button>
+    <button class="btn btn-gold" style="margin-bottom:8px" onclick="confirmPause('Cambio de servicio por nueva prioridad')">Cambio de servicio por nueva prioridad</button>
+    <button class="btn btn-gold" style="margin-bottom:8px" onclick="confirmPause('Movimiento de vehiculos')">Movimiento de vehiculos</button>
     <button class="btn btn-gold" style="margin-bottom:8px" onclick="confirmPause('Protocolo: Prueba de ruta')">Protocolo: Prueba de ruta</button>
     <button class="btn btn-gold" style="margin-bottom:8px" onclick="confirmPause('Protocolo: Doble control')">Protocolo: Doble control</button>
     <button class="btn btn-gold" style="margin-bottom:8px" onclick="confirmPause('Protocolo: Visado')">Protocolo: Visado</button>
@@ -403,6 +405,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
       <option>Recuperacion de DPF</option><option>Servicio de frenos</option>
       <option>Diagnostico</option><option>Garantia</option>
       <option>Estandar de taller</option><option>Compras</option>
+      <option>Movimiento de vehiculos</option>
     </select>
     <div class="lbl">Patente</div>
     <input class="inp" id="m-ev-plate" placeholder="ABCD12" oninput="this.value=this.value.toUpperCase().replace(/[^A-Z0-9]/g,'')"/>
@@ -545,6 +548,7 @@ const SRVS = [
   {name:'Lavado de vehiculos',goal:null,noChecklist:true},
   {name:'Estandar de taller',goal:null,noChecklist:true},
   {name:'Compras',goal:null,noChecklist:true},
+  {name:'Movimiento de vehiculos',goal:null,noChecklist:true},
   {name:'Garantia',goal:null},
   {name:'Recuperacion de DPF',goal:null,subs:['Pack esencial','Pack avanzado','Pack premium','Pack integral (DPF + Limpieza admision)']},
   {name:'Servicio de frenos',goal:null,subs:['Evaluacion','Pastillas delanteras + rectificado','Pastillas delanteras + cambio de discos','Pastillas/balatas traseras + rectificado','Pastillas/balatas traseras + cambio tambor/disco','Cambio liquido de frenos','Ajuste de frenos']},
@@ -553,7 +557,7 @@ const SRVS = [
 
 // Services that don't require checklist
 function srvNeedsChecklist(srvLabel) {
-  var noChk = ['Lavado de vehiculos','Estandar de taller','Compras'];
+  var noChk = ['Lavado de vehiculos','Estandar de taller','Compras','Movimiento de vehiculos'];
   return !noChk.some(function(n) { return srvLabel.startsWith(n); });
 }
 
@@ -3264,10 +3268,35 @@ async function saveUser() {
   var fi = document.getElementById('m-cu-file');
   if (fi.files && fi.files[0]) {
     var file = fi.files[0];
-    var ext = file.name.split('.').pop();
+    // Validar tamano (max 5MB para evitar problemas en celulares)
+    if (file.size > 5 * 1024 * 1024) {
+      err.textContent = 'Imagen muy grande (max 5MB). Comprimela o elige otra.';
+      err.style.display = 'block';
+      btn.innerHTML = 'Guardar'; btn.disabled = false;
+      return;
+    }
+    // Validar tipo
+    if (!file.type.startsWith('image/')) {
+      err.textContent = 'El archivo debe ser una imagen (JPG, PNG, etc.)';
+      err.style.display = 'block';
+      btn.innerHTML = 'Guardar'; btn.disabled = false;
+      return;
+    }
+    var ext = (file.name.split('.').pop() || 'jpg').toLowerCase();
     var path = 'avatars/' + (editUserId || 'new_' + Date.now()) + '.' + ext;
-    var upR = await sb.storage.from('avatars').upload(path, file, {upsert:true});
-    if (!upR.error) { var ud = sb.storage.from('avatars').getPublicUrl(path); avatar_url = ud.data.publicUrl + '?t=' + Date.now(); }
+    logR('AVATAR_UPLOAD_ATTEMPT', {path: path, size: file.size, type: file.type});
+    var upR = await sb.storage.from('avatars').upload(path, file, {upsert:true, contentType: file.type});
+    if (upR.error) {
+      // ANTES: error silencioso. AHORA: avisar al usuario que paso.
+      logR('AVATAR_UPLOAD_ERR', {msg: upR.error.message}, 'err');
+      err.textContent = 'Error al subir foto: ' + upR.error.message + '\n\nVerifica que el bucket "avatars" exista en Supabase Storage y sea publico.';
+      err.style.display = 'block';
+      btn.innerHTML = 'Guardar'; btn.disabled = false;
+      return;
+    }
+    var ud = sb.storage.from('avatars').getPublicUrl(path);
+    avatar_url = ud.data.publicUrl + '?t=' + Date.now();
+    logR('AVATAR_UPLOAD_OK', {url: avatar_url});
   }
   
   var error;
