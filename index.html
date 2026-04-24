@@ -750,7 +750,7 @@ function initSupabase() {
 // init() no bloqueante: intenta conectar Supabase en background sin impedir render
 function init() {
   console.log('[INIT] INIT START');
-  console.log('🚀 ROSSO v2.1.6-HOTFIX CARGADO CORRECTAMENTE');
+  console.log('🚀 ROSSO v2.1.7-HOTFIX CARGADO CORRECTAMENTE');
   setMsg('Conectando...');
 
   // Intento inmediato si el SDK ya esta cargado
@@ -2480,6 +2480,16 @@ function renderTechOnline() {
 function renderBossOnline() {
   var body = document.getElementById('boss-body');
   if (curBossTab !== 'b-online') return;
+
+  // BUGFIX 2026-04-24: Si hay un dropdown admin abierto, NO re-renderizar.
+  // El polling cada 3s estaba destruyendo el elemento DOM del dropdown
+  // justo despues de abrirlo, provocando que "desaparezca" visualmente.
+  // Cuando el admin cierre el menu, el siguiente poll ya podra refrescar.
+  if (document.querySelector('.adm-dropdown-open')) {
+    logR('RENDER_BOSS_ONLINE_SKIPPED', {reason: 'admin dropdown open'});
+    return;
+  }
+
   logR('RENDER_BOSS_ONLINE', {liveCount: liveData.length});
   if (!liveData.length) { body.innerHTML = '<div class="empty">Sin servicios en curso</div>'; return; }
   body.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><div class="lbl" style="margin-bottom:0">' + liveData.length + ' activo' + (liveData.length>1?'s':'') + '</div></div>';
