@@ -279,12 +279,41 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     <button class="btn btn-gold" style="margin-bottom:8px" onclick="confirmPause('Espera de aprobacion')">Espera de aprobacion</button>
     <button class="btn btn-gold" style="margin-bottom:8px" onclick="confirmPause('Termino de jornada')">Termino de jornada</button>
     <button class="btn btn-gold" style="margin-bottom:8px" onclick="confirmPause('Espera de visado')">Espera de visado</button>
-    <button class="btn btn-gold" style="margin-bottom:8px" onclick="confirmPause('Cambio de servicio por nueva prioridad')">Cambio de servicio por nueva prioridad</button>
+    <button class="btn btn-gold" style="margin-bottom:8px" onclick="openPrioridadModal()">Cambio de servicio por nueva prioridad</button>
     <button class="btn btn-gold" style="margin-bottom:8px" onclick="confirmPause('Movimiento de vehiculos')">Movimiento de vehiculos</button>
     <button class="btn btn-gold" style="margin-bottom:8px" onclick="confirmPause('Protocolo: Prueba de ruta')">Protocolo: Prueba de ruta</button>
     <button class="btn btn-gold" style="margin-bottom:8px" onclick="confirmPause('Protocolo: Doble control')">Protocolo: Doble control</button>
     <button class="btn btn-gold" style="margin-bottom:8px" onclick="confirmPause('Protocolo: Visado')">Protocolo: Visado</button>
     <button class="btn btn-out" onclick="closeModal('m-pause')">Cancelar</button>
+  </div>
+</div>
+
+<!-- Modal: nueva prioridad (aparece al elegir "Cambio de servicio por nueva prioridad") -->
+<div class="overlay" id="m-prioridad" style="display:none">
+  <div class="modal">
+    <div class="modal-t">Nueva prioridad</div>
+    <div class="modal-s">¿Cuál es el nuevo servicio prioritario que vas a atender?</div>
+    <textarea class="inp" id="pr-text" rows="3" style="height:80px" placeholder="Ej: Cambio de aceite patente XYZ · cliente urgente..."></textarea>
+    <button class="btn btn-gold" onclick="confirmPrioridadPause()">Pausar y cambiar</button>
+    <button class="btn btn-out" onclick="closeModal('m-prioridad')" style="margin-top:8px">Cancelar</button>
+  </div>
+</div>
+
+<!-- Modal: doble verificacion al resolver contingencia -->
+<div class="overlay" id="m-resolve-contingency" style="display:none">
+  <div class="modal" style="max-width:420px">
+    <div class="modal-t" style="color:var(--gold)">⚠ Resolver contingencia</div>
+    <div class="modal-s">Esta accion reanudara el cronometro del tecnico y dejara registro.</div>
+    <div id="rc-info" style="margin-bottom:12px"></div>
+    <div class="lbl" style="margin-top:8px">¿Como se resolvio la contingencia?</div>
+    <textarea class="inp" id="rc-detail" rows="3" style="height:80px" placeholder="Describe brevemente que se hizo para resolverla..." oninput="rcUpdateBtn()"></textarea>
+    <div style="font-size:10px;color:var(--wh4);margin-top:2px">Minimo 3 caracteres. Queda registrado.</div>
+    <label style="display:flex;align-items:center;gap:8px;margin-top:16px;padding:10px;background:rgba(218,165,32,.08);border-radius:4px;cursor:pointer;font-size:12px">
+      <input type="checkbox" id="rc-confirm" onchange="rcUpdateBtn()" style="width:18px;height:18px;cursor:pointer"/>
+      <span>Confirmo que la contingencia esta resuelta y el tecnico puede continuar</span>
+    </label>
+    <button class="btn btn-green" id="rc-btn-ok" onclick="confirmResolveContingency()" style="margin-top:12px" disabled>Confirmar y reanudar</button>
+    <button class="btn btn-out" onclick="closeModal('m-resolve-contingency')" style="margin-top:8px">Cancelar</button>
   </div>
 </div>
 
@@ -619,9 +648,13 @@ function avatarHTML(name, username, size, extraClass) {
   if (info && extraClass === 'av-tech') {
     extraClass = info.role === 'admin' ? 'av-adm' : info.role === 'jefatura' ? 'av-jef' : 'av-tech';
   }
+  // Tamano del avatar aumentado un 15% para mejorar visibilidad de caras.
+  // El contenedor se mantiene en "size" original para no romper layouts existentes,
+  // pero la imagen se agranda con transform:scale y se centra en la cara (top 30%).
   var sizeStyle = 'width:' + size + 'px;height:' + size + 'px;font-size:' + Math.max(10, Math.floor(size * 0.35)) + 'px';
   if (url) {
-    return '<div class="av ' + extraClass + '" style="' + sizeStyle + ';overflow:hidden"><img src="' + url + '" style="width:100%;height:100%;object-fit:cover;border-radius:50%" alt=""/></div>';
+    return '<div class="av ' + extraClass + '" style="' + sizeStyle + ';overflow:hidden">'
+      + '<img src="' + url + '" style="width:100%;height:100%;object-fit:cover;object-position:center 25%;border-radius:50%;transform:scale(1.25);transition:transform .2s" alt=""/></div>';
   }
   return '<div class="av ' + extraClass + '" style="' + sizeStyle + '">' + init + '</div>';
 }
@@ -717,7 +750,7 @@ function initSupabase() {
 // init() no bloqueante: intenta conectar Supabase en background sin impedir render
 function init() {
   console.log('[INIT] INIT START');
-  console.log('🚀 ROSSO v2.0-FIXED CARGADO CORRECTAMENTE');
+  console.log('🚀 ROSSO v2.1-HOTFIX CARGADO CORRECTAMENTE');
   setMsg('Conectando...');
 
   // Intento inmediato si el SDK ya esta cargado
@@ -1327,7 +1360,7 @@ function renderTechNuevo(body) {
   // (sin checklist). En ese caso, la patente se pone "Logistica de taller" automaticamente.
   var pc = mk('div','card-accent'); pc.id = 'plate-card';
   pc.innerHTML = '<div class="lbl">Patente del vehiculo</div>'
-    + '<input class="inp-plate" id="plate-inp" maxlength="8" placeholder="ABCD12" oninput="selPlate=this.value.toUpperCase().replace(/[^A-Z0-9]/g,\'\');this.value=selPlate;chkBtn()"/>'
+    + '<input class="inp-plate" id="plate-inp" maxlength="8" placeholder="ABCD12" autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false" oninput="selPlate=this.value.toUpperCase().replace(/[^A-Z0-9]/g,\'\');this.value=selPlate;chkBtn()"/>'
     + '<div style="font-size:10px;color:var(--wh4);margin-top:4px">Obligatorio - min 4 caracteres - mayusculas auto</div>';
   body.appendChild(pc);
 
@@ -1384,7 +1417,7 @@ function updateSubWrap(srv) {
 
   // Alternar entre campo de patente manual vs aviso "Logistica de taller".
   // Los servicios con noPlate=true son actividades operativas del taller sin vehiculo
-  // especifico (Compras, Movimiento de vehiculos, Estandar de taller).
+  // especifico (Compras, Movimiento de vehiculos, Estandar de taller, Cierre de taller).
   // NOTA: Lavado de vehiculos SI requiere patente porque se lava un auto especifico.
   var pc = document.getElementById('plate-card');
   var pcAuto = document.getElementById('plate-auto');
@@ -1393,12 +1426,16 @@ function updateSubWrap(srv) {
       pc.style.display = 'none';
       pcAuto.style.display = 'block';
       selPlate = 'Logistica de taller';
+      // HARDENING: vaciar y deshabilitar el input oculto para evitar que un
+      // autocompletado del browser o foco accidental escriba una patente real.
+      var inp = document.getElementById('plate-inp');
+      if (inp) { inp.value = ''; inp.disabled = true; }
     } else {
       pc.style.display = 'block';
       pcAuto.style.display = 'none';
       if (selPlate === 'Logistica de taller') selPlate = '';
       var inp = document.getElementById('plate-inp');
-      if (inp) inp.value = selPlate;
+      if (inp) { inp.value = selPlate; inp.disabled = false; }
     }
   }
 
@@ -1484,6 +1521,9 @@ async function doStartSession() {
   // Servicios con noPlate (actividades operativas) -> patente automatica.
   // Resto de servicios (incluido Lavado) -> patente manual requerida.
   if (srv.noPlate === true) {
+    // HARDENING: forzar el valor correcto sin importar lo que haya en selPlate.
+    // Esto captura cualquier caso edge: autocompletado del browser, race condition,
+    // input no sincronizado con selPlate, etc.
     selPlate = 'Logistica de taller';
   } else {
     if (!selPlate || selPlate.length < 4) { alert('Patente invalida (minimo 4 caracteres)'); return; }
@@ -1625,6 +1665,30 @@ function updateProg(pct, over) {
 // ═══════════════════════════════════════════════
 // PAUSE / RESUME
 // ═══════════════════════════════════════════════
+// Modal de nueva prioridad: cuando el tecnico pausa por "Cambio de servicio por
+// nueva prioridad", primero le pedimos que especifique cual es la nueva prioridad.
+// Esto deja registro en el motivo de pausa y sirve de contexto para jefatura.
+function openPrioridadModal() {
+  closeModal('m-pause');
+  var txt = document.getElementById('pr-text');
+  if (txt) txt.value = '';
+  openModal('m-prioridad');
+  setTimeout(function() { if (txt) txt.focus(); }, 100);
+}
+
+async function confirmPrioridadPause() {
+  var txt = document.getElementById('pr-text');
+  var nueva = (txt && txt.value || '').trim();
+  if (!nueva || nueva.length < 3) {
+    alert('Describe cual es la nueva prioridad (minimo 3 caracteres)');
+    return;
+  }
+  closeModal('m-prioridad');
+  // Motivo enriquecido con la nueva prioridad especificada
+  var reasonFull = 'Cambio de servicio por nueva prioridad: ' + nueva;
+  await confirmPause(reasonFull);
+}
+
 async function confirmPause(reason) {
   closeModal('m-pause');
   if (!T.sessionKey) {
@@ -2454,13 +2518,91 @@ function buildSessCard(s, isTech) {
   if (s.goal_minutes) h += '<div style="font-size:9px;color:#aaa;text-transform:uppercase">OBJ:' + s.goal_minutes + 'm</div>';
   h += '</div></div>';
   if (pct !== null) h += '<div class="prog-bar" style="margin-top:8px"><div class="prog-fill" style="width:' + pct + '%;background:' + (over?'var(--red)':'var(--green)') + '"></div></div>';
-  if (!isTech && paused) h += '<div style="margin-top:8px"><button class="btn btn-green" style="padding:8px;font-size:11px" onclick="resolveContingency(\'' + s.session_key + '\',\'' + s.username + '\',\'' + s.technician.replace(/\'/g,'') + '\')">Resolver contingencia</button></div>';
+  if (!isTech && paused) {
+    var lp = (s.pauses && s.pauses.length) ? s.pauses[s.pauses.length - 1] : null;
+    var reasonClean = lp ? (lp.reason || 'Sin motivo').replace(/'/g, '\\\'').replace(/"/g, '') : 'Sin motivo';
+    var srvClean = (s.service || '').replace(/'/g, '\\\'').replace(/"/g, '');
+    var plateClean = (s.plate || '').replace(/'/g, '\\\'').replace(/"/g, '');
+    var techClean = (s.technician || '').replace(/'/g, '');
+    h += '<div style="margin-top:8px"><button class="btn btn-green" style="padding:8px;font-size:11px" onclick="openResolveContingencyModal(\'' + s.session_key + '\',\'' + s.username + '\',\'' + techClean + '\',\'' + srvClean + '\',\'' + plateClean + '\',\'' + reasonClean + '\')">Resolver contingencia</button></div>';
+  }
+
+  // ══ ADMIN PANEL: botones para francisco.parra y felipe.parra ══
+  // Acciones destructivas sobre servicios activos. Con confirmacion simple
+  // y auditoria completa en service_events (si ROSSO_UPGRADE esta activo).
+  if (!isTech && isSuperAdmin()) {
+    var srvAdmClean = (s.service || '').replace(/'/g, '\\\'').replace(/"/g, '');
+    var plateAdmClean = (s.plate || '').replace(/'/g, '\\\'').replace(/"/g, '');
+    var techAdmClean = (s.technician || '').replace(/'/g, '');
+    h += '<div style="margin-top:6px;padding-top:6px;border-top:1px dashed #ddd;display:flex;flex-wrap:wrap;gap:4px">';
+    h += '<div style="font-size:9px;color:#999;text-transform:uppercase;letter-spacing:.1em;width:100%;margin-bottom:2px">Admin</div>';
+    if (!paused) {
+      h += '<button class="btn btn-out" style="padding:5px 10px;font-size:10px;flex:1" onclick="adminForcePause(\'' + s.session_key + '\',\'' + techAdmClean + '\',\'' + srvAdmClean + '\')">⏸ Forzar pausa</button>';
+    }
+    h += '<button class="btn btn-out" style="padding:5px 10px;font-size:10px;flex:1" onclick="adminForceFinish(\'' + s.session_key + '\',\'' + techAdmClean + '\',\'' + srvAdmClean + '\',\'' + plateAdmClean + '\')">✓ Forzar fin</button>';
+    h += '<button class="btn btn-out" style="padding:5px 10px;font-size:10px;flex:1;color:#c00;border-color:#c00" onclick="adminDeleteActive(\'' + s.session_key + '\',\'' + techAdmClean + '\',\'' + srvAdmClean + '\')">✕ Borrar</button>';
+    h += '</div>';
+  }
+  // ══ FIN ADMIN PANEL ══
+
   card.innerHTML = h;
   return card;
 }
 
-async function resolveContingency(sessionKey, techUsername, techName) {
-  logR('RESOLVE_CONTINGENCY', {sessionKey, techUsername});
+// Abre modal de confirmacion para resolver contingencia.
+// Antes: un solo click resolvia directamente (peligroso - un toque accidental
+// levantaba la pausa sin contexto de como se resolvio).
+// Ahora: doble verificacion + pedir detalle de como se resolvio.
+function openResolveContingencyModal(sessionKey, techUsername, techName, serviceLabel, plate, reason) {
+  window._resolveCtx = {
+    sessionKey: sessionKey,
+    techUsername: techUsername,
+    techName: techName,
+    serviceLabel: serviceLabel || '',
+    plate: plate || '',
+    reason: reason || 'Sin motivo'
+  };
+  var info = document.getElementById('rc-info');
+  if (info) {
+    info.innerHTML = '<div style="font-size:11px;color:var(--wh3);margin-bottom:8px">'
+      + '<strong style="color:#fff">' + techName + '</strong> - '
+      + serviceLabel + (plate ? ' - ' + plate : '') + '</div>'
+      + '<div style="font-size:11px;color:var(--gold);background:rgba(218,165,32,.1);padding:8px;border-radius:4px;border-left:3px solid var(--gold)">'
+      + '<strong>Motivo de pausa:</strong> ' + reason + '</div>';
+  }
+  var txt = document.getElementById('rc-detail');
+  if (txt) txt.value = '';
+  var chk = document.getElementById('rc-confirm');
+  if (chk) chk.checked = false;
+  var btn = document.getElementById('rc-btn-ok');
+  if (btn) btn.disabled = true;
+  openModal('m-resolve-contingency');
+}
+
+// Toggle del boton Confirmar segun estado del checkbox + detalle
+function rcUpdateBtn() {
+  var chk = document.getElementById('rc-confirm');
+  var txt = document.getElementById('rc-detail');
+  var btn = document.getElementById('rc-btn-ok');
+  if (!chk || !txt || !btn) return;
+  var detailOk = (txt.value || '').trim().length >= 3;
+  btn.disabled = !(chk.checked && detailOk);
+}
+
+async function confirmResolveContingency() {
+  var ctx = window._resolveCtx;
+  if (!ctx) { closeModal('m-resolve-contingency'); return; }
+  var txt = document.getElementById('rc-detail');
+  var detail = (txt && txt.value || '').trim();
+  if (detail.length < 3) { alert('Describe como se resolvio la contingencia (minimo 3 caracteres)'); return; }
+  var chk = document.getElementById('rc-confirm');
+  if (!chk || !chk.checked) { alert('Debes marcar la confirmacion'); return; }
+  closeModal('m-resolve-contingency');
+  await resolveContingency(ctx.sessionKey, ctx.techUsername, ctx.techName, detail);
+}
+
+async function resolveContingency(sessionKey, techUsername, techName, resolutionDetail) {
+  logR('RESOLVE_CONTINGENCY', {sessionKey, techUsername, detail: resolutionDetail || null});
   // Reanudacion iniciada por jefatura: misma logica de cierre de pausa que resumeSession
   var sess = liveData.find(function(s) { return s.session_key === sessionKey; });
   var updates = {
@@ -2473,14 +2615,16 @@ async function resolveContingency(sessionKey, techUsername, techName) {
     var extraPausedMs = Date.now() - new Date(sess.paused_at).getTime();
     if (extraPausedMs < 0) extraPausedMs = 0;
     updates.accumulated_paused_ms = (sess.accumulated_paused_ms || 0) + extraPausedMs;
-    // Tambien cerrar la ultima pausa con resumed_at + duration_ms
+    // Tambien cerrar la ultima pausa con resumed_at + duration_ms + resolution
     if (sess.pauses && sess.pauses.length > 0) {
       var pauses = sess.pauses.slice();
       var last = pauses[pauses.length - 1];
       if (!last.resumed_at) {
         last = Object.assign({}, last, {
           resumed_at: new Date().toISOString(),
-          duration_ms: extraPausedMs
+          duration_ms: extraPausedMs,
+          resolution: resolutionDetail || null,   // detalle de como se resolvio
+          resolved_by: CU.name                    // quien la resolvio
         });
         pauses[pauses.length - 1] = last;
         updates.pauses = pauses;
@@ -2491,9 +2635,218 @@ async function resolveContingency(sessionKey, techUsername, techName) {
   if (error) { alert('Error: ' + error.message); return; }
   var {data:tu} = await sb.from('users').select('id').eq('username', techUsername).maybeSingle();
   var tid = tu ? tu.id : null;
-  await sb.from('notifications').insert({type:'resume', title:'Reanuda tu servicio', sub:'La contingencia fue resuelta por ' + CU.name + '. Puedes continuar.', target_user_id: tid});
+  var sub = 'La contingencia fue resuelta por ' + CU.name + '. Puedes continuar.';
+  if (resolutionDetail) sub += ' [Solucion: ' + resolutionDetail + ']';
+  await sb.from('notifications').insert({type:'resume', title:'Reanuda tu servicio', sub: sub, target_user_id: tid});
+
+  // ══ ROSSO UPGRADE: Log event con el detalle completo ══
+  if (window.ROSSO_UPGRADE) {
+    ROSSO_UPGRADE.logEvent(sessionKey, 'contingency_resolved', {
+      resolvedBy: CU.name,
+      technician: techName,
+      resolution: resolutionDetail
+    });
+  }
+  // ══ FIN UPGRADE ══
+
   showToast('fin', 'Contingencia resuelta', 'Se notifico a ' + techName);
   await fetchLive();
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ADMIN PANEL · Funciones destructivas (francisco.parra / felipe.parra)
+// ═══════════════════════════════════════════════════════════════════
+// Valida que el usuario actual sea super-admin.
+// Doble chequeo: rol admin Y username en whitelist. Protege contra
+// promociones accidentales de otros usuarios a rol admin.
+const SUPER_ADMINS = ['francisco.parra', 'felipe.parra'];
+
+function isSuperAdmin() {
+  return CU && CU.role === 'admin' && SUPER_ADMINS.indexOf(CU.username) !== -1;
+}
+
+// Log de accion destructiva en service_events para auditoria.
+// No depende estrictamente de ROSSO_UPGRADE porque queremos auditoria
+// incluso si el modulo upgrade no cargo por alguna razon.
+async function adminLogAction(sessionKey, actionType, metadata) {
+  try {
+    var payload = {
+      session_key: sessionKey,
+      event_type: actionType,
+      actor: CU.username,
+      actor_role: 'admin',
+      metadata: metadata || {}
+    };
+    await sb.from('service_events').insert(payload);
+    logR('ADMIN_ACTION_LOGGED', payload);
+  } catch (e) {
+    logR('ADMIN_ACTION_LOG_ERR', {msg: e.message}, 'warn');
+    // No bloqueamos la accion por un fallo de log. Se registra en consola.
+  }
+}
+
+// Forzar pausa de un servicio que esta corriendo
+async function adminForcePause(sessionKey, techName, serviceLabel) {
+  if (!isSuperAdmin()) { alert('Acceso denegado'); return; }
+  if (!confirm('¿Forzar PAUSA del servicio de ' + techName + '?\n\n' + serviceLabel + '\n\nQuedara registrado en auditoria.')) return;
+
+  var sess = liveData.find(function(s) { return s.session_key === sessionKey; });
+  if (!sess) { alert('Sesion no encontrada'); return; }
+  if (sess.status !== 'running') { alert('La sesion no esta en curso'); return; }
+
+  var pausedAtISO = new Date().toISOString();
+  var pauses = (sess.pauses || []).slice();
+  pauses.push({
+    reason: 'Pausa forzada por admin',
+    at: fmtT(liveSecondsNow(sess)),
+    paused_at: pausedAtISO,
+    resumed_at: null,
+    duration_ms: null,
+    forced_by: CU.name
+  });
+
+  var {error} = await sb.from('active_sessions').update({
+    running: false,
+    status: 'paused',
+    pauses: pauses,
+    paused_at: pausedAtISO,
+    updated_at: new Date().toISOString()
+  }).eq('session_key', sessionKey);
+
+  if (error) { alert('Error: ' + error.message); return; }
+
+  await adminLogAction(sessionKey, 'admin_force_pause', {
+    technician: techName,
+    service: serviceLabel,
+    forced_by: CU.name
+  });
+
+  showToast('pau', 'Pausa forzada', serviceLabel + ' · ' + techName);
+  await fetchLive();
+}
+
+// Forzar finalizacion de un servicio. Lo mueve a history con una marca
+// de "finalizacion forzada" en el checklist y sin observaciones del tecnico.
+async function adminForceFinish(sessionKey, techName, serviceLabel, plate) {
+  if (!isSuperAdmin()) { alert('Acceso denegado'); return; }
+  if (!confirm('¿Forzar FINALIZACION del servicio de ' + techName + '?\n\n'
+    + serviceLabel + (plate ? ' · ' + plate : '') + '\n\n'
+    + 'El servicio se movera al historial con el tiempo actual.\n'
+    + 'Quedara registrado como "finalizacion forzada".')) return;
+
+  var sess = liveData.find(function(s) { return s.session_key === sessionKey; });
+  if (!sess) { alert('Sesion no encontrada'); return; }
+
+  var finSec = liveSecondsNow(sess) || sess.seconds || 1;
+  if (finSec < 1) finSec = 1;
+
+  // Si estaba pausada, cerrar la ultima pausa
+  var pauses = (sess.pauses || []).slice();
+  if (sess.status === 'paused' && sess.paused_at && pauses.length > 0) {
+    var last = pauses[pauses.length - 1];
+    if (!last.resumed_at) {
+      last.resumed_at = new Date().toISOString();
+      last.duration_ms = Date.now() - new Date(sess.paused_at).getTime();
+      pauses[pauses.length - 1] = last;
+    }
+  }
+
+  var histPayload = {
+    technician: sess.technician,
+    username: sess.username,
+    service: sess.service,
+    plate: sess.plate,
+    duration: fmtT(finSec),
+    seconds: finSec,
+    goal_minutes: sess.goal_minutes,
+    pauses: pauses,
+    checklist: { forced_finish: true, forced_by: CU.name, forced_at: new Date().toISOString() },
+    ended_at: new Date().toISOString(),
+    odometer_photo_start: sess.odometer_photo_start || null,
+    odometer_photo_end: null,
+    km_start: sess.km_start || null,
+    km_end: null
+  };
+
+  var {error: hErr} = await sb.from('history').insert(histPayload);
+  if (hErr) { alert('Error al guardar historial: ' + hErr.message); return; }
+
+  var {error: dErr} = await sb.from('active_sessions').delete().eq('session_key', sessionKey);
+  if (dErr) logR('ADMIN_FINISH_DELETE_ERR', {err: dErr.message}, 'warn');
+
+  await adminLogAction(sessionKey, 'admin_force_finish', {
+    technician: techName,
+    service: serviceLabel,
+    plate: plate,
+    duration: fmtT(finSec),
+    seconds: finSec,
+    forced_by: CU.name
+  });
+
+  // Notificar al tecnico
+  var {data:tu} = await sb.from('users').select('id').eq('username', sess.username).maybeSingle();
+  if (tu) {
+    await sb.from('notifications').insert({
+      type: 'fin',
+      title: 'Servicio finalizado por admin',
+      sub: CU.name + ' finalizo tu servicio ' + serviceLabel + ' con tiempo ' + fmtT(finSec),
+      target_user_id: tu.id
+    });
+  }
+
+  showToast('fin', 'Servicio finalizado', serviceLabel + ' · ' + fmtT(finSec));
+  await fetchLive();
+}
+
+// Borrar un servicio activo (sin moverlo a history)
+async function adminDeleteActive(sessionKey, techName, serviceLabel) {
+  if (!isSuperAdmin()) { alert('Acceso denegado'); return; }
+  if (!confirm('¿BORRAR el servicio activo de ' + techName + '?\n\n'
+    + serviceLabel + '\n\n'
+    + '⚠ Esta accion NO es reversible. El servicio no quedara en historial.\n'
+    + 'Quedara registrado en auditoria quien lo borro.')) return;
+
+  // Auditoria ANTES del delete por si falla la eliminacion
+  await adminLogAction(sessionKey, 'admin_delete_active', {
+    technician: techName,
+    service: serviceLabel,
+    deleted_by: CU.name
+  });
+
+  var {error} = await sb.from('active_sessions').delete().eq('session_key', sessionKey);
+  if (error) { alert('Error al borrar: ' + error.message); return; }
+
+  showToast('pau', 'Servicio borrado', serviceLabel + ' · ' + techName);
+  await fetchLive();
+}
+
+// Borrar un registro del historial
+async function adminDeleteHistory(historyId, techName, serviceLabel, plate, duration) {
+  if (!isSuperAdmin()) { alert('Acceso denegado'); return; }
+  if (!confirm('¿BORRAR registro del historial?\n\n'
+    + techName + ' · ' + serviceLabel + (plate ? ' · ' + plate : '') + '\n'
+    + 'Duracion: ' + duration + '\n\n'
+    + '⚠ Esta accion NO es reversible.\n'
+    + 'Quedara registrado en auditoria quien lo borro.')) return;
+
+  // Auditoria: usamos un session_key sintetico basado en history_id
+  await adminLogAction('history_' + historyId, 'admin_delete_history', {
+    history_id: historyId,
+    technician: techName,
+    service: serviceLabel,
+    plate: plate,
+    duration: duration,
+    deleted_by: CU.name
+  });
+
+  var {error} = await sb.from('history').delete().eq('id', historyId);
+  if (error) { alert('Error al borrar: ' + error.message); return; }
+
+  showToast('pau', 'Registro borrado', serviceLabel + ' · ' + techName);
+  // Refrescar vista de historial
+  if (typeof renderBossHist === 'function' && curBossTab === 'b-hist') {
+    renderBossHist(document.getElementById('boss-body'));
+  }
 }
 
 // ═══════════════════════════════════════════════
@@ -3002,9 +3355,17 @@ async function renderBossHist(body) {
   body.appendChild(exportRow);
   if (!data || !data.length) { body.innerHTML += '<div class="empty">Sin historial</div>'; return; }
   var card = mk('div','card');
+  var canAdmin = isSuperAdmin();
   data.forEach(function(r) {
     var over = r.goal_minutes && r.seconds > r.goal_minutes * 60;
     var row = mk('div','row');
+    // Escapado defensivo para el onclick
+    var techSafe = (r.technician || '').replace(/'/g, '\\\'').replace(/"/g, '');
+    var srvSafe = (r.service || '').replace(/'/g, '\\\'').replace(/"/g, '');
+    var plateSafe = (r.plate || '').replace(/'/g, '\\\'').replace(/"/g, '');
+    var adminBtn = canAdmin
+      ? '<button class="btn btn-out" style="padding:3px 8px;font-size:9px;color:#c00;border-color:#c00;margin-top:4px" onclick="adminDeleteHistory(' + r.id + ',\'' + techSafe + '\',\'' + srvSafe + '\',\'' + plateSafe + '\',\'' + r.duration + '\')">✕ Borrar</button>'
+      : '';
     row.innerHTML = avatarHTML(r.technician, r.username, 36)
       + '<div style="flex:1">'
       + '<div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111">' + r.technician + '</div>'
@@ -3016,6 +3377,7 @@ async function renderBossHist(body) {
       + '<div style="font-size:18px;font-weight:700;font-family:var(--mono);color:' + (over?'var(--red)':'var(--green)') + '">' + r.duration + '</div>'
       + (r.goal_minutes ? '<div style="font-size:9px;color:#aaa;text-transform:uppercase">OBJ:' + r.goal_minutes + 'm</div>' : '')
       + '<div style="font-size:10px;color:#aaa">' + fmtD(r.ended_at) + '</div>'
+      + adminBtn
       + '</div>';
     card.appendChild(row);
   });
