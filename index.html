@@ -1,8 +1,4 @@
-// Guard: log if sb is null when called (should never happen post-init)
-function assertSB() {
-  if (!sb) { logR('SB_NULL_CALL', {}, 'err'); return false; }
-  return true;
-}
+function assertSB() { return !!sb; }
 <!DOCTYPE html>
 <html lang="es">
 <head>
@@ -121,20 +117,14 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 </style>
 </head>
 <body>
-<script>document.addEventListener("DOMContentLoaded",function(){var a=document.getElementById("app");if(a)a.style.display="none";});</script>
 <!-- Hard fallback: never stay on load screen more than 8s -->
 <script>
 setTimeout(function(){
   try {
     var ls=document.getElementById('load-screen');
-    var app=document.getElementById('app');
     if(ls && ls.style.display !== 'none') {
-      ls.style.display = 'none';
-      if(app) app.style.display = 'block';
-      var cs=document.getElementById('conn-status');
-      if(cs) cs.textContent = 'Timeout de carga. Toca "Reintentar".';
-      var rb=document.getElementById('retry-btn');
-      if(rb) rb.style.display = 'block';
+      // Keep trying in background - just show login now
+      showLogin(!!sb, sb ? null : 'Conexion lenta - ingresa igual');
     }
   } catch(e) {}
 }, 8000);
@@ -479,15 +469,7 @@ window.onunhandledrejection = function(e) {
 
 let dbgLines = [];
 function logR(label, payload, level) {
-  level = level || 'info';
-  const ts = new Date().toLocaleTimeString('es-CL', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
-  const msg = '[' + ts + '] [ROSSO] ' + label + ' ' + (payload ? JSON.stringify(payload).slice(0, 200) : '');
-  if (level === 'err') console.error(msg);
-  else if (level === 'warn') console.warn(msg);
-  else console.log(msg);
-  dbgLines.unshift({msg, level});
-  if (dbgLines.length > 60) dbgLines.pop();
-  refreshDebugPanel();
+  if (level === 'err' || level === 'e') console.error('[ROSSO]', label, payload||'');
 }
 
 function refreshDebugPanel() {
@@ -572,7 +554,7 @@ async function init() {
     var s = document.createElement('script');
     s.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2';
     s.crossOrigin = 'anonymous';
-    var timer = setTimeout(function() { resolve(false); }, 6000);
+    var timer = setTimeout(function() { resolve(false); }, 12000);
     s.onload = function() { clearTimeout(timer); resolve(true); };
     s.onerror = function() { clearTimeout(timer); resolve(false); };
     document.head.appendChild(s);
@@ -602,7 +584,7 @@ async function init() {
   try {
     var result = await Promise.race([
       sb.from('users').select('count').limit(1),
-      new Promise(function(_, rej) { setTimeout(function() { rej(new Error('Timeout 5s')); }, 5000); })
+      new Promise(function(_, rej) { setTimeout(function() { rej(new Error('Timeout 8s')); }, 8000); })
     ]);
     if (result && result.error) {
       connErr = result.error.message;
@@ -664,6 +646,14 @@ async function doLogin() {
   const errEl = document.getElementById('li-err');
   errEl.style.display = 'none';
   if (!u || !p) { errEl.textContent = 'Completa usuario y contrasena'; errEl.style.display = 'block'; return; }
+  
+  // If Supabase not ready yet, try to initialize
+  if (!sb) {
+    btn.innerHTML = '<span class="spin"></span> Conectando...'; btn.disabled = true;
+    await init();
+    btn.innerHTML = 'Ingresar'; btn.disabled = false;
+    if (!sb) { errEl.textContent = 'Sin conexion. Toca Reintentar Conexion.'; errEl.style.display = 'block'; return; }
+  }
   
   logR('LOGIN_ATTEMPT', {username: u});
   btn.innerHTML = '<span class="spin"></span> Ingresando...'; btn.disabled = true;
