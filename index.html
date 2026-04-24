@@ -1,3 +1,8 @@
+// Guard: log if sb is null when called (should never happen post-init)
+function assertSB() {
+  if (!sb) { logR('SB_NULL_CALL', {}, 'err'); return false; }
+  return true;
+}
 <!DOCTYPE html>
 <html lang="es">
 <head>
@@ -5,9 +10,13 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <title>Rosso Control de Tiempos</title>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Barlow+Condensed:wght@400;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet"/>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" defer crossorigin="anonymous"></script>
+<!-- Fonts: async load so they never block render -->
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Barlow+Condensed:wght@400;600;700&family=Share+Tech+Mono&display=swap" media="print" onload="this.media='all'"/>
+<noscript></noscript>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 :root{
@@ -112,7 +121,24 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 </style>
 </head>
 <body>
-
+<script>document.addEventListener("DOMContentLoaded",function(){var a=document.getElementById("app");if(a)a.style.display="none";});</script>
+<!-- Hard fallback: never stay on load screen more than 8s -->
+<script>
+setTimeout(function(){
+  try {
+    var ls=document.getElementById('load-screen');
+    var app=document.getElementById('app');
+    if(ls && ls.style.display !== 'none') {
+      ls.style.display = 'none';
+      if(app) app.style.display = 'block';
+      var cs=document.getElementById('conn-status');
+      if(cs) cs.textContent = 'Timeout de carga. Toca "Reintentar".';
+      var rb=document.getElementById('retry-btn');
+      if(rb) rb.style.display = 'block';
+    }
+  } catch(e) {}
+}, 8000);
+</script>
 <div class="load-screen" id="load-screen">
   <img src="data:image/png;base64,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" style="height:48px;width:auto"/>
   <div style="font-size:12px;color:#888;letter-spacing:.15em;text-transform:uppercase;font-family:'Rajdhani',sans-serif">Conectando sistema...</div>
@@ -441,7 +467,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 const DEBUG = true;
 const SURL = 'https://jczmupcmeixpwjedfgtk.supabase.co';
 const SKEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impjem11cGNtZWl4cHdqZWRmZ3RrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY5NzMxOTMsImV4cCI6MjA5MjU0OTE5M30.DuICC_pCQGv27lZivieXRRvGz9A1GNkgmhvTvyKo25o';
-const sb = supabase.createClient(SURL, SKEY);
+var sb = null; // initialized after supabase CDN loads
 
 window.onerror = function(msg, url, line, col, err) {
   logR('GLOBAL_ERROR', {msg, line, col, err: err ? err.toString() : ''}, 'err');
@@ -537,8 +563,40 @@ let calYear = new Date().getFullYear(), calMonth = new Date().getMonth();
 // INIT & CONNECTION TEST
 // ═══════════════════════════════════════════════
 async function init() {
-  logR('INIT_START', {url: SURL});
-  setLoadMsg('Probando conexion...');
+  logR('INIT_START', {});
+  setLoadMsg('Cargando...');
+
+  // Load supabase dynamically - never block
+  var sbLoaded = await new Promise(function(resolve) {
+    if (typeof supabase !== 'undefined') { resolve(true); return; }
+    var s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2';
+    s.crossOrigin = 'anonymous';
+    var timer = setTimeout(function() { resolve(false); }, 6000);
+    s.onload = function() { clearTimeout(timer); resolve(true); };
+    s.onerror = function() { clearTimeout(timer); resolve(false); };
+    document.head.appendChild(s);
+  });
+
+  if (!sbLoaded || typeof supabase === 'undefined') {
+    logR('SB_CDN_FAIL', {}, 'err');
+    setLoadMsg('Error: no se pudo cargar Supabase. Revisa tu conexion a internet.');
+    showLogin(false, 'Sin conexion a Supabase CDN');
+    return;
+  }
+
+  // Initialize client
+  try {
+    sb = supabase.createClient(SURL, SKEY);
+    logR('SB_CLIENT_OK', {});
+  } catch(e) {
+    logR('SB_CLIENT_ERR', {e: e.message}, 'err');
+    showLogin(false, e.message);
+    return;
+  }
+
+  // Test DB connection with 5s timeout
+  setLoadMsg('Conectando a base de datos...');
   var connOk = false;
   var connErr = null;
   try {
@@ -548,39 +606,41 @@ async function init() {
     ]);
     if (result && result.error) {
       connErr = result.error.message;
-      logR('CONN_FAIL', {e: connErr}, 'err');
+      logR('DB_FAIL', {e: connErr}, 'err');
     } else {
       connOk = true;
-      logR('CONN_OK', {});
+      logR('DB_OK', {});
     }
   } catch(e) {
     connErr = e.message;
-    logR('CONN_ERR', {e: connErr}, 'err');
+    logR('DB_ERR', {e: connErr}, 'err');
   }
-  setLoadMsg(connOk ? 'Conectado' : ('Error: ' + connErr));
-  await new Promise(function(r) { setTimeout(r, 600); });
+
+  showLogin(connOk, connErr);
+}
+
+function showLogin(connOk, connErr) {
   document.getElementById('load-screen').style.display = 'none';
   document.getElementById('app').style.display = 'block';
   var cs = document.getElementById('conn-status');
-  if (cs) cs.textContent = connOk ? 'Conectado a Supabase' : ('Sin conexion: ' + (connErr||''));
+  if (cs) cs.textContent = connOk ? 'Conectado' : ('Sin conexion: ' + (connErr || 'Error'));
   var rb = document.getElementById('retry-btn');
   if (rb) rb.style.display = connOk ? 'none' : 'block';
 }
-
 function setLoadMsg(msg) {
   var el = document.getElementById('load-status'); if (el) el.textContent = msg;
 }
 
 function showApp(connOk, connErr) {
-  document.getElementById('load-screen').style.display = 'none';
-  document.getElementById('app').style.display = 'block';
-  var rb = document.getElementById('retry-btn');
-  if (rb) rb.style.display = connOk ? 'none' : 'block';
+  showLogin(connOk, connErr);
 }
 
 async function retryConn() {
-  document.getElementById('load-screen').style.display = 'flex';
-  document.getElementById('app').style.display = 'none';
+  var ls = document.getElementById('load-screen');
+  var app = document.getElementById('app');
+  if (ls) ls.style.display = 'flex';
+  if (app) app.style.display = 'none';
+  setLoadMsg('Reintentando...');
   await init();
 }
 // ═══════════════════════════════════════════════
@@ -781,7 +841,7 @@ function renderTechNuevo(body) {
   // Plate input
   var pc = mk('div','card-accent');
   pc.innerHTML = '<div class="lbl">Patente del vehiculo</div>'
-    + '<input class="inp-plate" id="plate-inp" maxlength="8" placeholder="ABCD12" oninput="selPlate=this.value.toUpperCase().replace(/[^A-Z0-9]/g,\'\');this.value=selPlate;chkBtn()"/>'
+    + '<input class="inp-plate" id="plate-inp" maxlength="8" placeholder="ABCD12" oninput="selPlate=this.value.toUpperCase().replace(/[^A-Z0-9]/g,'');this.value=selPlate;chkBtn()"/>'
     + '<div style="font-size:10px;color:var(--wh4);margin-top:4px">Obligatorio - min 4 caracteres - mayusculas auto</div>';
   body.appendChild(pc);
   
@@ -875,9 +935,9 @@ async function loadAssignments(body, afterEl) {
     var past = dm < 0; var soon = dm >= 0 && dm <= 30;
     var bc = past ? 'var(--red)' : soon ? 'var(--gold)' : 'var(--blue)';
     var tl = past ? 'ATRASADO' : soon ? ('EN ' + dm + ' MIN') : dt.toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'});
-    h += '<div style="background:#fff;border:1px solid #ddd;border-left:3px solid ' + bc + ';border-radius:3px;padding:9px;margin-bottom:6px;cursor:pointer" onclick="applyAssign(\'' + a.service + '\',\'' + (a.plate||'') + '\')">'
+    h += '<div style="background:#fff;border:1px solid #ddd;border-left:3px solid ' + bc + ';border-radius:3px;padding:9px;margin-bottom:6px;cursor:pointer" onclick="applyAssign('' + a.service + '','' + (a.plate||'') + '')">'
       + '<div style="display:flex;justify-content:space-between"><div>'
-      + '<div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111">' + a.service + '</div>'
+      + '<div style="font-size:12px;font-weight:700;font-family:'Rajdhani',sans-serif;text-transform:uppercase;color:#111">' + a.service + '</div>'
       + (a.plate ? '<span class="plate-tag">' + a.plate + '</span>' : '')
       + (a.notes ? '<div style="font-size:10px;color:#666;margin-top:2px">' + a.notes + '</div>' : '')
       + (a.goal_minutes ? '<div style="font-size:10px;color:#999;margin-top:2px;text-transform:uppercase">OBJ: ' + a.goal_minutes + ' min</div>' : '')
@@ -975,7 +1035,7 @@ function renderTimerCard(body, sess) {
   var pct = sess.goal_minutes ? Math.min(100, Math.round(sec / (sess.goal_minutes * 60) * 100)) : null;
   
   var wrap = mk('div','timer-wrap');
-  wrap.innerHTML = '<div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111;margin-bottom:4px">' + sess.service + '</div>'
+  wrap.innerHTML = '<div style="font-size:12px;font-weight:700;font-family:'Rajdhani',sans-serif;text-transform:uppercase;color:#111;margin-bottom:4px">' + sess.service + '</div>'
     + (sess.plate ? '<div style="margin-bottom:8px"><span class="plate-tag">' + sess.plate + '</span></div>' : '')
     + '<div class="timer-num' + (over?' over':isPaused?' paused':'') + '" id="timer-disp">' + fmtT(sec) + '</div>'
     + (sess.goal_minutes ? '<div style="font-size:10px;color:var(--wh4);margin-top:4px">OBJ: ' + sess.goal_minutes + ' min</div>'
@@ -1522,13 +1582,13 @@ async function renderTechAgenda(body) {
   });
   Object.entries(byDay).forEach(function(entry) {
     var day = entry[0]; var evts = entry[1];
-    var dd = mk('div',''); dd.innerHTML = '<div style="font-size:12px;font-weight:700;color:var(--red);font-family:\'Rajdhani\',sans-serif;letter-spacing:.05em;text-transform:uppercase;margin:12px 0 6px">' + day + '</div>'; body.appendChild(dd);
+    var dd = mk('div',''); dd.innerHTML = '<div style="font-size:12px;font-weight:700;color:var(--red);font-family:'Rajdhani',sans-serif;letter-spacing:.05em;text-transform:uppercase;margin:12px 0 6px">' + day + '</div>'; body.appendChild(dd);
     evts.forEach(function(e) {
       var dt = new Date(e.scheduled_at);
       var isMe = e.technician_id === CU.id;
       var card = mk('div','card'); card.style.borderLeft = '4px solid ' + (isMe ? 'var(--red)' : 'var(--blue)'); card.style.marginBottom = '6px';
       card.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:flex-start">'
-        + '<div><div style="font-size:13px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111">' + e.service + '</div>'
+        + '<div><div style="font-size:13px;font-weight:700;font-family:'Rajdhani',sans-serif;text-transform:uppercase;color:#111">' + e.service + '</div>'
         + (e.plate ? '<span class="plate-tag">' + e.plate + '</span> ' : '')
         + '<span style="font-size:11px;color:#666">' + dt.toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'}) + (e.technician_name ? ' - ' + e.technician_name : '') + '</span>'
         + (e.notes ? '<div style="font-size:11px;color:#999;margin-top:2px">' + e.notes + '</div>' : '') + '</div>'
@@ -1552,7 +1612,7 @@ async function renderTechAlertas(body) {
   data.forEach(function(n) {
     var card = mk('div','card'); card.style.borderLeft = '4px solid ' + (n.type==='over'?'var(--red)':n.type==='pau'?'var(--gold)':n.type==='resume'?'var(--green)':'var(--blue)');
     card.style.marginBottom = '6px';
-    card.innerHTML = '<div style="font-size:12px;font-weight:700;color:#111;font-family:\'Rajdhani\',sans-serif">' + n.title + '</div>'
+    card.innerHTML = '<div style="font-size:12px;font-weight:700;color:#111;font-family:'Rajdhani',sans-serif">' + n.title + '</div>'
       + '<div style="font-size:11px;color:#666;margin-top:2px">' + n.sub + '</div>'
       + '<div style="font-size:10px;color:#aaa;margin-top:4px">' + fmtD(n.created_at) + '</div>';
     body.appendChild(card);
@@ -1600,7 +1660,7 @@ function buildSessCard(s, isTech) {
   if (over && !paused) h += '<div style="position:absolute;top:-5px;right:-5px;background:var(--red);border-radius:50%;width:14px;height:14px;border:2px solid #fff;display:flex;align-items:center;justify-content:center;font-size:8px;color:#fff;font-weight:700">!</div>';
   h += '</div>';
   h += '<div style="flex:1">';
-  h += '<div style="font-size:13px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.03em;color:#111">' + s.technician + '</div>';
+  h += '<div style="font-size:13px;font-weight:700;font-family:'Rajdhani',sans-serif;text-transform:uppercase;letter-spacing:.03em;color:#111">' + s.technician + '</div>';
   h += '<div style="font-size:11px;color:#666;text-transform:uppercase">' + s.service + '</div>';
   if (s.plate) h += '<span class="plate-tag" style="display:inline-block;margin-top:3px">' + s.plate + '</span>';
   if (lastPause) h += '<div style="background:var(--gold2);border:1px solid var(--gold);border-radius:3px;padding:2px 7px;margin-top:4px;font-size:10px;color:var(--gold3);font-weight:700;display:inline-block">PAUSA: ' + lastPause.reason + '</div>';
@@ -1611,7 +1671,7 @@ function buildSessCard(s, isTech) {
   if (s.goal_minutes) h += '<div style="font-size:9px;color:#aaa;text-transform:uppercase">OBJ:' + s.goal_minutes + 'm</div>';
   h += '</div></div>';
   if (pct !== null) h += '<div class="prog-bar" style="margin-top:8px"><div class="prog-fill" style="width:' + pct + '%;background:' + (over?'var(--red)':'var(--green)') + '"></div></div>';
-  if (!isTech && paused) h += '<div style="margin-top:8px"><button class="btn btn-green" style="padding:8px;font-size:11px" onclick="resolveContingency(\'' + s.session_key + '\',\'' + s.username + '\',\'' + s.technician.replace(/'/g,'') + '\')">Resolver contingencia</button></div>';
+  if (!isTech && paused) h += '<div style="margin-top:8px"><button class="btn btn-green" style="padding:8px;font-size:11px" onclick="resolveContingency('' + s.session_key + '','' + s.username + '','' + s.technician.replace(/'/g,'') + '')">Resolver contingencia</button></div>';
   card.innerHTML = h;
   return card;
 }
@@ -1638,7 +1698,7 @@ async function renderBossAlertas(body) {
   data.forEach(function(n) {
     var card = mk('div','card'); card.style.borderLeft = '4px solid ' + (n.type==='over'?'var(--red)':n.type==='pau'?'var(--gold)':n.type==='fin'?'var(--green)':n.type==='cal'?'var(--blue)':'var(--blue)');
     card.style.marginBottom = '6px';
-    card.innerHTML = '<div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;color:#111">' + n.title + '</div>'
+    card.innerHTML = '<div style="font-size:12px;font-weight:700;font-family:'Rajdhani',sans-serif;color:#111">' + n.title + '</div>'
       + '<div style="font-size:11px;color:#666;margin-top:2px">' + n.sub + '</div>'
       + '<div style="font-size:10px;color:#aaa;margin-top:4px">' + fmtD(n.created_at) + '</div>';
     body.appendChild(card);
@@ -1665,10 +1725,10 @@ async function renderCalGrid(body) {
   var h = '<button class="btn btn-red" onclick="openNewEvent(null)" style="margin-bottom:10px">+ Agendar</button>';
   h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">';
   h += '<button class="btn-sm" onclick="calNav(-1)">&#8249; Ant</button>';
-  h += '<div style="font-size:15px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.05em">' + months[calMonth] + ' ' + calYear + '</div>';
+  h += '<div style="font-size:15px;font-weight:700;font-family:'Rajdhani',sans-serif;text-transform:uppercase;letter-spacing:.05em">' + months[calMonth] + ' ' + calYear + '</div>';
   h += '<button class="btn-sm" onclick="calNav(1)">Sig &#8250;</button></div>';
   h += '<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:1px;margin-bottom:2px">';
-  ['D','L','M','M','J','V','S'].forEach(function(d) { h += '<div style="text-align:center;font-size:10px;font-weight:700;color:#999;padding:3px;font-family:\'Rajdhani\',sans-serif">' + d + '</div>'; });
+  ['D','L','M','M','J','V','S'].forEach(function(d) { h += '<div style="text-align:center;font-size:10px;font-weight:700;color:#999;padding:3px;font-family:'Rajdhani',sans-serif">' + d + '</div>'; });
   h += '</div><div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px">';
   for (var i=0; i<firstDay; i++) h += '<div style="min-height:52px"></div>';
   for (var day=1; day<=daysInMonth; day++) {
@@ -1678,7 +1738,7 @@ async function renderCalGrid(body) {
       var t = new Date(e.scheduled_at).toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'});
       var st = e.status||'pendiente';
       var c = st==='completado'?'var(--green)':st==='cancelado'?'var(--red)':'var(--gold)';
-      return '<div onclick="event.stopPropagation();openEditEvent(\'' + e.id + '\')" style="background:#fff;border-left:2px solid ' + c + ';padding:1px 3px;margin-top:1px;border-radius:1px;cursor:pointer;font-size:9px;color:#333;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">' + t + ' ' + e.service + '</div>';
+      return '<div onclick="event.stopPropagation();openEditEvent('' + e.id + '')" style="background:#fff;border-left:2px solid ' + c + ';padding:1px 3px;margin-top:1px;border-radius:1px;cursor:pointer;font-size:9px;color:#333;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">' + t + ' ' + e.service + '</div>';
     }).join('');
     h += '<div onclick="openNewEvent(new Date(' + calYear + ',' + calMonth + ',' + day + '))" style="min-height:52px;background:' + (isToday?'#fce8e8':'#fff') + ';border:1px solid ' + (isToday?'var(--red)':'#eee') + ';border-radius:3px;padding:3px;cursor:pointer">';
     h += '<div style="font-size:10px;font-weight:' + (isToday?'700':'400') + ';color:' + (isToday?'var(--red)':'#666') + '">' + day + '</div>' + evH + '</div>';
@@ -1723,7 +1783,7 @@ async function renderBossPlan(body) {
     var gDiv = mk('div',''); gDiv.style.marginBottom = '16px';
     var h = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;padding-bottom:6px;border-bottom:2px solid var(--red)">';
     h += '<div class="av ' + (tid==='__none__'?'av-adm':'av-tech') + '">' + init + '</div>';
-    h += '<div style="font-size:14px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111">' + grp.name + '</div>';
+    h += '<div style="font-size:14px;font-weight:700;font-family:'Rajdhani',sans-serif;text-transform:uppercase;color:#111">' + grp.name + '</div>';
     h += '<span class="badge b-over">' + grp.events.length + ' srv</span></div>';
     grp.events.forEach(function(e) {
       var dt = new Date(e.scheduled_at);
@@ -1731,9 +1791,9 @@ async function renderBossPlan(body) {
       var past=dm<0; var soon=dm>=0&&dm<=60;
       var bc=past?'var(--red)':soon?'var(--gold)':'var(--blue)';
       var st=e.status||'pendiente';
-      h += '<div onclick="openEditEvent(\'' + e.id + '\')" style="background:#fff;border:1px solid #eee;border-left:4px solid ' + bc + ';border-radius:3px;padding:9px;margin-bottom:6px;cursor:pointer">';
+      h += '<div onclick="openEditEvent('' + e.id + '')" style="background:#fff;border:1px solid #eee;border-left:4px solid ' + bc + ';border-radius:3px;padding:9px;margin-bottom:6px;cursor:pointer">';
       h += '<div style="display:flex;justify-content:space-between;align-items:flex-start">';
-      h += '<div><div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111">' + e.service + '</div>';
+      h += '<div><div style="font-size:12px;font-weight:700;font-family:'Rajdhani',sans-serif;text-transform:uppercase;color:#111">' + e.service + '</div>';
       h += '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:3px">';
       if (e.plate) h += '<span class="plate-tag">' + e.plate + '</span>';
       h += '<span style="font-size:10px;color:#666">' + dt.toLocaleDateString('es-CL',{weekday:'short',day:'2-digit',month:'short'}) + ' ' + dt.toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'}) + '</span>';
@@ -1766,7 +1826,7 @@ async function renderBossHist(body) {
     var row = mk('div','row');
     row.innerHTML = '<div class="av av-tech">' + init + '</div>'
       + '<div style="flex:1">'
-      + '<div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111">' + r.technician + '</div>'
+      + '<div style="font-size:12px;font-weight:700;font-family:'Rajdhani',sans-serif;text-transform:uppercase;color:#111">' + r.technician + '</div>'
       + '<div style="font-size:11px;color:#666;text-transform:uppercase">' + r.service + '</div>'
       + (r.plate ? '<span class="plate-tag">' + r.plate + '</span>' : '')
       + (r.pauses && r.pauses.length ? '<div style="font-size:10px;color:var(--gold3);margin-top:2px">' + r.pauses.map(function(p){return '• '+p.reason;}).join(' ') + '</div>' : '')
@@ -1799,11 +1859,11 @@ async function renderBossUsers(body) {
     var av = '<div class="av ' + avc + '">' + (u.avatar_url ? '<img src="' + u.avatar_url + '" style="width:100%;height:100%;object-fit:cover;border-radius:2px"/>' : init) + '</div>';
     row.innerHTML = av
       + '<div style="flex:1">'
-      + '<div style="font-size:13px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.03em;color:#111">' + u.name + '</div>'
+      + '<div style="font-size:13px;font-weight:700;font-family:'Rajdhani',sans-serif;text-transform:uppercase;letter-spacing:.03em;color:#111">' + u.name + '</div>'
       + '<div style="font-size:11px;color:#666">@' + u.username + (u.cargo?' - '+u.cargo:'') + '</div>'
       + '<span class="badge ' + (u.role==='admin'?'b-cal':u.role==='jefatura'?'b-run':'b-pend') + '">' + u.role + '</span>'
       + '</div>'
-      + '<button class="btn-sm" onclick="openUserModal(\'' + u.id + '\')">Editar</button>';
+      + '<button class="btn-sm" onclick="openUserModal('' + u.id + '')">Editar</button>';
     card.appendChild(row);
   });
   body.appendChild(card);
@@ -1816,7 +1876,7 @@ function renderBossCfg(body) {
   var card = mk('div','card');
   card.innerHTML = '<div class="lbl">Tiempos objetivo</div>'
     + SRVS.filter(function(s){return s.goal;}).map(function(s) {
-      return '<div class="row" style="padding:7px 0"><span style="font-size:13px;color:#333;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase">' + s.name + '</span><span style="font-family:var(--mono);color:var(--red);font-weight:700">' + s.goal + ' min</span></div>';
+      return '<div class="row" style="padding:7px 0"><span style="font-size:13px;color:#333;font-family:'Rajdhani',sans-serif;text-transform:uppercase">' + s.name + '</span><span style="font-family:var(--mono);color:var(--red);font-weight:700">' + s.goal + ' min</span></div>';
     }).join('');
   body.appendChild(card);
 }
@@ -2110,580 +2170,16 @@ function fmtD(d) {
   return dt.toLocaleDateString('es-CL',{day:'2-digit',month:'2-digit',year:'2-digit'})+' '+dt.toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'});
 }
 
-init();
-
-// ═══════════════════════════════════════════════
-// TECH TABS - EXTENDED (override techTab)
-// ═══════════════════════════════════════════════
-var _origTechTab = techTab;
-techTab = function(t) {
-  curTechTab = t;
-  document.querySelectorAll('#tech-tabbar .tab').forEach(function(el) {
-    el.classList.toggle('active', el.dataset.tab === t);
-  });
-  var body = document.getElementById('tech-body');
-  body.innerHTML = '';
-  logR('TECH_TAB', {tab: t});
-  if (t === 't-inicio') renderTechNuevo(body);
-  else if (t === 't-agenda') renderTechAgenda(body);
-  else if (t === 't-alertas') { document.getElementById('tech-ndot').classList.remove('show'); renderTechAlertas(body); }
-  else if (t === 't-online') renderTechOnlineFull();
-  else if (t === 't-historial') renderTechHistorial(body);
-  // Refresh active dot
-  updateActiveDot();
-};
-
-// ═══════════════════════════════════════════════
-// ACTIVE DOT: show if tech has paused/active services
-// ═══════════════════════════════════════════════
-function updateActiveDot() {
-  if (!CU || CU.role !== 'tech') return;
-  var myActive = liveData.filter(function(s) { return s.username === CU.username; });
-  var dot = document.getElementById('tech-active-dot');
-  if (dot) dot.classList.toggle('on', myActive.length > 0);
-  // Also update badge count
-  var badge = document.getElementById('mis-srv-badge');
-  if (badge) { badge.textContent = myActive.length; badge.style.display = myActive.length ? 'inline-block' : 'none'; }
+// Top-level safety net
+try {
+  init();
+} catch(bootErr) {
+  console.error('[ROSSO BOOT ERROR]', bootErr);
+  try {
+    document.getElementById('load-screen').style.display = 'none';
+    document.getElementById('app').style.display = 'block';
+  } catch(e) {}
 }
-
-// Patch pollAll to also update active dot
-var _origPollAll = pollAll;
-pollAll = async function() {
-  if (!CU) return;
-  await Promise.all([fetchLive(), fetchNotifs()]);
-  updateActiveDot();
-};
-
-// ═══════════════════════════════════════════════
-// COMMENTS
-// ═══════════════════════════════════════════════
-var commentContext = null; // {type: 'active'|'pending'|'history', key, id}
-var commentRadioState = {};
-
-function openCommentModal(ctx, title) {
-  commentContext = ctx;
-  document.getElementById('m-comment-title').textContent = title || 'Agregar comentario';
-  document.getElementById('m-comment-text').value = '';
-  document.getElementById('m-comment-err').style.display = 'none';
-  openModal('m-comment');
-  setTimeout(function() { document.getElementById('m-comment-text').focus(); }, 200);
-}
-
-async function submitComment() {
-  var text = document.getElementById('m-comment-text').value.trim();
-  var err = document.getElementById('m-comment-err');
-  var btn = document.getElementById('m-comment-btn');
-  err.style.display = 'none';
-  if (!text) { err.textContent = 'Escribe un comentario'; err.style.display = 'block'; return; }
-  btn.innerHTML = '<span class="spin"></span>'; btn.disabled = true;
-  var entry = {text: text, at: fmtD(new Date().toISOString()), author: CU.name};
-  logR('COMMENT_SUBMIT', {ctx: commentContext, entry});
-  var error;
-  if (commentContext.type === 'active') {
-    // Get current comments first
-    var {data: sess} = await sb.from('active_sessions').select('comments').eq('session_key', commentContext.key).maybeSingle();
-    var comments = (sess && sess.comments) || [];
-    comments.push(entry);
-    T.comments = comments; // keep in memory too
-    ({error} = await sb.from('active_sessions').update({comments: comments, updated_at: new Date().toISOString()}).eq('session_key', commentContext.key));
-  } else if (commentContext.type === 'pending') {
-    var {data: ps} = await sb.from('pending_services').select('comments').eq('id', commentContext.id).maybeSingle();
-    var pComments = (ps && ps.comments) || [];
-    pComments.push(entry);
-    ({error} = await sb.from('pending_services').update({comments: pComments, updated_at: new Date().toISOString()}).eq('id', commentContext.id));
-  } else if (commentContext.type === 'history') {
-    var {data: hr} = await sb.from('history').select('comments').eq('id', commentContext.id).maybeSingle();
-    var hComments = (hr && hr.comments) || [];
-    hComments.push(entry);
-    ({error} = await sb.from('history').update({comments: hComments}).eq('id', commentContext.id));
-  }
-  logR('COMMENT_RESULT', {error: error ? error.message : null});
-  btn.innerHTML = 'Guardar comentario'; btn.disabled = false;
-  if (error) { err.textContent = 'Error: ' + error.message; err.style.display = 'block'; return; }
-  closeModal('m-comment');
-  // Refresh current view
-  if (curTechTab === 't-online') renderTechOnlineFull();
-  else if (curTechTab === 't-historial') renderTechHistorial(document.getElementById('tech-body'));
-  else if (curTechTab === 't-inicio') { var body = document.getElementById('tech-body'); body.innerHTML = ''; renderTechNuevo(body); }
-}
-
-// ═══════════════════════════════════════════════
-// PAUSE WITH COMMENT OPTION
-// ═══════════════════════════════════════════════
-// Override confirmPause to move session to pending_services
-var _origConfirmPause = confirmPause;
-confirmPause = async function(reason) {
-  closeModal('m-pause');
-  if (!T.sessionKey) {
-    var mine = liveData.find(function(s) { return s.username === CU.username; });
-    if (!mine) { alert('No hay sesion activa'); return; }
-    T.sessionKey = mine.session_key; T.srvLabel = mine.service;
-    T.srvGoal = mine.goal_minutes; T.sec = mine.seconds;
-    T.pauses = mine.pauses || []; T.plate = mine.plate || '';
-    T.comments = mine.comments || [];
-  }
-  T.running = false;
-  var entry = {reason: reason, at: fmtT(T.sec)};
-  T.pauses.push(entry);
-  logR('PAUSE_WITH_PENDING', {key: T.sessionKey, reason, sec: T.sec});
-  // Update active_sessions status
-  var {error: upErr} = await sb.from('active_sessions').update({
-    running: false, status: 'paused',
-    pauses: T.pauses, seconds: T.sec,
-    comments: T.comments || [],
-    updated_at: new Date().toISOString()
-  }).eq('session_key', T.sessionKey);
-  if (upErr) { logR('PAUSE_UPDATE_ERR', {err: upErr.message}, 'err'); alert('Error al pausar: ' + upErr.message); return; }
-  // Also mirror to pending_services for persistence
-  var psPayload = {
-    session_key: T.sessionKey, technician: CU.name, username: CU.username,
-    service: T.srvLabel, plate: T.plate, seconds: T.sec, status: 'paused',
-    goal_minutes: T.srvGoal || null, pauses: T.pauses, comments: T.comments || [],
-    paused_at: new Date().toISOString(), updated_at: new Date().toISOString()
-  };
-  logR('PENDING_UPSERT', psPayload);
-  var {error: psErr} = await sb.from('pending_services').upsert(psPayload, {onConflict: 'session_key'});
-  logR('PENDING_UPSERT_RESULT', {error: psErr ? psErr.message : null});
-  await pushNotif('pau', CU.name + ' pauso el servicio', T.srvLabel + ' - Motivo: ' + reason);
-  await fetchLive();
-  techTab('t-misservicios');
-};
-
-// ═══════════════════════════════════════════════
-// PAUSE AND DEFER CHECKLIST
-// ═══════════════════════════════════════════════
-async function pauseAndDeferChecklist(reason) {
-  // Pause the service and mark checklist as pending
-  closeModal('m-pause');
-  if (!T.sessionKey) {
-    var mine = liveData.find(function(s) { return s.username === CU.username; });
-    if (mine) { T.sessionKey = mine.session_key; T.srvLabel = mine.service; T.srvGoal = mine.goal_minutes; T.sec = mine.seconds; T.pauses = mine.pauses || []; T.plate = mine.plate || ''; T.comments = mine.comments || []; }
-  }
-  T.running = false;
-  // Move to pending_services with checklist_pending status
-  var psPayload = {
-    session_key: T.sessionKey, technician: CU.name, username: CU.username,
-    service: T.srvLabel, plate: T.plate, seconds: T.sec, status: 'checklist_pending',
-    goal_minutes: T.srvGoal || null, pauses: T.pauses, comments: T.comments || [],
-    paused_at: new Date().toISOString(), updated_at: new Date().toISOString()
-  };
-  logR('DEFER_CHECKLIST', psPayload);
-  var {error} = await sb.from('pending_services').upsert(psPayload, {onConflict: 'session_key'});
-  if (error) { alert('Error: ' + error.message); return; }
-  // Remove from active_sessions
-  await sb.from('active_sessions').delete().eq('session_key', T.sessionKey);
-  await pushNotif('pau', CU.name + ' difiere checklist', T.srvLabel + ' - Checklist pendiente');
-  resetT();
-  await fetchLive();
-  techTab('t-online');
-}
-
-// ═══════════════════════════════════════════════
-// TECH: ONLINE TAB (full, with pending services)
-// ═══════════════════════════════════════════════
-async function renderTechOnlineFull() {
-  var body = document.getElementById('tech-body');
-  if (curTechTab !== 't-online') return;
-  body.innerHTML = '<div class="empty"><span class="spin"></span>Cargando...</div>';
-  // Fetch active sessions for this tech
-  var mine = liveData.filter(function(s) { return s.username === CU.username; });
-  // Fetch pending services for this tech
-  var {data: pending, error: pErr} = await sb.from('pending_services').select('*').eq('username', CU.username).order('updated_at', {ascending:false});
-  logR('TECH_ONLINE_FULL', {active: mine.length, pending: pending ? pending.length : 0, pErr: pErr ? pErr.message : null});
-  body.innerHTML = '';
-  if (!mine.length && (!pending || !pending.length)) {
-    body.innerHTML = '<div class="empty">No tienes servicios activos o pausados</div>';
-    return;
-  }
-  // Active sessions
-  if (mine.length) {
-    var ah = mk('div',''); ah.innerHTML = '<div class="lbl">Servicios activos</div>'; body.appendChild(ah);
-    mine.forEach(function(s) {
-      body.appendChild(buildActiveSessCard(s));
-    });
-  }
-  // Pending (paused + checklist_pending)
-  if (pending && pending.length) {
-    var ph = mk('div',''); ph.innerHTML = '<div class="lbl" style="margin-top:12px">' + pending.length + ' servicio' + (pending.length>1?'s':'') + ' pausado' + (pending.length>1?'s':'') + ' / pendiente' + (pending.length>1?'s':'') + '</div>'; body.appendChild(ph);
-    pending.forEach(function(s) {
-      body.appendChild(buildPendingCard(s));
-    });
-  }
-}
-
-function buildActiveSessCard(s) {
-  var over = s.goal_minutes && s.seconds > s.goal_minutes * 60;
-  var isPaused = !s.running || s.status === 'paused';
-  var bc = over ? 'var(--red)' : isPaused ? 'var(--gold)' : 'var(--green)';
-  var bg = over ? '#fff8f8' : isPaused ? '#fffdf5' : '#fff';
-  var lastPause = isPaused && s.pauses && s.pauses.length ? s.pauses[s.pauses.length-1] : null;
-  var card = mk('div','sess-row'); card.style.cssText = 'border-left:4px solid '+bc+';background:'+bg+';margin-bottom:8px';
-  var h = '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">';
-  h += '<div><div style="font-size:13px;font-weight:700;font-family:'Rajdhani',sans-serif;text-transform:uppercase;color:#111">'+s.service+'</div>';
-  if (s.plate) h += '<span class="plate-tag">'+s.plate+'</span> ';
-  h += '<span class="badge '+(over?'b-over':isPaused?'b-pau':'b-run')+'">'+(over?'Tiempo superado':isPaused?'Pausado':'En curso')+'</span></div>';
-  h += '<div style="font-size:22px;font-weight:700;font-family:var(--mono);color:'+(over?'var(--red)':isPaused?'var(--gold)':'#111')+'">'+fmtT(s.seconds)+'</div></div>';
-  if (lastPause) h += '<div style="background:var(--gold2);border:1px solid var(--gold);border-radius:3px;padding:5px 8px;margin-bottom:6px;font-size:11px;color:var(--gold3);font-weight:600">Pausa: '+lastPause.reason+'</div>';
-  // Comments
-  if (s.comments && s.comments.length) {
-    h += '<div style="margin-bottom:6px">';
-    s.comments.slice(-2).forEach(function(c) { h += '<div style="font-size:11px;color:#666;padding:3px 0;border-bottom:1px solid #f0f0f0">'+c.author+': '+c.text+' <span style="color:#aaa;font-size:10px">'+c.at+'</span></div>'; });
-    h += '</div>';
-  }
-  // Buttons
-  h += '<div class="g3" style="gap:6px">';
-  h += '<button class="btn btn-red" style="font-size:10px;padding:8px" onclick="openCommentModal({type:'active',key:''+s.session_key+''}, 'Comentario operativo')">Comentar</button>';
-  if (isPaused) {
-    h += '<button class="btn btn-blue" style="font-size:10px;padding:8px" onclick="resumeFromCard(''+s.session_key+'')">Reanudar</button>';
-    h += '<button class="btn btn-green" style="font-size:10px;padding:8px" onclick="openChecklistFromCard(''+s.session_key+'')">Finalizar</button>';
-  } else {
-    h += '<button class="btn btn-gold" style="font-size:10px;padding:8px" onclick="openModal('m-pause')">Pausar</button>';
-    h += '<button class="btn btn-red" style="font-size:10px;padding:8px" onclick="openChecklistFromCard(''+s.session_key+'')">Finalizar</button>';
-  }
-  h += '</div>';
-  card.innerHTML = h; return card;
-}
-
-function buildPendingCard(s) {
-  var isCkPending = s.status === 'checklist_pending';
-  var bc = isCkPending ? 'var(--blue)' : 'var(--gold)';
-  var bg = isCkPending ? 'var(--blue2)' : 'var(--gold2)';
-  var lastPause = s.pauses && s.pauses.length ? s.pauses[s.pauses.length-1] : null;
-  var card = mk('div','sess-row'); card.style.cssText = 'border-left:4px solid '+bc+';background:#fff;margin-bottom:8px';
-  var h = '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px">';
-  h += '<div><div style="font-size:13px;font-weight:700;font-family:'Rajdhani',sans-serif;text-transform:uppercase;color:#111">'+s.service+'</div>';
-  if (s.plate) h += '<span class="plate-tag">'+s.plate+'</span> ';
-  h += '<span class="badge '+(isCkPending?'b-cal':'b-pau')+'">'+(isCkPending?'Checklist pendiente':'Pausado')+'</span></div>';
-  h += '<div style="font-size:22px;font-weight:700;font-family:var(--mono);color:'+(isCkPending?'var(--blue)':'var(--gold)')+'">'+fmtT(s.seconds)+'</div></div>';
-  if (lastPause && !isCkPending) h += '<div style="background:var(--gold2);border:1px solid var(--gold);border-radius:3px;padding:5px 8px;margin-bottom:6px;font-size:11px;color:var(--gold3);font-weight:600">Pausa: '+lastPause.reason+'</div>';
-  if (s.paused_at) h += '<div style="font-size:10px;color:#aaa;margin-bottom:6px">Pausado: '+fmtD(s.paused_at)+'</div>';
-  // Comments
-  if (s.comments && s.comments.length) {
-    h += '<div style="margin-bottom:6px;background:#f8f8f8;border-radius:3px;padding:6px">';
-    h += '<div style="font-size:10px;font-weight:700;color:#999;margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em">Comentarios</div>';
-    s.comments.forEach(function(c) { h += '<div style="font-size:11px;color:#555;padding:2px 0;border-bottom:1px solid #eeeeee">'+c.author+': '+c.text+' <span style="color:#aaa;font-size:10px">'+c.at+'</span></div>'; });
-    h += '</div>';
-  }
-  // Buttons
-  h += '<div style="display:flex;gap:6px;flex-wrap:wrap">';
-  h += '<button class="btn-sm" onclick="openCommentModal({type:'pending',id:''+s.id+''}, 'Comentario')">Comentar</button>';
-  if (!isCkPending) {
-    h += '<button class="btn-sm" style="border-color:var(--green);color:var(--green)" onclick="resumeFromPending(''+s.id+'',''+s.session_key+'')">Reanudar</button>';
-    h += '<button class="btn-sm" style="border-color:var(--blue);color:var(--blue)" onclick="deferAndComplete(''+s.id+'')">Completar checklist</button>';
-  } else {
-    h += '<button class="btn-sm" style="border-color:var(--blue);color:var(--blue)" onclick="deferAndComplete(''+s.id+'')">Completar checklist pendiente</button>';
-  }
-  h += '</div>';
-  card.innerHTML = h; return card;
-}
-
-async function resumeFromCard(sessionKey) {
-  T.sessionKey = sessionKey;
-  var sess = liveData.find(function(s) { return s.session_key === sessionKey; });
-  if (sess) { T.srvLabel = sess.service; T.srvGoal = sess.goal_minutes; T.sec = sess.seconds; T.pauses = sess.pauses || []; T.plate = sess.plate || ''; T.comments = sess.comments || []; }
-  await doResume();
-}
-
-async function openChecklistFromCard(sessionKey) {
-  T.sessionKey = sessionKey;
-  var sess = liveData.find(function(s) { return s.session_key === sessionKey; });
-  if (sess) { T.srvLabel = sess.service; T.srvGoal = sess.goal_minutes; T.sec = sess.seconds; T.pauses = sess.pauses || []; T.plate = sess.plate || ''; T.comments = sess.comments || []; }
-  openChecklist();
-}
-
-async function resumeFromPending(pendingId, sessionKey) {
-  logR('RESUME_FROM_PENDING', {pendingId, sessionKey});
-  // Restore to active_sessions
-  var {data: ps} = await sb.from('pending_services').select('*').eq('id', pendingId).maybeSingle();
-  if (!ps) { alert('No se encontro el servicio pausado'); return; }
-  // Check if still in active_sessions
-  var {data: existing} = await sb.from('active_sessions').select('id').eq('session_key', sessionKey).maybeSingle();
-  if (!existing) {
-    // Re-insert to active_sessions
-    var {error: insErr} = await sb.from('active_sessions').insert({
-      session_key: ps.session_key, technician: ps.technician, username: ps.username,
-      service: ps.service, plate: ps.plate, seconds: ps.seconds, running: true, status: 'running',
-      goal_minutes: ps.goal_minutes, pauses: ps.pauses, comments: ps.comments || [],
-      over_alerted: false, started_at: ps.started_at || new Date().toISOString(), updated_at: new Date().toISOString()
-    });
-    logR('RESUME_PENDING_INSERT', {error: insErr ? insErr.message : null});
-    if (insErr) { alert('Error al reanudar: ' + insErr.message); return; }
-  } else {
-    await sb.from('active_sessions').update({running:true, status:'running', updated_at:new Date().toISOString()}).eq('session_key', sessionKey);
-  }
-  // Remove from pending_services
-  await sb.from('pending_services').delete().eq('id', pendingId);
-  // Restore timer state
-  T.sessionKey = ps.session_key; T.srvLabel = ps.service; T.srvGoal = ps.goal_minutes;
-  T.sec = ps.seconds; T.pauses = ps.pauses || []; T.plate = ps.plate || ''; T.comments = ps.comments || [];
-  T.running = true; T.overAlerted = false;
-  await fetchLive();
-  techTab('t-nuevo');
-}
-
-var deferredPendingId = null;
-
-async function deferAndComplete(pendingId) {
-  deferredPendingId = pendingId;
-  var {data: ps} = await sb.from('pending_services').select('*').eq('id', pendingId).maybeSingle();
-  if (!ps) { alert('Servicio no encontrado'); return; }
-  document.getElementById('m-ckd-sub').textContent = ps.service + (ps.plate ? ' - ' + ps.plate : '');
-  // Reset deferred checklist fields
-  commentRadioState = {};
-  document.querySelectorAll('#m-checklist-deferred .radio-btn').forEach(function(b) { b.classList.remove('on'); });
-  ['ckd-litros','ckd-aceite','ckd-rt','ckd-rr','ckd-anom','ckd-doble','ckd-visado','ckd-obs'].forEach(function(id) {
-    var el = document.getElementById(id); if (el) el.value = '';
-  });
-  document.getElementById('ckd-err').style.display = 'none';
-  openModal('m-checklist-deferred');
-}
-
-function pickRadioD(field, val, el) {
-  commentRadioState[field] = val;
-  var grp = el.parentElement;
-  grp.querySelectorAll('.radio-btn').forEach(function(b) { b.classList.remove('on'); });
-  el.classList.add('on');
-  document.getElementById(field).value = val;
-}
-
-async function submitDeferredChecklist() {
-  var litros = document.getElementById('ckd-litros').value;
-  var aceite = document.getElementById('ckd-aceite').value;
-  var rt = document.getElementById('ckd-rt').value;
-  var rr = document.getElementById('ckd-rr').value;
-  var doble = document.getElementById('ckd-doble').value;
-  var visado = document.getElementById('ckd-visado').value;
-  var err = document.getElementById('ckd-err');
-  err.style.display = 'none';
-  if (!litros) { err.textContent = 'Indica los litros de aceite'; err.style.display='block'; return; }
-  if (!aceite) { err.textContent = 'Selecciona tipo de aceite'; err.style.display='block'; return; }
-  if (!rt) { err.textContent = 'Selecciona tipo de prueba de ruta'; err.style.display='block'; return; }
-  if (!rr) { err.textContent = 'Indica resultado de prueba de ruta'; err.style.display='block'; return; }
-  if (!doble) { err.textContent = 'Indica resultado de doble control'; err.style.display='block'; return; }
-  if (!visado) { err.textContent = 'Indica resultado de visado'; err.style.display='block'; return; }
-  var checklist = {
-    litros: parseFloat(litros), aceite: aceite,
-    prueba_ruta: {tipo: rt, resultado: rr, anomalias: document.getElementById('ckd-anom').value},
-    doble_control: doble, visado: visado,
-    observaciones: document.getElementById('ckd-obs').value
-  };
-  var btn = document.getElementById('ckd-btn');
-  btn.innerHTML = '<span class="spin"></span>'; btn.disabled = true;
-  // Get pending service data
-  var {data: ps} = await sb.from('pending_services').select('*').eq('id', deferredPendingId).maybeSingle();
-  if (!ps) { btn.innerHTML='Finalizar servicio'; btn.disabled=false; err.textContent='Servicio no encontrado'; err.style.display='block'; return; }
-  logR('DEFERRED_FINISH', {pendingId: deferredPendingId, service: ps.service});
-  // Save to history
-  var {error: hErr} = await sb.from('history').insert({
-    technician: ps.technician, username: ps.username, service: ps.service, plate: ps.plate,
-    duration: fmtT(ps.seconds), seconds: ps.seconds, goal_minutes: ps.goal_minutes,
-    pauses: ps.pauses, comments: ps.comments || [], checklist: checklist, status: 'completed',
-    ended_at: new Date().toISOString()
-  });
-  logR('DEFERRED_HISTORY', {error: hErr ? hErr.message : null});
-  if (hErr) { btn.innerHTML='Finalizar servicio'; btn.disabled=false; err.textContent='Error al guardar: '+hErr.message; err.style.display='block'; return; }
-  // Save checklist
-  await sb.from('service_checklists').insert({
-    session_key: ps.session_key, technician: ps.technician, username: ps.username,
-    service: ps.service, plate: ps.plate, duration: fmtT(ps.seconds), seconds: ps.seconds,
-    litros: checklist.litros, aceite: checklist.aceite, prueba_ruta: checklist.prueba_ruta,
-    doble_control: checklist.doble_control, visado: checklist.visado, observaciones: checklist.observaciones,
-    ended_at: new Date().toISOString()
-  });
-  // Remove from pending_services
-  await sb.from('pending_services').delete().eq('id', deferredPendingId);
-  // Also remove from active_sessions if still there
-  await sb.from('active_sessions').delete().eq('session_key', ps.session_key);
-  await pushNotif('fin', ps.technician + ' finalizo servicio (checklist diferido)', ps.service + ' - ' + (ps.plate||'') + ' - ' + fmtT(ps.seconds));
-  btn.innerHTML = 'Finalizar servicio'; btn.disabled = false;
-  closeModal('m-checklist-deferred');
-  deferredPendingId = null;
-  techTab('t-online');
-}
-
-// ═══════════════════════════════════════════════
-// OVERRIDE openChecklist to add "Diferir" option
-// ═══════════════════════════════════════════════
-var _origOpenChecklist = openChecklist;
-openChecklist = function() {
-  radioState = {};
-  document.querySelectorAll('#m-checklist .radio-btn').forEach(function(b) { b.classList.remove('on'); });
-  ['ck-litros','ck-aceite','ck-rt','ck-rr','ck-anom','ck-doble','ck-visado','ck-obs'].forEach(function(id) {
-    var el = document.getElementById(id); if (el) el.value = '';
-  });
-  document.getElementById('ck-err').style.display = 'none';
-  // Add defer button if not already there
-  var modal = document.querySelector('#m-checklist');
-  if (modal && !modal.querySelector('#ck-defer-btn')) {
-    var deferBtn = document.createElement('button');
-    deferBtn.id = 'ck-defer-btn';
-    deferBtn.className = 'btn btn-out';
-    deferBtn.style.marginTop = '8px';
-    deferBtn.textContent = 'Diferir checklist (completar despues)';
-    deferBtn.onclick = function() { closeModal('m-checklist'); promptDeferReason(); };
-    var volver = modal.querySelector('.btn-out');
-    modal.insertBefore(deferBtn, volver);
-  }
-  openModal('m-checklist');
-};
-
-function promptDeferReason() {
-  var reason = prompt('Motivo para diferir el checklist:
-1. Termino de jornada
-2. Servicio urgente
-3. Visado pendiente
-4. Otro
-
-Ingresa el motivo:');
-  if (reason) pauseAndDeferChecklist(reason);
-}
-
-// ═══════════════════════════════════════════════
-// TECH: HISTORIAL TAB
-// ═══════════════════════════════════════════════
-async function renderTechHistorial(body) {
-  body.innerHTML = '<div class="empty"><span class="spin"></span>Cargando historial...</div>';
-  // Fetch in parallel
-  var [histRes, pendRes] = await Promise.all([
-    sb.from('history').select('*').eq('username', CU.username).order('ended_at', {ascending:false}).limit(50),
-    sb.from('pending_services').select('*').eq('username', CU.username).order('updated_at', {ascending:false})
-  ]);
-  var hist = histRes.data || [];
-  var pend = pendRes.data || [];
-  logR('TECH_HISTORIAL', {hist: hist.length, pend: pend.length});
-  body.innerHTML = '';
-  // Summary header
-  var summary = mk('div','card-accent');
-  summary.style.marginBottom = '10px';
-  summary.innerHTML = '<div style="display:flex;gap:16px;flex-wrap:wrap">'
-    + '<div style="text-align:center"><div style="font-size:24px;font-weight:700;color:var(--red);font-family:'Rajdhani',sans-serif">'+(hist.length+pend.length)+'</div><div style="font-size:10px;color:#999;text-transform:uppercase;letter-spacing:.05em">Total</div></div>'
-    + '<div style="text-align:center"><div style="font-size:24px;font-weight:700;color:var(--green);font-family:'Rajdhani',sans-serif">'+hist.filter(function(r){return r.status==='completed';}).length+'</div><div style="font-size:10px;color:#999;text-transform:uppercase;letter-spacing:.05em">Finalizados</div></div>'
-    + '<div style="text-align:center"><div style="font-size:24px;font-weight:700;color:var(--gold);font-family:'Rajdhani',sans-serif">'+pend.filter(function(p){return p.status==='paused';}).length+'</div><div style="font-size:10px;color:#999;text-transform:uppercase;letter-spacing:.05em">Pausados</div></div>'
-    + '<div style="text-align:center"><div style="font-size:24px;font-weight:700;color:var(--blue);font-family:'Rajdhani',sans-serif">'+pend.filter(function(p){return p.status==='checklist_pending';}).length+'</div><div style="font-size:10px;color:#999;text-transform:uppercase;letter-spacing:.05em">Checklist pend.</div></div>'
-    + '</div>';
-  body.appendChild(summary);
-  // Pending (checklist_pending first, then paused)
-  var ckPend = pend.filter(function(p){return p.status==='checklist_pending';});
-  var paused = pend.filter(function(p){return p.status==='paused';});
-  if (ckPend.length) {
-    var ckH = mk('div',''); ckH.innerHTML = '<div class="lbl" style="color:var(--blue);margin-top:4px">Checklist pendiente ('+ckPend.length+')</div>'; body.appendChild(ckH);
-    ckPend.forEach(function(s) { body.appendChild(buildHistPendingRow(s)); });
-  }
-  if (paused.length) {
-    var pauH = mk('div',''); pauH.innerHTML = '<div class="lbl" style="color:var(--gold);margin-top:8px">Pausados ('+paused.length+')</div>'; body.appendChild(pauH);
-    paused.forEach(function(s) { body.appendChild(buildHistPendingRow(s)); });
-  }
-  // Completed history
-  if (hist.length) {
-    var histH = mk('div',''); histH.innerHTML = '<div class="lbl" style="margin-top:8px">Finalizados ('+hist.length+')</div>'; body.appendChild(histH);
-    var card = mk('div','card');
-    hist.forEach(function(r) {
-      card.appendChild(buildHistRow(r));
-    });
-    body.appendChild(card);
-  }
-  if (!hist.length && !pend.length) {
-    body.innerHTML = '<div class="empty">No tienes servicios registrados aun</div>';
-  }
-}
-
-function buildHistPendingRow(s) {
-  var isCkP = s.status === 'checklist_pending';
-  var bc = isCkP ? 'var(--blue)' : 'var(--gold)';
-  var card = mk('div','card'); card.style.cssText = 'border-left:4px solid '+bc+';margin-bottom:6px';
-  var lastPause = s.pauses && s.pauses.length ? s.pauses[s.pauses.length-1] : null;
-  var h = '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px">';
-  h += '<div><div style="font-size:13px;font-weight:700;font-family:'Rajdhani',sans-serif;text-transform:uppercase;color:#111">'+s.service+'</div>';
-  if (s.plate) h += '<span class="plate-tag">'+s.plate+'</span> ';
-  h += '<span class="badge '+(isCkP?'b-cal':'b-pau')+'">'+(isCkP?'Checklist pendiente':'Pausado')+'</span></div>';
-  h += '<div style="font-size:20px;font-weight:700;font-family:var(--mono);color:'+bc+'">'+fmtT(s.seconds)+'</div></div>';
-  if (lastPause && !isCkP) h += '<div style="font-size:11px;color:var(--gold3);margin-bottom:4px">Pausa: '+lastPause.reason+'</div>';
-  if (s.paused_at) h += '<div style="font-size:10px;color:#aaa;margin-bottom:6px">Desde: '+fmtD(s.paused_at)+'</div>';
-  if (s.comments && s.comments.length) {
-    h += '<div style="background:#f8f8f8;border-radius:3px;padding:6px;margin-bottom:6px">';
-    s.comments.forEach(function(c) { h += '<div style="font-size:11px;color:#555;padding:2px 0">'+c.author+': '+c.text+'</div>'; });
-    h += '</div>';
-  }
-  h += '<div style="display:flex;gap:6px;flex-wrap:wrap">';
-  h += '<button class="btn-sm" onclick="openCommentModal({type:'pending',id:''+s.id+''}, 'Comentar')">Comentar</button>';
-  if (!isCkP) h += '<button class="btn-sm" style="border-color:var(--green);color:var(--green)" onclick="resumeFromPending(''+s.id+'',''+s.session_key+'')">Reanudar</button>';
-  h += '<button class="btn-sm" style="border-color:var(--blue);color:var(--blue)" onclick="deferAndComplete(''+s.id+'')">Completar checklist</button>';
-  h += '</div>';
-  card.innerHTML = h; return card;
-}
-
-function buildHistRow(r) {
-  var over = r.goal_minutes && r.seconds > r.goal_minutes * 60;
-  var row = mk('div','row');
-  row.innerHTML = '<div style="flex:1">'
-    + '<div style="font-size:12px;font-weight:700;font-family:'Rajdhani',sans-serif;text-transform:uppercase;color:#111">'+r.service+'</div>'
-    + (r.plate ? '<span class="plate-tag">'+r.plate+'</span> ' : '')
-    + '<span class="badge b-done" style="font-size:9px">Finalizado</span>'
-    + (r.pauses && r.pauses.length ? '<div style="font-size:10px;color:var(--gold3);margin-top:2px">'+r.pauses.map(function(p){return '• '+p.reason;}).join(' ')+'</div>' : '')
-    + (r.comments && r.comments.length ? '<div style="font-size:10px;color:#888;margin-top:2px">'+r.comments.length+' comentario'+(r.comments.length>1?'s':'')+'</div>' : '')
-    + '</div>'
-    + '<div style="text-align:right;flex-shrink:0">'
-    + '<div style="font-size:17px;font-weight:700;font-family:var(--mono);color:'+(over?'var(--red)':'var(--green)')+'">'+r.duration+'</div>'
-    + (r.goal_minutes ? '<div style="font-size:9px;color:#aaa">OBJ:'+r.goal_minutes+'m</div>' : '')
-    + '<div style="font-size:10px;color:#aaa">'+fmtD(r.ended_at)+'</div>'
-    + '<button class="btn-sm" style="margin-top:4px;font-size:9px" onclick="openCommentModal({type:'history',id:''+r.id+''}, 'Agregar comentario')">Comentar</button>'
-    + '</div>';
-  return row;
-}
-
-// ═══════════════════════════════════════════════
-// PATCH doFinish to also clear from pending_services
-// ═══════════════════════════════════════════════
-var _origDoFinish = doFinish;
-doFinish = async function(checklist) {
-  if (!T.sessionKey) {
-    var mine = liveData.find(function(s) { return s.username === CU.username; });
-    if (!mine) { alert('No se encontro la sesion activa'); return; }
-    T.sessionKey = mine.session_key; T.srvLabel = mine.service; T.srvGoal = mine.goal_minutes;
-    T.sec = mine.seconds; T.pauses = mine.pauses || []; T.plate = mine.plate || ''; T.comments = mine.comments || [];
-  }
-  T.running = false;
-  var histPayload = {
-    technician: CU.name, username: CU.username, service: T.srvLabel, plate: T.plate,
-    duration: fmtT(T.sec), seconds: T.sec, goal_minutes: T.srvGoal || null,
-    pauses: T.pauses, comments: T.comments || [], checklist: checklist, status: 'completed',
-    ended_at: new Date().toISOString()
-  };
-  logR('FINISH_PAYLOAD', histPayload);
-  var {error: hErr} = await sb.from('history').insert(histPayload);
-  logR('FINISH_HISTORY', {error: hErr ? hErr.message : null});
-  if (hErr) { alert('Error al guardar historial: ' + hErr.message); return; }
-  await sb.from('service_checklists').insert({
-    session_key: T.sessionKey, technician: CU.name, username: CU.username,
-    service: T.srvLabel, plate: T.plate, duration: fmtT(T.sec), seconds: T.sec,
-    litros: checklist.litros, aceite: checklist.aceite, prueba_ruta: checklist.prueba_ruta,
-    doble_control: checklist.doble_control, visado: checklist.visado, observaciones: checklist.observaciones,
-    ended_at: new Date().toISOString()
-  });
-  var {error: dErr} = await sb.from('active_sessions').delete().eq('session_key', T.sessionKey);
-  logR('FINISH_DELETE', {error: dErr ? dErr.message : null});
-  // Also clean from pending_services if was there
-  await sb.from('pending_services').delete().eq('session_key', T.sessionKey);
-  await pushNotif('fin', CU.name + ' finalizo servicio', finSrv + ' - ' + finPlate + ' - ' + fmtT(finSec));
-  _finishing = false;
-  // Only reset T if we finished T's session
-  if (useKey === T.sessionKey) resetT();
-  await fetchLive();
-  techTab('t-misservicios');
-};
-
-// ═══════════════════════════════════════════════
-// Add T.comments to timer state
-// ═══════════════════════════════════════════════
-var _origResetT = resetT;
-resetT = function() {
-  T.sessionKey = null; T.srvLabel = ''; T.srvGoal = null;
-  T.sec = 0; T.running = false; T.overAlerted = false; T.pauses = []; T.plate = '';
-  T.comments = [];
-  dbSyncCtr = 0;
-};
-T.comments = [];
-
 </script>
 </body>
 </html>
