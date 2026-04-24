@@ -1684,64 +1684,86 @@ async function deferChecklist(sessionKey) {
 
 async function submitChecklist() {
   var btn = document.getElementById('ck-btn');
+  var err = document.getElementById('ck-err');
+  err.style.display = 'none';
+
+  // Helper local: reactivar el boton y mostrar error. Antes, algunos caminos
+  // dejaban el boton en "Guardando..." para siempre porque no se reactivaba.
+  function fail(msg) {
+    err.textContent = msg;
+    err.style.display = 'block';
+    if (btn) { btn.disabled = false; btn.innerHTML = 'Finalizar y guardar'; }
+  }
+
   if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spin"></span> Guardando...'; }
+
   var litros = document.getElementById('ck-litros').value;
   var aceite = document.getElementById('ck-aceite').value;
   var rt = document.getElementById('ck-rt').value;
   var rr = document.getElementById('ck-rr').value;
   var doble = document.getElementById('ck-doble').value;
   var visado = document.getElementById('ck-visado').value;
-  var err = document.getElementById('ck-err');
-  err.style.display = 'none';
-  if (!litros) { err.textContent = 'Indica los litros de aceite'; err.style.display = 'block'; return; }
-  if (!aceite) { err.textContent = 'Selecciona el tipo de aceite'; err.style.display = 'block'; return; }
-  if (!rt) { err.textContent = 'Selecciona el tipo de prueba de ruta'; err.style.display = 'block'; return; }
-  if (!rr) { err.textContent = 'Indica el resultado de la prueba de ruta'; err.style.display = 'block'; return; }
-  if (!doble) { err.textContent = 'Indica el resultado del doble control'; err.style.display = 'block'; return; }
-  if (!visado) { err.textContent = 'Indica el resultado del visado'; err.style.display = 'block'; if(btn){btn.disabled=false;btn.innerHTML='Finalizar y guardar';} return; }
-  
+
+  if (!litros) { fail('Indica los litros de aceite'); return; }
+  if (!aceite) { fail('Selecciona el tipo de aceite'); return; }
+  if (!rt) { fail('Selecciona el tipo de prueba de ruta'); return; }
+  if (!rr) { fail('Indica el resultado de la prueba de ruta'); return; }
+  if (!doble) { fail('Indica el resultado del doble control'); return; }
+  if (!visado) { fail('Indica el resultado del visado'); return; }
+
   var checklist = {
     litros: parseFloat(litros), aceite: aceite,
     prueba_ruta: {tipo: rt, resultado: rr, anomalias: document.getElementById('ck-anom').value},
     doble_control: doble, visado: visado,
     observaciones: document.getElementById('ck-obs').value
   };
-  
-  closeModal('m-checklist');
-  await doFinish(checklist, checklistForKey);
-  checklistForKey = null;
+
+  // IMPORTANTE: NO cerramos el modal hasta que doFinish confirme exito.
+  // Si falla, el usuario conserva los datos que escribio y puede reintentar.
+  var ok = await doFinish(checklist, checklistForKey);
+  if (ok) {
+    closeModal('m-checklist');
+    checklistForKey = null;
+  } else {
+    // doFinish fallo y ya mostro su propio alert. Reactivar boton para reintento.
+    if (btn) { btn.disabled = false; btn.innerHTML = 'Finalizar y guardar'; }
+  }
 }
 
 var _finishing = false; // guard against double-click
 
+// Retorna true si se finalizo exitosamente, false en cualquier error.
+// submitChecklist usa el retorno para decidir si cerrar el modal.
 async function doFinish(checklist, sessionKey) {
-  if (_finishing) { logR('FINISH_GUARD_BLOCKED', {}); return; }
+  if (_finishing) { logR('FINISH_GUARD_BLOCKED', {}); return false; }
   _finishing = true;
 
   try {
     var useKey = sessionKey || T.sessionKey;
     if (!useKey) {
       var mine = liveData.find(function(s) { return s.username === CU.username; });
-      if (!mine) { alert('No se encontro la sesion activa'); return; }
+      if (!mine) {
+        alert('No se encontro la sesion activa. Recarga la pagina.');
+        return false;
+      }
       useKey = mine.session_key;
     }
     // Load session data
     var sess = liveData.find(function(s) { return s.session_key === useKey; });
 
-    // GUARD: si NO encontramos la sesion en liveData Y tampoco tenemos estado local
-    // (T.sessionKey del mismo useKey), significa que ya se finalizo antes o hay un
-    // race condition. Abortar sin guardar basura en history/notifs.
+    // Guard: si la sesion ya no existe en liveData Y tampoco tenemos estado local,
+    // quizas fue finalizada desde otra pantalla o hay un race condition.
+    // Antes este guard era silencioso (el tecnico no veia feedback). Ahora avisa.
     if (!sess && (!T.sessionKey || T.sessionKey !== useKey || !T.srvLabel)) {
-      logR('FINISH_ABORTED_NO_SESS', {useKey: useKey, tKey: T.sessionKey}, 'warn');
-      // Intentar refrescar data por si se desfaso, y salir silencioso
+      logR('FINISH_NO_SESS_FOUND', {useKey: useKey, tKey: T.sessionKey}, 'warn');
       await fetchLive();
-      return;
+      alert('La sesion ya no esta activa. Puede haber sido finalizada desde otro dispositivo. Revisa el Historial.');
+      return false;
     }
 
     if (useKey === T.sessionKey) {
       T.running = false;
     } else if (sess) {
-      // Finishing a different session from Mis Servicios
       T.sessionKey = useKey;
       T.srvLabel = sess.service;
       T.srvGoal = sess.goal_minutes;
@@ -1750,15 +1772,11 @@ async function doFinish(checklist, sessionKey) {
     }
 
     // CALCULO DEFINITIVO del tiempo al momento de finalizar.
-    // Usamos liveSecondsNow() que aplica la formula determinística:
-    // ahora - started_at - tiempo_pausado. Esto garantiza que el valor
-    // guardado en historial sea exacto, sin importar el estado de T.sec.
+    // liveSecondsNow aplica la formula con timestamps (determinística).
     var finSec;
     if (sess) {
-      // Si esta corriendo justo ahora, calcular en vivo.
-      // Si ya estaba pausado/checklist_pending, usar el snapshot congelado.
       finSec = liveSecondsNow(sess);
-      // Para sesiones viejas sin started_at, caer al valor guardado
+      // Fallback a sess.seconds si liveSecondsNow devuelve 0 (sesiones legacy)
       if (!finSec && sess.seconds) finSec = sess.seconds;
     } else {
       finSec = T.sec || 0;
@@ -1769,11 +1787,20 @@ async function doFinish(checklist, sessionKey) {
     var finGoal = T.srvGoal || (sess ? sess.goal_minutes : null);
     var finPauses = T.pauses.length ? T.pauses : (sess ? (sess.pauses||[]) : []);
 
-    // Guard extra: si algo sigue vacio, algo esta mal. No guardar basura.
-    if (!finSrv || finSec < 1) {
-      logR('FINISH_ABORTED_EMPTY_DATA', {finSrv: finSrv, finSec: finSec}, 'warn');
-      alert('No se pudo finalizar: los datos del servicio estan incompletos. Recarga la pagina y reintenta.');
-      return;
+    // Si el servicio no tiene nombre, es un error de data. Abortar.
+    if (!finSrv) {
+      logR('FINISH_NO_SRV', {useKey: useKey}, 'err');
+      alert('Error: no se pudo identificar el servicio. Recarga la pagina.');
+      return false;
+    }
+
+    // Minimo 1 segundo para que nunca se guarde un servicio con duration=00:00.
+    // Esto cubre el edge case raro de que liveSecondsNow devuelva 0 por glitch
+    // de timestamp (sesion recien creada, por ejemplo). El servicio SI se finaliza
+    // correctamente. Antes esto era un guard bloqueante que molestaba a los tecnicos.
+    if (finSec < 1) {
+      logR('FINISH_FORCED_MIN_SEC', {useKey: useKey, originalSec: finSec}, 'warn');
+      finSec = 1;
     }
 
     var histPayload = {
@@ -1788,12 +1815,12 @@ async function doFinish(checklist, sessionKey) {
 
     var {error: hErr} = await sb.from('history').insert(histPayload);
     logR('FINISH_HISTORY_RESULT', {error: hErr ? hErr.message : null});
-    if (hErr) { alert('Error al guardar historial: ' + hErr.message); return; }
+    if (hErr) {
+      alert('Error al guardar historial: ' + hErr.message + '\n\nReintenta tocando Finalizar de nuevo.');
+      return false;
+    }
 
-    // Save checklist SOLO si realmente hay checklist.
-    // Para servicios que no requieren checklist (ej: Reparaciones generales, Lavado),
-    // se llama doFinish(null, ...) y no hay que insertar nada en service_checklists.
-    // El bug anterior hacia checklist.litros sin guard -> null is not an object.
+    // Save checklist SOLO si realmente hay checklist (ej: Lavado no requiere).
     if (checklist && typeof checklist === 'object') {
       var {error: ckErr} = await sb.from('service_checklists').insert({
         session_key: useKey, technician: CU.name, username: CU.username,
@@ -1813,12 +1840,12 @@ async function doFinish(checklist, sessionKey) {
     resetT();
     await fetchLive();
     techTab('t-nuevo');
+    return true;
   } catch (e) {
-    logR('FINISH_EXCEPTION', {msg: e.message}, 'err');
+    logR('FINISH_EXCEPTION', {msg: e.message, stack: e.stack}, 'err');
     alert('Error inesperado al finalizar: ' + e.message + '\n\nReintenta o avisa a jefatura.');
+    return false;
   } finally {
-    // GARANTIZAR que se libera el guard, pase lo que pase.
-    // Antes quedaba bloqueado si algo fallaba, y el usuario no podia volver a finalizar.
     _finishing = false;
   }
 }
