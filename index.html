@@ -549,6 +549,7 @@ const SRVS = [
   {name:'Estandar de taller',goal:null,noChecklist:true,noPlate:true},
   {name:'Compras',goal:null,noChecklist:true,noPlate:true},
   {name:'Movimiento de vehiculos',goal:null,noChecklist:true,noPlate:true},
+  {name:'Cierre de taller',goal:null,noChecklist:true,noPlate:true},
   {name:'Garantia',goal:null},
   {name:'Recuperacion de DPF',goal:null,subs:['Pack esencial','Pack avanzado','Pack premium','Pack integral (DPF + Limpieza admision)']},
   {name:'Servicio de frenos',goal:null,subs:['Evaluacion','Pastillas delanteras + rectificado','Pastillas delanteras + cambio de discos','Pastillas/balatas traseras + rectificado','Pastillas/balatas traseras + cambio tambor/disco','Cambio liquido de frenos','Ajuste de frenos']},
@@ -557,7 +558,7 @@ const SRVS = [
 
 // Services that don't require checklist
 function srvNeedsChecklist(srvLabel) {
-  var noChk = ['Lavado de vehiculos','Estandar de taller','Compras','Movimiento de vehiculos'];
+  var noChk = ['Lavado de vehiculos','Estandar de taller','Compras','Movimiento de vehiculos','Cierre de taller'];
   return !noChk.some(function(n) { return srvLabel.startsWith(n); });
 }
 
