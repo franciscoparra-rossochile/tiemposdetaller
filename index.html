@@ -139,6 +139,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     </div>
     <button class="btn btn-out" style="margin-top:4px" onclick="openModal('m-create-user')">Crear cuenta nueva</button>
     <div id="conn-status" style="text-align:center;font-size:10px;color:var(--wh4);margin-top:8px;font-family:var(--mono)"></div>
+    <button id="retry-btn" onclick="retryConn()" style="display:none;margin-top:8px;background:var(--red);color:#fff;border:none;border-radius:4px;padding:8px 16px;font-size:12px;font-weight:700;cursor:pointer;font-family:var(--head);letter-spacing:.06em;text-transform:uppercase">Reintentar conexion</button>
   </div>
 </div>
 
@@ -154,7 +155,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     </div>
   </div>
   <div class="tab-bar" id="tech-tabbar">
-    <div class="tab active" data-tab="t-inicio" onclick="techTab('t-inicio')">Inicio</div>
+    <div class="tab active" data-tab="t-nuevo" onclick="techTab('t-nuevo')">Nuevo registro</div>
     <div class="tab" data-tab="t-misservicios" onclick="techTab('t-misservicios')">Mis servicios<span class="ndot" id="tech-active-dot"></span></div>
     <div class="tab" data-tab="t-agenda" onclick="techTab('t-agenda')">Agenda</div>
     <div class="tab" data-tab="t-alertas" onclick="techTab('t-alertas')">Alertas<span class="ndot" id="tech-ndot"></span></div>
@@ -504,7 +505,7 @@ function srvNeedsChecklist(srvLabel) {
 // STATE
 // ═══════════════════════════════════════════════
 let CU = null;
-let curTechTab = 't-inicio';
+let curTechTab = 't-nuevo';
 let curBossTab = 'b-online';
 let prevScreen = null;
 let liveData = [];
@@ -537,25 +538,51 @@ let calYear = new Date().getFullYear(), calMonth = new Date().getMonth();
 // ═══════════════════════════════════════════════
 async function init() {
   logR('INIT_START', {url: SURL});
-  document.getElementById('load-status').textContent = 'Probando conexion...';
-  
-  // Test connection
-  const {data, error} = await sb.from('users').select('count').limit(1);
-  if (error) {
-    logR('CONN_TEST_FAIL', {error: error.message}, 'err');
-    document.getElementById('load-status').textContent = 'ERROR: ' + error.message;
-    await new Promise(r => setTimeout(r, 2000));
-  } else {
-    logR('CONN_TEST_OK', {data});
-    document.getElementById('load-status').textContent = 'Conectado';
+  setLoadMsg('Probando conexion...');
+  var connOk = false;
+  var connErr = null;
+  try {
+    var result = await Promise.race([
+      sb.from('users').select('count').limit(1),
+      new Promise(function(_, rej) { setTimeout(function() { rej(new Error('Timeout 5s')); }, 5000); })
+    ]);
+    if (result && result.error) {
+      connErr = result.error.message;
+      logR('CONN_FAIL', {e: connErr}, 'err');
+    } else {
+      connOk = true;
+      logR('CONN_OK', {});
+    }
+  } catch(e) {
+    connErr = e.message;
+    logR('CONN_ERR', {e: connErr}, 'err');
   }
-  
-  await new Promise(r => setTimeout(r, 600));
+  setLoadMsg(connOk ? 'Conectado' : ('Error: ' + connErr));
+  await new Promise(function(r) { setTimeout(r, 600); });
   document.getElementById('load-screen').style.display = 'none';
   document.getElementById('app').style.display = 'block';
-  document.getElementById('conn-status').textContent = error ? 'Error de conexion' : 'Conectado a Supabase';
+  var cs = document.getElementById('conn-status');
+  if (cs) cs.textContent = connOk ? 'Conectado a Supabase' : ('Sin conexion: ' + (connErr||''));
+  var rb = document.getElementById('retry-btn');
+  if (rb) rb.style.display = connOk ? 'none' : 'block';
 }
 
+function setLoadMsg(msg) {
+  var el = document.getElementById('load-status'); if (el) el.textContent = msg;
+}
+
+function showApp(connOk, connErr) {
+  document.getElementById('load-screen').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+  var rb = document.getElementById('retry-btn');
+  if (rb) rb.style.display = connOk ? 'none' : 'block';
+}
+
+async function retryConn() {
+  document.getElementById('load-screen').style.display = 'flex';
+  document.getElementById('app').style.display = 'none';
+  await init();
+}
 // ═══════════════════════════════════════════════
 // SCREENS & MODALS
 // ═══════════════════════════════════════════════
@@ -594,7 +621,9 @@ async function doLogin() {
   if (CU.role === 'tech') {
     document.getElementById('tech-name').textContent = CU.name;
     showScreen('s-tech');
-    techTab('t-inicio');
+    // Check if has active/paused services -> go to Mis Servicios
+    var myRows = liveData.filter(function(s) { return s.username === CU.username; });
+    techTab(myRows.length > 0 ? 't-misservicios' : 't-nuevo');
   } else {
     document.getElementById('boss-name').textContent = CU.name;
     document.getElementById('boss-role').textContent = CU.role === 'admin' ? 'Administrador' : 'Jefatura';
@@ -718,7 +747,7 @@ function techTab(t) {
   var body = document.getElementById('tech-body');
   body.innerHTML = '';
   logR('TECH_TAB', {tab: t});
-  if (t === 't-inicio') renderTechInicio(body);
+  if (t === 't-nuevo' || t === 't-inicio') renderTechNuevo(body);
   else if (t === 't-misservicios') renderMisServicios(body);
   else if (t === 't-agenda') renderTechAgenda(body);
   else if (t === 't-alertas') { document.getElementById('tech-ndot').classList.remove('show'); renderTechAlertas(body); }
@@ -744,7 +773,7 @@ function bossTab(t) {
 // ═══════════════════════════════════════════════
 // TECH: INICIO
 // ═══════════════════════════════════════════════
-function renderTechInicio(body) {
+function renderTechNuevo(body) {
   var myActive = liveData.find(function(s) { return s.username === CU.username; });
   logR('TECH_INICIO', {hasActive: !!myActive, liveCount: liveData.length});
   if (myActive) { renderTimerCard(body, myActive); return; }
@@ -930,7 +959,7 @@ async function doStartSession() {
   
   selSrv = null; selSub = null; selDesc = ''; selPlate = '';
   await fetchLive();
-  techTab('t-inicio');
+  techTab('t-nuevo');
 }
 
 // ═══════════════════════════════════════════════
@@ -1050,7 +1079,7 @@ async function doResume() {
   if (error) { alert('Error al reanudar: ' + error.message); return; }
   await pushNotif('resume', CU.name + ' reanudo servicio', T.srvLabel);
   await fetchLive();
-  techTab('t-inicio');
+  techTab('t-nuevo');
 }
 
 // Resume from a specific session key (used in Mis Servicios)
@@ -1076,7 +1105,7 @@ async function resumeSession(sessionKey) {
   if (error) { alert('Error al reanudar: ' + error.message); return; }
   await pushNotif('resume', CU.name + ' reanudo servicio', sess.service + ' - ' + (sess.plate||''));
   await fetchLive();
-  techTab('t-inicio');
+  techTab('t-nuevo');
 }
 
 // ═══════════════════════════════════════════════
@@ -1105,7 +1134,8 @@ function openChecklist(sessionKey) {
   var sess = liveData.find(function(s) { return s.session_key === checklistForKey; });
   var srvName = sess ? sess.service : T.srvLabel;
   if (!srvNeedsChecklist(srvName)) {
-    // Direct finish without checklist
+    logR('NO_CHECKLIST_REQUIRED', {srv: srvName});
+    // Direct finish without checklist - null checklist saved
     doFinish(null, checklistForKey);
     return;
   }
@@ -1121,26 +1151,27 @@ function openChecklist(sessionKey) {
   openModal('m-checklist');
 }
 
-function deferChecklist(sessionKey) {
-  // Mark as checklist_pending and alert boss
+async function deferChecklist(sessionKey) {
   var key = sessionKey || T.sessionKey;
   if (!key) { alert('No hay sesion'); return; }
   var sess = liveData.find(function(s) { return s.session_key === key; });
-  // Stop timer if it's the active one
+  var srvName = sess ? sess.service : T.srvLabel;
+  var plate = sess ? (sess.plate||'') : T.plate;
+  logR('DEFER_CHECKLIST', {key: key, srv: srvName});
+  // Stop local timer if needed
   if (T.sessionKey === key) { T.running = false; }
-  sb.from('active_sessions').update({
+  var {error} = await sb.from('active_sessions').update({
     running: false, status: 'checklist_pending', updated_at: new Date().toISOString()
-  }).eq('session_key', key).then(async function(r) {
-    if (r.error) { alert('Error: ' + r.error.message); return; }
-    var srvName = sess ? sess.service : T.srvLabel;
-    var plate = sess ? (sess.plate||'') : T.plate;
-    await pushNotif('checklist_pending', 'Checklist pendiente', CU.name + ' - ' + srvName + ' - ' + plate, null, true);
-    await fetchLive();
-    techTab('t-misservicios');
-  });
+  }).eq('session_key', key);
+  if (error) { alert('Error al diferir checklist: ' + error.message); return; }
+  await pushNotif('checklist_pending', 'Checklist pendiente - ' + CU.name, srvName + ' - ' + plate + ' - Completar checklist requerido');
+  await fetchLive();
+  techTab('t-misservicios');
 }
 
 async function submitChecklist() {
+  var btn = document.getElementById('ck-btn');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spin"></span> Guardando...'; }
   var litros = document.getElementById('ck-litros').value;
   var aceite = document.getElementById('ck-aceite').value;
   var rt = document.getElementById('ck-rt').value;
@@ -1154,7 +1185,7 @@ async function submitChecklist() {
   if (!rt) { err.textContent = 'Selecciona el tipo de prueba de ruta'; err.style.display = 'block'; return; }
   if (!rr) { err.textContent = 'Indica el resultado de la prueba de ruta'; err.style.display = 'block'; return; }
   if (!doble) { err.textContent = 'Indica el resultado del doble control'; err.style.display = 'block'; return; }
-  if (!visado) { err.textContent = 'Indica el resultado del visado'; err.style.display = 'block'; return; }
+  if (!visado) { err.textContent = 'Indica el resultado del visado'; err.style.display = 'block'; if(btn){btn.disabled=false;btn.innerHTML='Finalizar y guardar';} return; }
   
   var checklist = {
     litros: parseFloat(litros), aceite: aceite,
@@ -1168,7 +1199,11 @@ async function submitChecklist() {
   checklistForKey = null;
 }
 
+var _finishing = false; // guard against double-click
+
 async function doFinish(checklist, sessionKey) {
+  if (_finishing) { logR('FINISH_GUARD_BLOCKED', {}); return; }
+  _finishing = true;
   var useKey = sessionKey || T.sessionKey;
   if (!useKey) {
     var mine = liveData.find(function(s) { return s.username === CU.username; });
@@ -1208,7 +1243,7 @@ async function doFinish(checklist, sessionKey) {
   
   var {error: hErr} = await sb.from('history').insert(histPayload);
   logR('FINISH_HISTORY_RESULT', {error: hErr ? hErr.message : null});
-  if (hErr) { alert('Error al guardar historial: ' + hErr.message); return; }
+  if (hErr) { _finishing = false; alert('Error al guardar historial: ' + hErr.message); return; }
   
   // Save checklist
   await sb.from('service_checklists').insert({
@@ -1226,7 +1261,7 @@ async function doFinish(checklist, sessionKey) {
   await pushNotif('fin', CU.name + ' finalizo servicio', finSrv + ' - ' + finPlate + ' - ' + fmtT(finSec));
   resetT();
   await fetchLive();
-  techTab('t-inicio');
+  techTab('t-nuevo');
 }
 
 function resetT() {
@@ -1400,7 +1435,7 @@ function buildMisServCard(s, status) {
   h += '<div style="display:flex;gap:6px;flex-wrap:wrap">';
 
   if (isRunning) {
-    h += '<button class="btn-sm" style="border-color:var(--gold);color:var(--gold)" onclick="openModal('m-pause')">Pausar</button>';
+    h += '<button class="btn-sm" style="border-color:var(--gold);color:var(--gold)" onclick="setPauseContext('' + s.session_key + '');openModal('m-pause')">Pausar</button>';
     h += '<button class="btn-sm" style="border-color:var(--red);color:var(--red)" onclick="openChecklist('' + s.session_key + '')">Finalizar</button>';
   } else if (isPaused) {
     h += '<button class="btn-sm" style="border-color:var(--green);color:var(--green)" onclick="resumeSession('' + s.session_key + '')">Reanudar</button>';
@@ -1418,12 +1453,29 @@ function buildMisServCard(s, status) {
 
 function applyAssignAndGo(service, plate) {
   applyAssign(service, plate);
-  techTab('t-inicio');
+  techTab('t-nuevo');
   setTimeout(function() { var e = document.getElementById('plate-inp'); if(e) e.scrollIntoView({behavior:'smooth'}); }, 100);
 }
 
 // Comment modal
 var commentForKey = null;
+function setPauseContext(sessionKey) {
+  // If T doesn't have this session, load it from liveData
+  if (T.sessionKey !== sessionKey) {
+    var sess = liveData.find(function(s) { return s.session_key === sessionKey; });
+    if (sess) {
+      T.sessionKey = sessionKey;
+      T.srvLabel = sess.service;
+      T.srvGoal = sess.goal_minutes;
+      T.sec = sess.seconds;
+      T.pauses = sess.pauses || [];
+      T.plate = sess.plate || '';
+      T.comments = sess.comments || [];
+      T.running = true;
+    }
+  }
+}
+
 function openCommentModal(sessionKey) {
   commentForKey = sessionKey;
   var inp = document.getElementById('cm-text');
@@ -2072,7 +2124,7 @@ techTab = function(t) {
   var body = document.getElementById('tech-body');
   body.innerHTML = '';
   logR('TECH_TAB', {tab: t});
-  if (t === 't-inicio') renderTechInicio(body);
+  if (t === 't-inicio') renderTechNuevo(body);
   else if (t === 't-agenda') renderTechAgenda(body);
   else if (t === 't-alertas') { document.getElementById('tech-ndot').classList.remove('show'); renderTechAlertas(body); }
   else if (t === 't-online') renderTechOnlineFull();
@@ -2152,7 +2204,7 @@ async function submitComment() {
   // Refresh current view
   if (curTechTab === 't-online') renderTechOnlineFull();
   else if (curTechTab === 't-historial') renderTechHistorial(document.getElementById('tech-body'));
-  else if (curTechTab === 't-inicio') { var body = document.getElementById('tech-body'); body.innerHTML = ''; renderTechInicio(body); }
+  else if (curTechTab === 't-inicio') { var body = document.getElementById('tech-body'); body.innerHTML = ''; renderTechNuevo(body); }
 }
 
 // ═══════════════════════════════════════════════
@@ -2366,7 +2418,7 @@ async function resumeFromPending(pendingId, sessionKey) {
   T.sec = ps.seconds; T.pauses = ps.pauses || []; T.plate = ps.plate || ''; T.comments = ps.comments || [];
   T.running = true; T.overAlerted = false;
   await fetchLive();
-  techTab('t-inicio');
+  techTab('t-nuevo');
 }
 
 var deferredPendingId = null;
@@ -2613,6 +2665,7 @@ doFinish = async function(checklist) {
   // Also clean from pending_services if was there
   await sb.from('pending_services').delete().eq('session_key', T.sessionKey);
   await pushNotif('fin', CU.name + ' finalizo servicio', finSrv + ' - ' + finPlate + ' - ' + fmtT(finSec));
+  _finishing = false;
   // Only reset T if we finished T's session
   if (useKey === T.sessionKey) resetT();
   await fetchLive();
