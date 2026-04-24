@@ -342,23 +342,26 @@ select.inp{cursor:pointer}
 </div>
 
 <div id="m-create" class="overlay" style="display:none">
-  <div class="modal">
-    <div class="modal-t" id="m-ct">Crear cuenta</div>
-    <div class="modal-s">Completa los datos del nuevo usuario</div>
-    <div class="lbl">Nombre completo</div><input class="inp" id="cu-name" placeholder="Ej: Oscar Bueno"/>
-    <div class="lbl">Usuario</div><input class="inp" id="cu-user" placeholder="Ej: oscar.bueno"/>
-    <div class="lbl">Contraseña</div><input class="inp" type="password" id="cu-pass" placeholder="Mínimo 4 caracteres"/>
-    <div id="cu-role-wrap" style="display:none">
-      <div class="lbl">Rol</div>
-      <select class="inp" id="cu-role">
-        <option value="tech">Técnico</option>
-        <option value="jefatura">Jefatura</option>
-        <option value="admin">Administrador</option>
-      </select>
-    </div>
-    <div id="cu-err" style="color:var(--red3);font-size:12px;margin-bottom:8px;display:none"></div>
-    <button class="btn-r" id="cu-btn" onclick="saveUser()">Crear usuario</button>
-    <button class="btn-o" onclick="document.getElementById('m-create').style.display='none'" style="margin-top:8px">Cancelar</button>
+  <div class="modal" style="max-height:90vh;overflow-y:auto">
+    <div class="modal-t" id="m-ct">Crear usuario</div>
+    <div class="modal-s">Completa todos los campos</div>
+    <div class="lbl">Nombre completo</div>
+    <input class="inp" id="cu-name" placeholder="Ej: Oscar Bueno" autocomplete="off"/>
+    <div class="lbl">Usuario (para iniciar sesión)</div>
+    <input class="inp" id="cu-user" placeholder="Ej: oscar.bueno" autocomplete="off" autocapitalize="none"/>
+    <div class="lbl">Cargo</div>
+    <input class="inp" id="cu-cargo" placeholder="Ej: Técnico, Jefe de taller..." autocomplete="off"/>
+    <div class="lbl">Rol</div>
+    <select class="inp" id="cu-role">
+      <option value="tech">Técnico</option>
+      <option value="jefatura">Jefatura</option>
+      <option value="admin">Administrador</option>
+    </select>
+    <div class="lbl">Contraseña</div>
+    <input class="inp" type="password" id="cu-pass" placeholder="Mínimo 4 caracteres" autocomplete="new-password"/>
+    <div id="cu-err" style="color:var(--red3);font-size:12px;margin-bottom:8px;display:none;padding:8px;background:var(--red4);border-radius:4px;border:1px solid var(--red)"></div>
+    <button class="btn-r" id="cu-btn" onclick="saveUser()" style="margin-top:4px">Crear usuario</button>
+    <button class="btn-o" onclick="closeCreateUser()" style="margin-top:8px">Cancelar</button>
   </div>
 </div>
 
@@ -819,17 +822,41 @@ function renderAdCfg(){
   document.getElementById('ad-cfg').innerHTML=`<div class="card-plain"><div style="font-size:15px;font-weight:700;color:var(--wh);font-family:var(--head);letter-spacing:0.05em;text-transform:uppercase;margin-bottom:12px">Contraseña administrador</div><button class="btn-o" onclick="openChPass('admin')" style="margin-bottom:16px">Cambiar contraseña admin</button><div style="border-top:1px solid var(--border2);padding-top:14px"><div style="font-size:15px;font-weight:700;color:var(--wh);font-family:var(--head);letter-spacing:0.05em;text-transform:uppercase;margin-bottom:10px">Tiempos objetivo</div>${SRVS.filter(s=>s.goal).map(s=>`<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px"><span style="color:var(--wh2);text-transform:uppercase;font-family:var(--head);letter-spacing:0.03em">${s.name}</span><span style="color:var(--red3);font-family:var(--mono);font-weight:700">${s.goal} min</span></div>`).join('')}</div></div>`;
 }
 
-function openCreateUser(isAdmin){document.getElementById('m-ct').textContent=isAdmin?'Nuevo usuario':'Crear cuenta';document.getElementById('cu-role-wrap').style.display=isAdmin?'block':'none';['cu-name','cu-user','cu-pass'].forEach(id=>document.getElementById(id).value='');document.getElementById('cu-err').style.display='none';document.getElementById('m-create').style.display='flex';}
-async function saveUser(){
-  const n=document.getElementById('cu-name').value.trim(),u=document.getElementById('cu-user').value.trim().toLowerCase(),p=document.getElementById('cu-pass').value,r=document.getElementById('cu-role').value||'tech';
-  const err=document.getElementById('cu-err'),btn=document.getElementById('cu-btn');
-  if(!n||!u||p.length<4){err.textContent='Completa todos los campos (mín. 4 caracteres)';err.style.display='block';return;}
-  btn.innerHTML='<span class="spinner"></span>';btn.disabled=true;
-  const {error}=await sb.from('users').insert({name:n,username:u,password:p,role:r,cargo:'',avatar_url:null});
+function openCreateUser(isAdmin){
+  ['cu-name','cu-user','cu-pass','cu-cargo'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
+  document.getElementById('cu-role').value='tech';
+  document.getElementById('cu-err').style.display='none';
+  const btn=document.getElementById('cu-btn');
   btn.innerHTML='Crear usuario';btn.disabled=false;
-  if(error){err.textContent=error.code==='23505'?'El usuario ya existe':'Error al crear';err.style.display='block';return;}
+  document.getElementById('m-create').style.display='flex';
+  setTimeout(()=>document.getElementById('cu-name').focus(),100);
+}
+function closeCreateUser(){
   document.getElementById('m-create').style.display='none';
-  if(CU&&CU.role==='admin')renderAdUsr();
+}
+async function saveUser(){
+  const n=document.getElementById('cu-name').value.trim();
+  const u=document.getElementById('cu-user').value.trim().toLowerCase().replace(/\s+/g,'');
+  const p=document.getElementById('cu-pass').value;
+  const r=document.getElementById('cu-role').value||'tech';
+  const cargo=(document.getElementById('cu-cargo')||{value:''}).value.trim();
+  const err=document.getElementById('cu-err');
+  const btn=document.getElementById('cu-btn');
+  err.style.display='none';
+  if(!n){err.textContent='El nombre es obligatorio';err.style.display='block';return;}
+  if(!u){err.textContent='El usuario es obligatorio';err.style.display='block';return;}
+  if(p.length<4){err.textContent='La contraseña debe tener mínimo 4 caracteres';err.style.display='block';return;}
+  btn.innerHTML='<span class="spinner"></span> Creando...';btn.disabled=true;
+  const {data,error}=await sb.from('users').insert({name:n,username:u,password:p,role:r,cargo:cargo,avatar_url:null}).select();
+  btn.innerHTML='Crear usuario';btn.disabled=false;
+  if(error){
+    console.error('Supabase error:',error);
+    err.textContent=error.code==='23505'?'Ese nombre de usuario ya existe. Prueba con otro.':'Error: '+error.message;
+    err.style.display='block';
+    return;
+  }
+  document.getElementById('m-create').style.display='none';
+  renderAdUsr();
 }
 function openChPass(uname){document.getElementById('m-chp-s').textContent='Usuario: @'+uname;document.getElementById('chp-new').value='';document.getElementById('chp-conf').value='';document.getElementById('chp-err').style.display='none';document.getElementById('m-chpass').dataset.target=uname;document.getElementById('m-chpass').style.display='flex';}
 async function doChangePass(){
