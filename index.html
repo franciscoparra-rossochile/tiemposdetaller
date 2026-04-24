@@ -622,6 +622,19 @@ function renderUI(connStatusText) {
     var rb = document.getElementById('retry-btn');
     if (rb) rb.style.display = _supabaseReady ? 'none' : 'block';
     console.log('[INIT] APP RENDERED');
+
+    // Intentar restaurar sesion guardada en localStorage. Si hay sesion valida
+    // saltea la pantalla de login y va directo a la pantalla del rol.
+    if (_supabaseReady) {
+      tryRestoreSession().then(function(restored) {
+        if (!restored) {
+          // Sin sesion guardada: mostrar login como siempre
+          logR('NO_SESSION', {});
+        }
+      }).catch(function(e) {
+        logR('RESTORE_ERR', {msg: e.message}, 'warn');
+      });
+    }
   } catch (e) {
     console.error('[INIT] RENDER ERROR', e);
   }
@@ -691,6 +704,87 @@ function retryConn() {
   renderUI(ok ? 'Conectado' : 'Sin conexion - toca Reintentar');
 }
 
+// ═══════════════════════════════════════════════════════════════
+// RESTAURACION DE SESION
+// ═══════════════════════════════════════════════════════════════
+// Al cargar la app, si hay una sesion guardada en localStorage y no
+// ha expirado, re-loguea automaticamente al usuario. Esto resuelve
+// el problema de "F5 cierra sesion" que molestaba a los tecnicos.
+//
+// Expiracion: 12 horas desde el login. Cubre una jornada laboral
+// completa. Si el tecnico se va a la casa y vuelve al dia siguiente,
+// el sistema le va a pedir login de nuevo (correcto y seguro).
+//
+// El logout explicito (boton Salir) borra la sesion guardada, entonces
+// si alguien necesita asegurar que el proximo usuario haga login,
+// debe tocar Salir antes de prestar el dispositivo.
+const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000; // 12 horas
+
+async function tryRestoreSession() {
+  var raw;
+  try { raw = localStorage.getItem('rosso_session'); }
+  catch(e) { return false; }
+  if (!raw) return false;
+
+  var sess;
+  try { sess = JSON.parse(raw); }
+  catch(e) {
+    try { localStorage.removeItem('rosso_session'); } catch(_){}
+    return false;
+  }
+
+  // Validar expiracion
+  if (!sess.saved_at || Date.now() - sess.saved_at > SESSION_MAX_AGE_MS) {
+    logR('SESSION_EXPIRED', {age_ms: Date.now() - (sess.saved_at || 0)});
+    try { localStorage.removeItem('rosso_session'); } catch(_){}
+    return false;
+  }
+
+  // Recuperar datos del usuario desde BD (no guardamos password ni detalles en localStorage)
+  if (!sb) return false;
+  var {data, error} = await sb.from('users').select('*').eq('id', sess.user_id).maybeSingle();
+  if (error || !data) {
+    logR('SESSION_RESTORE_FAIL', {err: error ? error.message : 'user not found'}, 'warn');
+    try { localStorage.removeItem('rosso_session'); } catch(_){}
+    return false;
+  }
+
+  CU = data;
+  logR('SESSION_RESTORED', {name: CU.name, role: CU.role, age_min: Math.round((Date.now() - sess.saved_at) / 60000)});
+
+  // Si must_change_password se activo desde el login original, respetar eso ahora
+  if (CU.must_change_password === true) {
+    openForcedPasswordChange();
+    return true;
+  }
+
+  // Ir a la pantalla correspondiente
+  if (CU.role === 'tech') {
+    document.getElementById('tech-name').textContent = CU.name;
+    document.getElementById('tech-role').textContent = 'Tecnico';
+    document.getElementById('btn-back-boss').style.display = 'none';
+    showScreen('s-tech');
+    // Esperamos a que cargue liveData antes de decidir la pestana inicial
+    startPolling();
+    setTimeout(function() {
+      var myRows = liveData.filter(function(s) { return s.username === CU.username; });
+      techTab(myRows.length > 0 ? 't-misservicios' : 't-nuevo');
+    }, 500);
+  } else {
+    document.getElementById('boss-name').textContent = CU.name;
+    document.getElementById('boss-role').textContent = CU.role === 'admin' ? 'Administrador' : 'Jefatura';
+    if (CU.role === 'admin') {
+      document.getElementById('tab-users').style.display = '';
+      document.getElementById('tab-cfg').style.display = '';
+    }
+    document.getElementById('btn-to-tech').style.display = CU.can_tech === true ? '' : 'none';
+    showScreen('s-boss');
+    bossTab('b-online');
+    startPolling();
+  }
+  return true;
+}
+
 
 
 
@@ -741,6 +835,17 @@ async function doLogin() {
   CU = data;
   logR('LOGIN_OK', {name: CU.name, role: CU.role, id: CU.id});
 
+  // Guardar sesion para que F5/recarga no cierre sesion.
+  // La sesion dura 12 horas (cubre la jornada laboral completa).
+  // El logout explicito la borra; si alguien necesita cerrar por seguridad, usa "Salir".
+  try {
+    localStorage.setItem('rosso_session', JSON.stringify({
+      user_id: CU.id,
+      username: CU.username,
+      saved_at: Date.now()
+    }));
+  } catch(e) { logR('SESSION_SAVE_FAIL', {msg: e.message}, 'warn'); }
+
   // FUERZA cambio de contrasena al primer ingreso.
   // Si la columna no existe (BD antigua), must_change_password sera undefined y el flujo sigue normal.
   if (CU.must_change_password === true) {
@@ -774,6 +879,8 @@ async function doLogin() {
 
 function doLogout() {
   logR('LOGOUT', {user: CU ? CU.username : 'none'});
+  // Borrar sesion persistente (intencional - si el usuario toca Salir, quiere salir)
+  try { localStorage.removeItem('rosso_session'); } catch(e) {}
   stopPolling();
   resetT();
   CU = null; liveData = []; lastNotifId = null;
@@ -957,6 +1064,34 @@ function stopPolling() {
   if (pollInt) { clearInterval(pollInt); pollInt = null; }
   if (tickInt) { clearInterval(tickInt); tickInt = null; }
 }
+
+// ═══════════════════════════════════════════════════════════════
+// Cuando el navegador vuelve a estar visible (desbloqueo pantalla,
+// cambio de pestana, regreso del home screen), forzar un refresh
+// inmediato del UI. Sin esto, en iOS Safari el usuario ve el tiempo
+// congelado por 1-2 segundos hasta que el ticker se despierte.
+//
+// Gracias al refactor de timestamps, el tiempo REAL nunca se pierde
+// (se calcula como ahora - started_at). Esto es solo para que la UI
+// se ponga al dia visualmente lo mas rapido posible.
+// ═══════════════════════════════════════════════════════════════
+document.addEventListener('visibilitychange', function() {
+  if (document.visibilityState === 'visible' && CU) {
+    logR('VISIBILITY_RESUMED', {});
+    // Refresh inmediato: trae datos frescos y repinta
+    pollAll();
+    refreshLiveUI();
+    // Ademas si tengo timer activo, actualizar display
+    if (T.running && T.sessionKey) {
+      var mine = liveData.find(function(x) { return x.session_key === T.sessionKey; });
+      if (mine) {
+        T.sec = liveSecondsNow(mine);
+        var disp = document.getElementById('timer-disp');
+        if (disp) disp.textContent = fmtT(T.sec);
+      }
+    }
+  }
+});
 
 async function pollAll() {
   if (!CU) return;
@@ -1582,64 +1717,86 @@ var _finishing = false; // guard against double-click
 async function doFinish(checklist, sessionKey) {
   if (_finishing) { logR('FINISH_GUARD_BLOCKED', {}); return; }
   _finishing = true;
-  var useKey = sessionKey || T.sessionKey;
-  if (!useKey) {
-    var mine = liveData.find(function(s) { return s.username === CU.username; });
-    if (!mine) { alert('No se encontro la sesion activa'); return; }
-    useKey = mine.session_key;
-  }
-  // Load session data
-  var sess = liveData.find(function(s) { return s.session_key === useKey; });
-  if (useKey === T.sessionKey) {
-    T.running = false;
-  } else if (sess) {
-    // Finishing a different session from Mis Servicios
-    T.sessionKey = useKey;
-    T.srvLabel = sess.service;
-    T.srvGoal = sess.goal_minutes;
-    T.sec = sess.seconds;
-    T.pauses = sess.pauses || [];
-    T.plate = sess.plate || '';
-  }
-  
-  // Use session data
-  var finSrv = T.srvLabel || (sess ? sess.service : '');
-  var finPlate = T.plate || (sess ? (sess.plate||'') : '');
-  var finSec = T.sec || (sess ? sess.seconds : 0);
-  var finGoal = T.srvGoal || (sess ? sess.goal_minutes : null);
-  var finPauses = T.pauses.length ? T.pauses : (sess ? (sess.pauses||[]) : []);
 
-  var histPayload = {
-    technician: CU.name, username: CU.username,
-    service: finSrv, plate: finPlate,
-    duration: fmtT(finSec), seconds: finSec,
-    goal_minutes: finGoal || null,
-    pauses: finPauses, checklist: checklist,
-    ended_at: new Date().toISOString()
-  };
-  logR('FINISH_HISTORY_PAYLOAD', histPayload);
-  
-  var {error: hErr} = await sb.from('history').insert(histPayload);
-  logR('FINISH_HISTORY_RESULT', {error: hErr ? hErr.message : null});
-  if (hErr) { _finishing = false; alert('Error al guardar historial: ' + hErr.message); return; }
-  
-  // Save checklist
-  await sb.from('service_checklists').insert({
-    session_key: T.sessionKey, technician: CU.name, username: CU.username,
-    service: T.srvLabel, plate: T.plate, duration: fmtT(T.sec), seconds: T.sec,
-    litros: checklist.litros, aceite: checklist.aceite,
-    prueba_ruta: checklist.prueba_ruta, doble_control: checklist.doble_control,
-    visado: checklist.visado, observaciones: checklist.observaciones,
-    ended_at: new Date().toISOString()
-  });
-  
-  var {error: dErr} = await sb.from('active_sessions').delete().eq('session_key', useKey);
-  logR('FINISH_DELETE_SESSION', {key: useKey, error: dErr ? dErr.message : null});
-  
-  await pushNotif('fin', CU.name + ' finalizo servicio', finSrv + ' - ' + finPlate + ' - ' + fmtT(finSec));
-  resetT();
-  await fetchLive();
-  techTab('t-nuevo');
+  try {
+    var useKey = sessionKey || T.sessionKey;
+    if (!useKey) {
+      var mine = liveData.find(function(s) { return s.username === CU.username; });
+      if (!mine) { alert('No se encontro la sesion activa'); return; }
+      useKey = mine.session_key;
+    }
+    // Load session data
+    var sess = liveData.find(function(s) { return s.session_key === useKey; });
+    if (useKey === T.sessionKey) {
+      T.running = false;
+    } else if (sess) {
+      // Finishing a different session from Mis Servicios
+      T.sessionKey = useKey;
+      T.srvLabel = sess.service;
+      T.srvGoal = sess.goal_minutes;
+      T.pauses = sess.pauses || [];
+      T.plate = sess.plate || '';
+    }
+
+    // CALCULO DEFINITIVO del tiempo al momento de finalizar.
+    // Usamos liveSecondsNow() que aplica la formula determinística:
+    // ahora - started_at - tiempo_pausado. Esto garantiza que el valor
+    // guardado en historial sea exacto, sin importar el estado de T.sec.
+    var finSec;
+    if (sess) {
+      // Si esta corriendo justo ahora, calcular en vivo.
+      // Si ya estaba pausado/checklist_pending, usar el snapshot congelado.
+      finSec = liveSecondsNow(sess);
+      // Para sesiones viejas sin started_at, caer al valor guardado
+      if (!finSec && sess.seconds) finSec = sess.seconds;
+    } else {
+      finSec = T.sec || 0;
+    }
+
+    var finSrv = T.srvLabel || (sess ? sess.service : '');
+    var finPlate = T.plate || (sess ? (sess.plate||'') : '');
+    var finGoal = T.srvGoal || (sess ? sess.goal_minutes : null);
+    var finPauses = T.pauses.length ? T.pauses : (sess ? (sess.pauses||[]) : []);
+
+    var histPayload = {
+      technician: CU.name, username: CU.username,
+      service: finSrv, plate: finPlate,
+      duration: fmtT(finSec), seconds: finSec,
+      goal_minutes: finGoal || null,
+      pauses: finPauses, checklist: checklist,
+      ended_at: new Date().toISOString()
+    };
+    logR('FINISH_HISTORY_PAYLOAD', histPayload);
+
+    var {error: hErr} = await sb.from('history').insert(histPayload);
+    logR('FINISH_HISTORY_RESULT', {error: hErr ? hErr.message : null});
+    if (hErr) { alert('Error al guardar historial: ' + hErr.message); return; }
+
+    // Save checklist
+    await sb.from('service_checklists').insert({
+      session_key: useKey, technician: CU.name, username: CU.username,
+      service: finSrv, plate: finPlate, duration: fmtT(finSec), seconds: finSec,
+      litros: checklist.litros, aceite: checklist.aceite,
+      prueba_ruta: checklist.prueba_ruta, doble_control: checklist.doble_control,
+      visado: checklist.visado, observaciones: checklist.observaciones,
+      ended_at: new Date().toISOString()
+    });
+
+    var {error: dErr} = await sb.from('active_sessions').delete().eq('session_key', useKey);
+    logR('FINISH_DELETE_SESSION', {key: useKey, error: dErr ? dErr.message : null});
+
+    await pushNotif('fin', CU.name + ' finalizo servicio', finSrv + ' - ' + finPlate + ' - ' + fmtT(finSec));
+    resetT();
+    await fetchLive();
+    techTab('t-nuevo');
+  } catch (e) {
+    logR('FINISH_EXCEPTION', {msg: e.message}, 'err');
+    alert('Error inesperado al finalizar: ' + e.message + '\n\nReintenta o avisa a jefatura.');
+  } finally {
+    // GARANTIZAR que se libera el guard, pase lo que pase.
+    // Antes quedaba bloqueado si algo fallaba, y el usuario no podia volver a finalizar.
+    _finishing = false;
+  }
 }
 
 function resetT() {
