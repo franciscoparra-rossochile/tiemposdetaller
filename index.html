@@ -527,15 +527,7 @@ async function init() {
   }
   if (typeof supabase === 'undefined') { setMsg('Error: Supabase no cargo.'); showLogin(false); return; }
   try { sb = supabase.createClient(SURL, SKEY); } catch(e) { setMsg('Error: ' + e.message); showLogin(false); return; }
-  var connOk = false;
-  try {
-    var r = await Promise.race([
-      sb.from('users').select('count').limit(1),
-      new Promise(function(_, rej) { setTimeout(function() { rej(new Error('timeout')); }, 5000); })
-    ]);
-    connOk = !(r && r.error);
-  } catch(e) { connOk = false; }
-  showLogin(connOk);
+  showLogin(true);
 }
 
 function setMsg(m) {
