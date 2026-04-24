@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" crossorigin="anonymous" defer></script>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
 <meta name="apple-mobile-web-app-capable" content="yes"/>
@@ -516,19 +516,81 @@ let dbSyncCtr = 0;
 let calYear = new Date().getFullYear(), calMonth = new Date().getMonth();
 
 // ═══════════════════════════════════════════════
-// INIT & CONNECTION TEST
+// INIT & CONNECTION TEST (non-blocking)
 // ═══════════════════════════════════════════════
-async function init() {
+var _uiRendered = false;
+var _supabaseReady = false;
+
+function renderUI(connStatusText) {
+  if (_uiRendered) {
+    // solo actualizar mensaje de conexion si ya se renderizo
+    var cs0 = document.getElementById('conn-status');
+    if (cs0 && connStatusText) cs0.textContent = connStatusText;
+    var rb0 = document.getElementById('retry-btn');
+    if (rb0) rb0.style.display = _supabaseReady ? 'none' : 'block';
+    return;
+  }
+  _uiRendered = true;
+  try {
+    var ls = document.getElementById('load-screen');
+    var app = document.getElementById('app');
+    if (ls) ls.style.display = 'none';
+    if (app) app.style.display = 'block';
+    var cs = document.getElementById('conn-status');
+    if (cs) cs.textContent = connStatusText || (_supabaseReady ? 'Conectado' : 'Sin conexion - toca Reintentar');
+    var rb = document.getElementById('retry-btn');
+    if (rb) rb.style.display = _supabaseReady ? 'none' : 'block';
+    console.log('[INIT] APP RENDERED');
+  } catch (e) {
+    console.error('[INIT] RENDER ERROR', e);
+  }
+}
+
+function initSupabase() {
+  try {
+    if (typeof supabase === 'undefined' || !supabase || typeof supabase.createClient !== 'function') {
+      console.error('[INIT] SUPABASE FAIL: SDK no disponible (window.supabase ausente)');
+      _supabaseReady = false;
+      return false;
+    }
+    sb = supabase.createClient(SURL, SKEY);
+    _supabaseReady = true;
+    console.log('[INIT] SUPABASE OK');
+    return true;
+  } catch (e) {
+    console.error('[INIT] SUPABASE FAIL:', e && e.message ? e.message : e);
+    _supabaseReady = false;
+    return false;
+  }
+}
+
+// init() no bloqueante: intenta conectar Supabase en background sin impedir render
+function init() {
+  console.log('[INIT] INIT START');
   console.log('🚀 ROSSO v2.0-FIXED CARGADO CORRECTAMENTE');
   setMsg('Conectando...');
-  var waited = 0;
-  while (typeof supabase === 'undefined' && waited < 5000) {
-    await new Promise(function(r) { setTimeout(r, 100); });
-    waited += 100;
+
+  // Intento inmediato si el SDK ya esta cargado
+  if (typeof supabase !== 'undefined') {
+    initSupabase();
+    renderUI(_supabaseReady ? 'Conectado' : 'Sin conexion - toca Reintentar');
+    return;
   }
-  if (typeof supabase === 'undefined') { setMsg('Error: Supabase no cargo.'); showLogin(false); return; }
-  try { sb = supabase.createClient(SURL, SKEY); } catch(e) { setMsg('Error: ' + e.message); showLogin(false); return; }
-  showLogin(true);
+
+  // Polling NO bloqueante (sin await global): chequea cada 100ms hasta 3s
+  var waited = 0;
+  var iv = setInterval(function () {
+    waited += 100;
+    if (typeof supabase !== 'undefined') {
+      clearInterval(iv);
+      initSupabase();
+      renderUI(_supabaseReady ? 'Conectado' : 'Sin conexion - toca Reintentar');
+    } else if (waited >= 3000) {
+      clearInterval(iv);
+      console.error('[INIT] SUPABASE FAIL: timeout 3s esperando SDK');
+      renderUI('Sin conexion - toca Reintentar');
+    }
+  }, 100);
 }
 
 function setMsg(m) {
@@ -536,29 +598,22 @@ function setMsg(m) {
 }
 
 function showLogin(ok) {
-  var ls = document.getElementById('load-screen');
-  var app = document.getElementById('app');
-  if (ls) ls.style.display = 'none';
-  if (app) app.style.display = 'block';
-  var cs = document.getElementById('conn-status');
-  if (cs) cs.textContent = ok ? 'Conectado' : 'Sin conexion - toca Reintentar';
-  var rb = document.getElementById('retry-btn');
-  if (rb) rb.style.display = ok ? 'none' : 'block';
+  _supabaseReady = !!ok;
+  renderUI(ok ? 'Conectado' : 'Sin conexion - toca Reintentar');
 }
 
-async function retryConn() {
-  var ls = document.getElementById('load-screen');
-  var app = document.getElementById('app');
-  if (ls) ls.style.display = 'flex';
-  if (app) app.style.display = 'none';
+function retryConn() {
+  console.log('[INIT] RETRY requested');
   setMsg('Reintentando...');
-  await init();
+  // reintento no bloqueante
+  var ok = initSupabase();
+  renderUI(ok ? 'Conectado' : 'Sin conexion - toca Reintentar');
 }
 
 
 
 
-async // ═══════════════════════════════════════════════
+// ═══════════════════════════════════════════════
 // SCREENS & MODALS
 // ═══════════════════════════════════════════════
 function showScreen(id) {
@@ -582,7 +637,8 @@ async function doLogin() {
     if (!sb) {
     var btn2 = document.getElementById('li-btn');
     if (btn2) { btn2.innerHTML = '<span class="spin"></span> Conectando...'; btn2.disabled = true; }
-    await init();
+    // Reintento directo (no bloqueante) de inicializar Supabase
+    initSupabase();
     if (btn2) { btn2.innerHTML = 'Ingresar'; btn2.disabled = false; }
     if (!sb) {
       var e2 = document.getElementById('li-err');
@@ -1327,7 +1383,7 @@ async function renderMisServicios(body) {
         + (past ? '<span class="badge b-over">Atrasado</span>' : soon ? '<span class="badge b-pau">En ' + dm + ' min</span>' : '<span class="badge b-cal">Programado</span>')
         + '</div></div>'
         + '<div style="display:flex;gap:6px;margin-top:8px">'
-        + '<button class="btn-sm" style="border-color:var(--green);color:var(--green)" onclick="applyAssignAndGo('' + a.service + '','' + (a.plate||'') + '')">Iniciar este</button>'
+        + '<button class="btn-sm" style="border-color:var(--green);color:var(--green)" onclick="applyAssignAndGo(\'' + a.service + '\',\'' + (a.plate||'') + '\')">Iniciar este</button>'
         + '</div>';
       body.appendChild(card);
     });
@@ -1421,16 +1477,16 @@ function buildMisServCard(s, status) {
   h += '<div style="display:flex;gap:6px;flex-wrap:wrap">';
 
   if (isRunning) {
-    h += '<button class="btn-sm" style="border-color:var(--gold);color:var(--gold)" onclick="setPauseContext('' + s.session_key + '');openModal('m-pause')">Pausar</button>';
-    h += '<button class="btn-sm" style="border-color:var(--red);color:var(--red)" onclick="openChecklist('' + s.session_key + '')">Finalizar</button>';
+    h += '<button class="btn-sm" style="border-color:var(--gold);color:var(--gold)" onclick="setPauseContext(\'' + s.session_key + '\');openModal(\'m-pause\')">Pausar</button>';
+    h += '<button class="btn-sm" style="border-color:var(--red);color:var(--red)" onclick="openChecklist(\'' + s.session_key + '\')">Finalizar</button>';
   } else if (isPaused) {
-    h += '<button class="btn-sm" style="border-color:var(--green);color:var(--green)" onclick="resumeSession('' + s.session_key + '')">Reanudar</button>';
-    h += '<button class="btn-sm" style="border-color:var(--red);color:var(--red)" onclick="openChecklist('' + s.session_key + '')">Finalizar</button>';
+    h += '<button class="btn-sm" style="border-color:var(--green);color:var(--green)" onclick="resumeSession(\'' + s.session_key + '\')">Reanudar</button>';
+    h += '<button class="btn-sm" style="border-color:var(--red);color:var(--red)" onclick="openChecklist(\'' + s.session_key + '\')">Finalizar</button>';
   } else if (isCkP) {
-    h += '<button class="btn-sm" style="border-color:var(--blue);color:var(--blue)" onclick="openChecklist('' + s.session_key + '')">Completar checklist</button>';
+    h += '<button class="btn-sm" style="border-color:var(--blue);color:var(--blue)" onclick="openChecklist(\'' + s.session_key + '\')">Completar checklist</button>';
   }
 
-  h += '<button class="btn-sm" onclick="openCommentModal('' + s.session_key + '')">Comentar</button>';
+  h += '<button class="btn-sm" onclick="openCommentModal(\'' + s.session_key + '\')">Comentar</button>';
   h += '</div>';
 
   card.innerHTML = h;
@@ -2100,21 +2156,50 @@ function fmtD(d) {
 
 </script>
 <script>
-// Emergency fallback: if load-screen visible after 5s, force show login
-setTimeout(function() {
-  var ls = document.getElementById('load-screen');
-  var app = document.getElementById('app');
-  if (ls && ls.style.display !== 'none') {
-    ls.style.display = 'none';
-    if (app) app.style.display = 'block';
-    var cs = document.getElementById('conn-status');
-    if (cs) cs.textContent = 'Modo emergencia: carga lenta o error de conexion';
-    var rb = document.getElementById('retry-btn');
-    if (rb) rb.style.display = 'block';
+// HARD FALLBACK: ocultar load-screen en maximo 1500ms pase lo que pase.
+// Esto garantiza que #app sea visible aunque init() falle, se bloquee,
+// o un error de parse impida que el script principal se ejecute.
+(function () {
+  function forceShowApp() {
+    try {
+      var ls = document.getElementById('load-screen');
+      var app = document.getElementById('app');
+      if (ls && ls.style.display !== 'none') {
+        ls.style.display = 'none';
+        if (app) app.style.display = 'block';
+        var cs = document.getElementById('conn-status');
+        if (cs && !cs.textContent) cs.textContent = 'Modo emergencia: carga lenta o error de conexion';
+        var rb = document.getElementById('retry-btn');
+        if (rb) rb.style.display = 'block';
+        console.error('[INIT] EMERGENCY FALLBACK 1500ms: UI forzada a renderizar');
+      }
+    } catch (e) {
+      console.error('[INIT] EMERGENCY FALLBACK error', e);
+    }
   }
-}, 5000);
+  setTimeout(forceShowApp, 1500);
+})();
 
-document.addEventListener('DOMContentLoaded', init);
+// Disparar init() de forma resiliente: tanto si el DOM ya cargo como si aun no.
+(function () {
+  function safeInit() {
+    try {
+      if (typeof init === 'function') {
+        init();
+      } else {
+        console.error('[INIT] init() no definido - posible error de parse en el script principal');
+      }
+    } catch (e) {
+      console.error('[INIT] init() threw', e);
+    }
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', safeInit);
+  } else {
+    // DOM ya listo, ejecutar inmediatamente
+    safeInit();
+  }
+})();
 </script>
 </body>
 </html>
