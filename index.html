@@ -750,7 +750,7 @@ function initSupabase() {
 // init() no bloqueante: intenta conectar Supabase en background sin impedir render
 function init() {
   console.log('[INIT] INIT START');
-  console.log('🚀 ROSSO v2.1.7-HOTFIX CARGADO CORRECTAMENTE');
+  console.log('🚀 ROSSO v2.1.8-HOTFIX CARGADO CORRECTAMENTE');
   setMsg('Conectando...');
 
   // Intento inmediato si el SDK ya esta cargado
@@ -3625,16 +3625,68 @@ async function renderBossReportes(body) {
 
   // ──────────────────────────────────────────────
   // Consulta con filtros aplicados
+  //
+  // IMPORTANTE: el reporte combina 2 fuentes de datos
+  //   1. history: servicios finalizados con checklist completo
+  //   2. active_sessions: servicios que siguen activos o pausados al cierre
+  //      (ej: tecnico pauso por "Termino de jornada" y quedaron pendientes)
+  //
+  // Sin esto, los servicios pausados al cierre del dia se "perdian"
+  // del reporte, mostrando menos producto del que realmente hubo.
   // ──────────────────────────────────────────────
   var b2 = repRangeBounds();
-  var q = sb.from('history').select('*')
+
+  // Query 1: history (servicios finalizados)
+  var qHist = sb.from('history').select('*')
     .gte('ended_at', b2.from.toISOString())
     .lte('ended_at', b2.to.toISOString())
     .order('ended_at', {ascending: false});
-  if (REP.technicianId) q = q.eq('technician', REP.technicianId);
-  if (REP.service) q = q.eq('service', REP.service);
-  var {data: rows} = await q;
-  REP.data = rows || [];
+  if (REP.technicianId) qHist = qHist.eq('technician', REP.technicianId);
+  if (REP.service) qHist = qHist.eq('service', REP.service);
+
+  // Query 2: active_sessions (servicios que NO han finalizado)
+  // Filtramos por started_at en lugar de ended_at porque no tienen ended_at.
+  var qActive = sb.from('active_sessions').select('*')
+    .gte('started_at', b2.from.toISOString())
+    .lte('started_at', b2.to.toISOString())
+    .order('started_at', {ascending: false});
+  if (REP.technicianId) qActive = qActive.eq('technician', REP.technicianId);
+  if (REP.service) qActive = qActive.eq('service', REP.service);
+
+  var [histRes, activeRes] = await Promise.all([qHist, qActive]);
+  var historyRows = histRes.data || [];
+  var activeRows = activeRes.data || [];
+
+  // Normalizar servicios activos al mismo formato que history.
+  // Duracion = tiempo real trabajado (started_at hasta ahora, menos pausas).
+  var normalizedActive = activeRows.map(function(s) {
+    var sec = liveSecondsNow(s);
+    return {
+      id: 'active_' + s.session_key,
+      technician: s.technician,
+      username: s.username,
+      service: s.service,
+      plate: s.plate,
+      duration: fmtT(sec),
+      seconds: sec,
+      goal_minutes: s.goal_minutes,
+      pauses: s.pauses || [],
+      checklist: null,                          // no tiene porque no finalizo
+      ended_at: s.started_at,                   // usamos started_at para ordenamiento
+      _is_active: true,                         // bandera para distinguir en la UI
+      _status: s.status,                         // running | paused | checklist_pending
+      _session_key: s.session_key,
+      odometer_photo_start: s.odometer_photo_start || null,
+      km_start: s.km_start || null
+    };
+  });
+
+  // Combinar y ordenar por fecha descendente
+  var rows = historyRows.concat(normalizedActive).sort(function(a, b) {
+    return new Date(b.ended_at).getTime() - new Date(a.ended_at).getTime();
+  });
+
+  REP.data = rows;
 
   // ──────────────────────────────────────────────
   // Card: KPIs
@@ -3688,16 +3740,27 @@ async function renderBossReportes(body) {
     REP.data.forEach(function(r) {
       var over = r.goal_minutes && r.seconds > r.goal_minutes * 60;
       var row = mk('div','row');
+      // Badge para servicios activos (pausados o en curso) para distinguirlos
+      // visualmente de los finalizados.
+      var activeBadge = '';
+      if (r._is_active) {
+        var badgeText, badgeColor;
+        if (r._status === 'running') { badgeText = 'En curso'; badgeColor = 'var(--green)'; }
+        else if (r._status === 'paused') { badgeText = 'Pausado'; badgeColor = 'var(--gold)'; }
+        else { badgeText = 'Pendiente checklist'; badgeColor = 'var(--blue)'; }
+        activeBadge = '<span style="display:inline-block;font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;margin-top:3px;margin-left:4px;background:' + badgeColor + ';color:#fff;text-transform:uppercase;letter-spacing:.05em">' + badgeText + '</span>';
+      }
       row.innerHTML = avatarHTML(r.technician, r.username, 36)
         + '<div style="flex:1;min-width:0">'
         + '<div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111">' + r.technician + '</div>'
         + '<div style="font-size:11px;color:#666;text-transform:uppercase">' + r.service + '</div>'
         + (r.plate ? '<span class="plate-tag">' + r.plate + '</span>' : '')
+        + activeBadge
         + '</div>'
         + '<div style="text-align:right;flex-shrink:0">'
-        + '<div style="font-size:16px;font-weight:700;font-family:var(--mono);color:' + (over?'var(--red)':'var(--green)') + '">' + r.duration + '</div>'
+        + '<div style="font-size:16px;font-weight:700;font-family:var(--mono);color:' + (over?'var(--red)':(r._is_active?'var(--wh4)':'var(--green)')) + '">' + r.duration + '</div>'
         + (r.goal_minutes ? '<div style="font-size:9px;color:#aaa;text-transform:uppercase">OBJ:' + r.goal_minutes + 'm</div>' : '')
-        + '<div style="font-size:10px;color:#aaa">' + fmtD(r.ended_at) + '</div>'
+        + '<div style="font-size:10px;color:#aaa">' + (r._is_active ? 'Iniciado ' + fmtD(r.ended_at) : fmtD(r.ended_at)) + '</div>'
         + '</div>';
       listCard.appendChild(row);
     });
@@ -3739,18 +3802,26 @@ function computeKPIs(rows) {
   var pause = 0;
   var onTime = 0;
   var withGoal = 0;
+  // Contadores nuevos: separar finalizados de activos/pausados
+  var finalizados = 0;
+  var activosPausados = 0;
+  var activosRunning = 0;
+  var activosPaused = 0;
   var pauseReasons = {};
   rows.forEach(function(r) {
     var sec = r.seconds || 0;
     productive += sec;
+    // Clasificar servicio por estado
+    if (r._is_active) {
+      activosPausados += 1;
+      if (r._status === 'running') activosRunning += 1;
+      else if (r._status === 'paused') activosPaused += 1;
+    } else {
+      finalizados += 1;
+    }
     if (r.pauses && r.pauses.length) {
       r.pauses.forEach(function(p) {
-        // BUGFIX 2026-04-24: En toda la app las pausas se guardan con
-        // duration_ms (milisegundos). Antes leiamos p.seconds o
-        // p.duration_seconds que NO EXISTEN como campos, por eso el
-        // reporte mostraba "0m" en todos los motivos de pausa.
-        // Ahora leemos duration_ms y convertimos. Fallback a seconds
-        // por compatibilidad con datos legados (si existieran).
+        // duration_ms es el campo real (no p.seconds).
         var ps = 0;
         if (typeof p.duration_ms === 'number' && p.duration_ms > 0) {
           ps = Math.round(p.duration_ms / 1000);
@@ -3759,13 +3830,15 @@ function computeKPIs(rows) {
         } else if (typeof p.duration_seconds === 'number') {
           ps = p.duration_seconds;
         }
-        // Caso edge: pausas sin reanudar (paused_at sin resumed_at).
-        // Si paused_at existe pero no hay duration_ms, calculamos desde
-        // paused_at hasta ended_at del servicio (asumimos que al
-        // finalizar se "cerro" la pausa).
-        if (ps === 0 && p.paused_at && !p.resumed_at && r.ended_at) {
+        // Pausa sin reanudar en servicio finalizado: calcular desde paused_at hasta ended_at
+        if (ps === 0 && p.paused_at && !p.resumed_at && r.ended_at && !r._is_active) {
           var ms = new Date(r.ended_at).getTime() - new Date(p.paused_at).getTime();
           if (ms > 0) ps = Math.round(ms / 1000);
+        }
+        // Pausa actualmente activa en servicio pausado: calcular desde paused_at hasta ahora
+        if (ps === 0 && p.paused_at && !p.resumed_at && r._is_active && r._status === 'paused') {
+          var ms2 = Date.now() - new Date(p.paused_at).getTime();
+          if (ms2 > 0) ps = Math.round(ms2 / 1000);
         }
         pause += ps;
         var key = p.reason || 'Sin motivo';
@@ -3776,14 +3849,20 @@ function computeKPIs(rows) {
     }
     if (r.goal_minutes) {
       withGoal += 1;
-      if (r.seconds <= r.goal_minutes * 60) onTime += 1;
+      // Solo considerar "en objetivo" los servicios finalizados
+      // (los activos aun pueden terminar superando o no)
+      if (!r._is_active && r.seconds <= r.goal_minutes * 60) onTime += 1;
     }
   });
   var pctOnTime = withGoal > 0 ? Math.round((onTime / withGoal) * 100) : 0;
   return {
     total: total, productiveSec: productive, pauseSec: pause,
     onTime: onTime, withGoal: withGoal, pctOnTime: pctOnTime,
-    pauseReasons: pauseReasons
+    pauseReasons: pauseReasons,
+    finalizados: finalizados,
+    activosPausados: activosPausados,
+    activosRunning: activosRunning,
+    activosPaused: activosPaused
   };
 }
 async function renderBossUsers(body) {
@@ -4337,7 +4416,12 @@ function pdfRenderHeaderBlock(doc, title, subtitle, kpis) {
   var w = doc.internal.pageSize.getWidth();
   var boxW = (w - 28 - 6) / 4;
   var boxH = 22;
-  pdfKPIBox(doc, 14, y, boxW, boxH, 'Servicios', String(kpis.total), PDF_COLORS.black);
+  // KPI "Servicios" ahora muestra finalizados / total para dejar visible
+  // la diferencia entre lo terminado y lo que sigue abierto.
+  var srvLabel = kpis.activosPausados > 0
+    ? String(kpis.finalizados) + ' fin · ' + String(kpis.activosPausados) + ' pend'
+    : String(kpis.total);
+  pdfKPIBox(doc, 14, y, boxW, boxH, 'Servicios', srvLabel, PDF_COLORS.black);
   pdfKPIBox(doc, 14 + boxW + 2, y, boxW, boxH, 'En objetivo', kpis.pctOnTime + '%', kpis.pctOnTime >= 70 ? PDF_COLORS.green : PDF_COLORS.red);
   pdfKPIBox(doc, 14 + (boxW + 2)*2, y, boxW, boxH, 'Productivo', fmtHM(kpis.productiveSec), [48, 80, 176]);
   pdfKPIBox(doc, 14 + (boxW + 2)*3, y, boxW, boxH, 'En pausa', fmtHM(kpis.pauseSec), PDF_COLORS.gold);
@@ -4501,7 +4585,11 @@ function generatePDFTecnico() {
     var w = doc.internal.pageSize.getWidth();
     var boxW = (w - 28 - 4) / 3;
     var boxH = 18;
-    pdfKPIBox(doc, 14, y, boxW, boxH, 'Servicios', String(tKpis.total), PDF_COLORS.black);
+    // KPI "Servicios" distingue finalizados de pendientes
+    var tSrvLabel = tKpis.activosPausados > 0
+      ? String(tKpis.finalizados) + '/' + String(tKpis.total)
+      : String(tKpis.total);
+    pdfKPIBox(doc, 14, y, boxW, boxH, 'Servicios', tSrvLabel, PDF_COLORS.black);
     pdfKPIBox(doc, 14 + boxW + 2, y, boxW, boxH, 'En objetivo', tKpis.pctOnTime + '%', tKpis.pctOnTime >= 70 ? PDF_COLORS.green : PDF_COLORS.red);
     pdfKPIBox(doc, 14 + (boxW+2)*2, y, boxW, boxH, 'Productivo', fmtHM(tKpis.productiveSec), [48, 80, 176]);
     y += boxH + 5;
@@ -4509,12 +4597,18 @@ function generatePDFTecnico() {
     // Tabla
     doc.autoTable({
       startY: y,
-      head: [['Fecha','Servicio','Patente','Duracion','Objetivo','Pausas']],
+      head: [['Fecha','Servicio','Patente','Duracion','Objetivo','Estado','Pausas']],
       body: tRows.map(function(r) {
         var fecha = new Date(r.ended_at).toLocaleDateString('es-CL',{day:'2-digit',month:'2-digit',year:'2-digit'});
         var pauseTxt = (r.pauses && r.pauses.length) ? r.pauses.map(function(p){return p.reason;}).join(', ') : '-';
-        var over = r.goal_minutes && r.seconds > r.goal_minutes * 60;
-        return [fecha, r.service, r.plate || '-', r.duration, r.goal_minutes ? r.goal_minutes+'m' : '-', pauseTxt];
+        // Estado del servicio: finalizado, pausado, en curso o pendiente de checklist
+        var estado = 'Finalizado';
+        if (r._is_active) {
+          if (r._status === 'running') estado = 'En curso';
+          else if (r._status === 'paused') estado = 'Pausado';
+          else estado = 'Pend. checklist';
+        }
+        return [fecha, r.service, r.plate || '-', r.duration, r.goal_minutes ? r.goal_minutes+'m' : '-', estado, pauseTxt];
       }),
       theme: 'plain',
       styles: {fontSize: 7.5, cellPadding: 1.8, lineColor: PDF_COLORS.grayBorder, lineWidth: 0.1},
@@ -4522,13 +4616,24 @@ function generatePDFTecnico() {
       alternateRowStyles: {fillColor: PDF_COLORS.grayBg},
       columnStyles: {
         3: {halign: 'right', font: 'courier'},
-        4: {halign: 'center'}
+        4: {halign: 'center'},
+        5: {halign: 'center', fontSize: 7}
       },
       didParseCell: function(data) {
         if (data.section === 'body' && data.column.index === 3) {
           var row = tRows[data.row.index];
           if (row && row.goal_minutes && row.seconds > row.goal_minutes * 60) {
             data.cell.styles.textColor = PDF_COLORS.red;
+            data.cell.styles.fontStyle = 'bold';
+          }
+        }
+        // Colorear columna Estado segun el tipo
+        if (data.section === 'body' && data.column.index === 5) {
+          var row = tRows[data.row.index];
+          if (row && row._is_active) {
+            if (row._status === 'paused') data.cell.styles.textColor = [200, 150, 0];
+            else if (row._status === 'running') data.cell.styles.textColor = [0, 140, 0];
+            else data.cell.styles.textColor = [60, 100, 200];
             data.cell.styles.fontStyle = 'bold';
           }
         }
