@@ -849,7 +849,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // CONFIG & DEBUG
 // ═══════════════════════════════════════════════
 const DEBUG = true;
-const APP_VERSION = 'v2.6.OPS-multitec';
+const APP_VERSION = 'v2.6.OPS-multitec-hotfix';
 const SURL = 'https://jczmupcmeixpwjedfgtk.supabase.co';
 const SKEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impjem11cGNtZWl4cHdqZWRmZ3RrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY5NzMxOTMsImV4cCI6MjA5MjU0OTE5M30.DuICC_pCQGv27lZivieXRRvGz9A1GNkgmhvTvyKo25o';
 var sb = null; // initialized in init()
@@ -2847,20 +2847,18 @@ function liveSecondsNow(s) {
     }
   }
 
-  // FASE 2.6 SANITY: clamp defensivo. Si una sesion "running" supera 18h sin pausas
-  // nuevas, es casi seguro que el tecnico cerro el navegador sin pausar. Cappear
-  // al snapshot (s.seconds) si es razonable, evitando mostrar 72h+ basura.
+  // FASE 2.6 SANITY (v2): clamp defensivo aplicado a TODA sesion (running + paused).
+  // Si la formula retorna > 18h, casi seguro hay datos rotos en BD
+  // (accumulated_paused_ms perdido, paused_at desincronizado, snapshot legacy, etc.).
+  // En lugar de mostrar 72h+ basura, devolvemos el snapshot guardado cuando es razonable.
   var calculated = Math.max(0, Math.floor(elapsedMs / 1000));
   var MAX_REASONABLE_S = 18 * 3600; // 18h
-  if (s.status === 'running' && calculated > MAX_REASONABLE_S) {
+  if (calculated > MAX_REASONABLE_S) {
     var snap = s.seconds || 0;
-    // Si el snapshot tiene un valor razonable, usarlo y marcar la sesion como sospechosa
+    s.__suspect_drift = true;
     if (snap > 0 && snap < MAX_REASONABLE_S) {
-      s.__suspect_drift = true;
       return snap;
     }
-    // Si tampoco hay snapshot util, devolver el cap (se vera como "18:00:00+" en UI)
-    s.__suspect_drift = true;
     return MAX_REASONABLE_S;
   }
 
@@ -3280,27 +3278,29 @@ async function doStartSession() {
   
   logR('TIMER_STARTED', {key, label, goal, plate: selPlate});
 
-  // FASE 2.6 FIX-B: sincronizar planificacion. Si hay scheduled_services pendientes
-  // con esta patente para hoy, marcarlos como 'en_curso' y asignarles al tecnico actual.
-  // Esto resuelve el bug de "la patente sigue saliendo pendiente en planificacion del tecnico".
+  // FASE 2.6 FIX-B (v2): sincronizar planificacion. Si hay scheduled_services pendientes
+  // con esta patente para hoy, marcarlos como 'en_proceso' y asignarles al tecnico actual.
+  // CORRECCIONES: status valido es 'en_proceso' (no 'en_curso') y la columna de tecnico
+  // es technician_id (uuid), no technician_username. Sin estos fixes el update fallaba silencioso.
   try {
     if (selPlate && selPlate !== 'Logistica de taller') {
       var todayISO = new Date().toISOString().slice(0,10);
       var rsync = await sb.from('scheduled_services')
         .update({
-          status: 'en_curso',
-          technician_username: CU.username,
-          technician_name: CU.name,
-          updated_at: new Date().toISOString()
+          status: 'en_proceso',
+          technician_id: CU.id,
+          technician_name: CU.name
         })
         .eq('plate', selPlate)
         .eq('status', 'pendiente')
         .gte('scheduled_at', todayISO + 'T00:00:00')
-        .lte('scheduled_at', todayISO + 'T23:59:59');
+        .lte('scheduled_at', todayISO + 'T23:59:59')
+        .select('id');
       if (rsync && rsync.error) {
-        logR('SYNC_PLAN_ERR', {msg: rsync.error.message}, 'warn');
+        logR('SYNC_PLAN_ERR', {msg: rsync.error.message, plate: selPlate}, 'warn');
       } else {
-        logR('SYNC_PLAN_OK', {plate: selPlate, tech: CU.username});
+        var n = (rsync && rsync.data) ? rsync.data.length : 0;
+        logR('SYNC_PLAN_OK', {plate: selPlate, tech: CU.username, updated: n});
       }
     }
   } catch(e) {
