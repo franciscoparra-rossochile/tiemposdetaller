@@ -227,6 +227,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     </div>
   </div>
   <div class="tab-bar" id="boss-tabbar">
+    <div class="tab" data-tab="b-ingreso" onclick="bossTab('b-ingreso')" id="tab-ingreso" style="display:none">Ingreso Taller</div>
     <div class="tab active" data-tab="b-online" onclick="bossTab('b-online')">En curso</div>
     <div class="tab" data-tab="b-alertas" onclick="bossTab('b-alertas')">Alertas<span class="ndot" id="boss-ndot"></span></div>
     <div class="tab" data-tab="b-calendario" onclick="bossTab('b-calendario')">Calendario</div>
@@ -1725,13 +1726,16 @@ function bossTab(t) {
   else if (t === 'b-reportes') renderBossReportes(body);
   else if (t === 'b-users') renderBossUsers(body);
   else if (t === 'b-cfg') renderBossCfg(body);
-  else if (t === 'b-clientes') renderBossClientes(body);
+  else if (t === 'b-clientes') renderBossClientes(body, 'registro');
+  else if (t === 'b-ingreso')  renderBossClientes(body, 'ingreso');
 }
 
 // Helper centralizado: refresca la visibilidad de las pestañas de jefe segun el usuario actual.
 // Se llama desde tryRestoreSession, doLogin y enterTechMode/exitTechMode.
 function refreshBossTabsVisibility() {
   if (!CU) return;
+  var elIngreso = document.getElementById('tab-ingreso');
+  if (elIngreso) elIngreso.style.display = hasPerm(CU, 'can_ingresar_clientes') ? '' : 'none';
   var elClientes = document.getElementById('tab-clientes');
   if (elClientes) elClientes.style.display = hasPerm(CU, 'can_ingresar_clientes') ? '' : 'none';
   var elUsers = document.getElementById('tab-users');
@@ -4528,6 +4532,7 @@ var _clientsCache = [];        // cache de la ultima consulta
 var _clientsSearch = '';       // texto de busqueda actual
 var _editClientId = null;      // id del cliente en edicion (null = nuevo)
 var _selClientType = null;     // tipo seleccionado en el modal: persona/empresa/organismo
+var _clientsViewMode = 'registro'; // 'ingreso' (vehiculo llega al taller) | 'registro' (alta cliente)
 
 // Validacion + formato de RUT chileno (modulo 11).
 // Acepta '12.345.678-9', '12345678-9', '123456789'. Devuelve {valid, formatted, dv}.
@@ -4560,17 +4565,26 @@ function formatRut(body, dv) {
   return grouped.reverse().join('') + '-' + dv;
 }
 
-async function renderBossClientes(body) {
+// mode: 'ingreso' (recepcion vehiculo en taller) o 'registro' (alta de cliente preexistente)
+async function renderBossClientes(body, mode) {
+  mode = mode || 'registro';
+  _clientsViewMode = mode;
   if (!hasPerm(CU, 'can_ingresar_clientes')) {
-    body.innerHTML = '<div class="card"><div style="text-align:center;color:var(--wh3);padding:18px">No tienes permiso para gestionar la base de clientes.</div></div>';
+    body.innerHTML = '<div class="card"><div style="text-align:center;color:var(--wh3);padding:18px">No tienes permiso para esta seccion.</div></div>';
     return;
   }
+  var isIngreso = mode === 'ingreso';
+  var titleText = isIngreso ? 'Recepción de vehículos' : 'Base de clientes';
+  var subText = isIngreso
+    ? 'Cuando un vehículo llega al taller para servicio, registra aquí los datos del cliente. En la siguiente fase agregarás los datos del vehículo, fotos del estado de entrada y se generará la orden de trabajo para el técnico.'
+    : 'Carga aquí tus clientes principales (empresas, organismos públicos, personas frecuentes). Una vez registrados, al recibir un vehículo en taller los podrás seleccionar rápido sin tipear todos los datos de nuevo.';
+  var btnText = isIngreso ? '+ Nuevo ingreso' : '+ Nuevo cliente';
   body.innerHTML = '<div class="card-accent">'
-    + '<div style="font-size:13px;font-weight:700;color:#111;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">Base de clientes</div>'
-    + '<div style="font-size:11px;color:var(--wh3);margin-bottom:10px;line-height:1.4">Carga aquí tus clientes principales (empresas, organismos públicos, personas frecuentes). Una vez registrados, al recibir un vehículo en taller los podrás seleccionar rápido sin tipear todos los datos de nuevo.</div>'
+    + '<div style="font-size:13px;font-weight:700;color:#111;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">' + titleText + '</div>'
+    + '<div style="font-size:11px;color:var(--wh3);margin-bottom:10px;line-height:1.4">' + subText + '</div>'
     + '<div style="display:flex;gap:8px;margin-bottom:10px;align-items:center;flex-wrap:wrap">'
     + '<input type="text" class="inp" id="cli-search" placeholder="Buscar por nombre, RUT o telefono..." style="flex:1;margin-bottom:0;min-width:180px" autocomplete="off" data-no-upper oninput="onClientsSearchInput(this.value)"/>'
-    + '<button class="btn btn-red" style="width:auto;flex-shrink:0;padding:10px 16px" onclick="openClientModal(null)">+ Nuevo cliente</button>'
+    + '<button class="btn btn-red" style="width:auto;flex-shrink:0;padding:10px 16px" onclick="openClientModal(null)">' + btnText + '</button>'
     + '</div>'
     + '<div id="cli-list-meta" style="font-size:11px;color:var(--wh3);margin-bottom:8px;font-family:var(--mono)">Cargando...</div>'
     + '<div id="cli-list"></div>'
@@ -4657,15 +4671,16 @@ async function openClientModal(cid) {
     showGlobalError('No tienes permiso para crear/editar clientes', 4000);
     return;
   }
+  var isIngreso = _clientsViewMode === 'ingreso';
   _editClientId = cid;
   document.getElementById('m-cli-err').style.display = 'none';
-  document.getElementById('m-cli-btn').textContent = 'Guardar cliente';
+  document.getElementById('m-cli-btn').textContent = isIngreso ? 'Registrar ingreso' : 'Guardar cliente';
   document.getElementById('m-cli-btn').disabled = false;
   document.getElementById('m-cli-meta').textContent = '';
 
   if (cid) {
-    document.getElementById('m-cli-title').textContent = 'Editar cliente';
-    document.getElementById('m-cli-sub').textContent = 'Modifica los datos del cliente';
+    document.getElementById('m-cli-title').textContent = isIngreso ? 'Editar ingreso' : 'Editar cliente';
+    document.getElementById('m-cli-sub').textContent = isIngreso ? 'Modifica los datos del ingreso' : 'Modifica los datos del cliente';
     document.getElementById('m-cli-del').style.display = 'block';
     var res = await sb.from('clients').select('*').eq('id', cid).maybeSingle();
     if (res.error || !res.data) {
@@ -4683,8 +4698,10 @@ async function openClientModal(cid) {
     selectClientType(c.client_type || 'persona');
     document.getElementById('m-cli-meta').textContent = 'Creado: ' + fmtDate(c.created_at) + (c.updated_at && c.updated_at !== c.created_at ? ' · Actualizado: ' + fmtDate(c.updated_at) : '');
   } else {
-    document.getElementById('m-cli-title').textContent = 'Nuevo cliente';
-    document.getElementById('m-cli-sub').textContent = 'Fecha de ingreso: ' + new Date().toLocaleDateString('es-CL');
+    document.getElementById('m-cli-title').textContent = isIngreso ? 'Nuevo ingreso a taller' : 'Nuevo cliente';
+    document.getElementById('m-cli-sub').textContent = isIngreso
+      ? 'Recepción de vehículo - ' + new Date().toLocaleDateString('es-CL')
+      : 'Registro en la base de clientes';
     document.getElementById('m-cli-del').style.display = 'none';
     ['m-cli-id','m-cli-name','m-cli-rut','m-cli-birth','m-cli-email','m-cli-phone','m-cli-notes'].forEach(function(id){
       var el = document.getElementById(id); if (el) el.value = '';
@@ -4799,7 +4816,7 @@ async function saveClient() {
   }
 
   closeModal('m-client');
-  if (curBossTab === 'b-clientes') {
+  if (curBossTab === 'b-clientes' || curBossTab === 'b-ingreso') {
     await loadClients();
   }
   showGlobalError(_editClientId ? 'Cliente actualizado' : 'Cliente creado correctamente', 2500);
