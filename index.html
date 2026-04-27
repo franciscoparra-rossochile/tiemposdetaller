@@ -416,18 +416,14 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     <input type="hidden" id="ck-rr"/>
     <textarea class="inp" id="ck-anom" placeholder="Anomalias encontradas (opcional)" style="height:52px"></textarea>
     <hr style="border:none;border-top:1px solid var(--border);margin:8px 0"/>
-    <div class="lbl">Doble control</div>
-    <div class="radio-group">
-      <button class="radio-btn" onclick="pickRadio('ck-doble','Aprobado',this)">Aprobado</button>
-      <button class="radio-btn" onclick="pickRadio('ck-doble','Rechazado',this)">Rechazado</button>
+    <!-- FASE 2.7: Doble control y Visado quedan ocultos. El técnico NO se auto-aprueba.
+         La OT se envía a Visado automáticamente al finalizar (si tiene OT vinculada). -->
+    <input type="hidden" id="ck-doble" value="Pendiente"/>
+    <input type="hidden" id="ck-visado" value="Pendiente"/>
+    <div style="background:#f4f7ff;border-left:3px solid var(--blue);padding:8px 10px;border-radius:3px;font-size:11px;color:var(--wh2);margin-bottom:8px;line-height:1.4">
+      <b>📋 Visado automático</b><br/>
+      Al finalizar este servicio, la OT pasará automáticamente a la lista de visado del jefe de taller. Tú NO marcas tu propio doble control ni visado.
     </div>
-    <input type="hidden" id="ck-doble"/>
-    <div class="lbl">Visado</div>
-    <div class="radio-group">
-      <button class="radio-btn" onclick="pickRadio('ck-visado','Aprobado',this)">Aprobado</button>
-      <button class="radio-btn" onclick="pickRadio('ck-visado','Rechazado',this)">Rechazado</button>
-    </div>
-    <input type="hidden" id="ck-visado"/>
     <div class="lbl">Observaciones finales</div>
     <textarea class="inp" id="ck-obs" placeholder="Observaciones opcionales" style="height:52px"></textarea>
     <div id="ck-service-name" style="font-size:11px;color:var(--wh3);margin-bottom:8px;text-transform:uppercase;letter-spacing:.04em;font-family:var(--head)"></div>
@@ -862,7 +858,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // CONFIG & DEBUG
 // ═══════════════════════════════════════════════
 const DEBUG = true;
-const APP_VERSION = 'v2.7.OPS-flujo-visado';
+const APP_VERSION = 'v2.7.OPS-flujo-visado-auto';
 const SURL = 'https://jczmupcmeixpwjedfgtk.supabase.co';
 const SKEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impjem11cGNtZWl4cHdqZWRmZ3RrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY5NzMxOTMsImV4cCI6MjA5MjU0OTE5M30.DuICC_pCQGv27lZivieXRRvGz9A1GNkgmhvTvyKo25o';
 var sb = null; // initialized in init()
@@ -3885,6 +3881,17 @@ async function doFinish(checklist, sessionKey) {
     // FASE 2.6: escribir tramo en service_time_entries si la sesión está vinculada a una OT
     try {
       var woId = sess && sess.work_order_id;
+      // FASE 2.7: fallback - si la sesion no tenia work_order_id (lookup fallo al iniciar),
+      // intentar resolver por patente AHORA al cerrar.
+      if (!woId && finPlate && finPlate !== 'Logistica de taller') {
+        try {
+          var fbOT = await findOpenOTByPlate(finPlate);
+          if (fbOT) {
+            woId = fbOT.id;
+            logR('OT_RESOLVED_AT_FINISH', {plate: finPlate, ot_id: woId});
+          }
+        } catch(_){}
+      }
       if (woId) {
         var ste = {
           work_order_id: woId,
@@ -3899,6 +3906,33 @@ async function doFinish(checklist, sessionKey) {
         };
         var rste = await sb.from('service_time_entries').insert(ste);
         if (rste && rste.error) logR('STE_FINISH_ERR', {msg: rste.error.message}, 'warn');
+
+        // FASE 2.7 BUG-FIX: auto-promover la OT a pending_visado al cerrar el cronometro.
+        // Antes el tecnico se auto-marcaba "visado aprobado" en su propio checklist y la OT
+        // se quedaba en assigned/open. Ahora al finalizar se manda a Benjamin / visadores.
+        try {
+          var rGet = await sb.from('work_orders').select('status,ot_number,service_classification').eq('id', woId).maybeSingle();
+          if (rGet && rGet.data && ['open','assigned','in_progress','pending_double_check'].indexOf(rGet.data.status) !== -1) {
+            await sb.from('work_orders').update({
+              status: 'pending_visado',
+              updated_by: CU ? CU.id : null
+            }).eq('id', woId);
+            logR('OT_AUTO_TO_VISADO', {wo: woId, ot: rGet.data.ot_number, from: rGet.data.status});
+            // Notificar a visadores
+            try {
+              var visadores = (typeof getUsersWithExplicitPerm === 'function') ? (getUsersWithExplicitPerm('can_visar') || []) : [];
+              for (var iv = 0; iv < visadores.length; iv++) {
+                await sb.from('notifications').insert({
+                  type: 'visado',
+                  title: 'Nueva OT pendiente de visado',
+                  sub: 'OT-' + (rGet.data.ot_number || '?') + ' · ' + (rGet.data.service_classification || '?') + ' · ' + (finPlate || '?') + ' por ' + CU.name,
+                  target_user_id: visadores[iv].id,
+                  work_order_id: woId
+                });
+              }
+            } catch(_){}
+          }
+        } catch(e) { logR('OT_AUTO_VISADO_ERR', {msg: e.message}, 'warn'); }
       }
     } catch(_){}
 
