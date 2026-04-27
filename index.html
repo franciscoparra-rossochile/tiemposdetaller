@@ -227,13 +227,13 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     </div>
   </div>
   <div class="tab-bar" id="boss-tabbar">
+    <div class="tab" data-tab="b-clientes" onclick="bossTab('b-clientes')" id="tab-clientes" style="display:none">Ingreso Taller</div>
     <div class="tab active" data-tab="b-online" onclick="bossTab('b-online')">En curso</div>
     <div class="tab" data-tab="b-alertas" onclick="bossTab('b-alertas')">Alertas<span class="ndot" id="boss-ndot"></span></div>
     <div class="tab" data-tab="b-calendario" onclick="bossTab('b-calendario')">Calendario</div>
     <div class="tab" data-tab="b-plan" onclick="bossTab('b-plan')">Planificacion</div>
     <div class="tab" data-tab="b-hist" onclick="bossTab('b-hist')">Historial</div>
     <div class="tab" data-tab="b-reportes" onclick="bossTab('b-reportes')">Reportes</div>
-    <div class="tab" data-tab="b-clientes" onclick="bossTab('b-clientes')" id="tab-clientes" style="display:none">Clientes</div>
     <div class="tab" data-tab="b-users" onclick="bossTab('b-users')" id="tab-users" style="display:none">Usuarios</div>
     <div class="tab" data-tab="b-cfg" onclick="bossTab('b-cfg')" id="tab-cfg" style="display:none">Config</div>
   </div>
@@ -446,8 +446,8 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
      ═══════════════════════════════════════════════════════════════ -->
 <div class="overlay" id="m-client" style="display:none">
   <div class="modal" style="max-height:92vh;overflow-y:auto;max-width:480px">
-    <div class="modal-t" id="m-cli-title">Nuevo cliente</div>
-    <div class="modal-s" id="m-cli-sub">Completa los datos del cliente</div>
+    <div class="modal-t" id="m-cli-title">Nuevo ingreso a taller</div>
+    <div class="modal-s" id="m-cli-sub">Recepcion de vehiculo - datos del cliente</div>
     <input type="hidden" id="m-cli-id"/>
     <div id="m-cli-meta" style="font-size:10px;color:var(--wh4);margin-bottom:10px;font-family:var(--mono)"></div>
 
@@ -483,8 +483,8 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 
     <div id="m-cli-err" style="display:none;color:var(--red);font-size:12px;margin:6px 0 8px;font-weight:600;padding:8px;background:var(--red4);border-radius:4px"></div>
 
-    <button class="btn btn-red" id="m-cli-btn" onclick="saveClient()">Guardar cliente</button>
-    <button class="btn btn-sm danger" id="m-cli-del" onclick="deleteClient()" style="margin-top:8px;width:100%;display:none">Eliminar cliente</button>
+    <button class="btn btn-red" id="m-cli-btn" onclick="saveClient()">Registrar ingreso</button>
+    <button class="btn btn-sm danger" id="m-cli-del" onclick="deleteClient()" style="margin-top:8px;width:100%;display:none">Eliminar registro</button>
     <button class="btn btn-out" onclick="closeModal('m-client')" style="margin-top:8px">Cancelar</button>
   </div>
 </div>
@@ -4531,13 +4531,15 @@ function formatRut(body, dv) {
 
 async function renderBossClientes(body) {
   if (!hasPerm(CU, 'can_ingresar_clientes')) {
-    body.innerHTML = '<div class="card"><div style="text-align:center;color:var(--wh3);padding:18px">No tienes permiso para ver/ingresar clientes.</div></div>';
+    body.innerHTML = '<div class="card"><div style="text-align:center;color:var(--wh3);padding:18px">No tienes permiso para registrar ingresos al taller.</div></div>';
     return;
   }
   body.innerHTML = '<div class="card-accent">'
+    + '<div style="font-size:13px;font-weight:700;color:#111;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">Recepción de vehículos</div>'
+    + '<div style="font-size:11px;color:var(--wh3);margin-bottom:10px;line-height:1.4">Cuando un vehículo llega al taller para servicio, registra aquí los datos del cliente. En la siguiente fase agregarás los datos del vehículo, fotos del estado de entrada y se generará la orden de trabajo para el técnico.</div>'
     + '<div style="display:flex;gap:8px;margin-bottom:10px;align-items:center;flex-wrap:wrap">'
     + '<input type="text" class="inp" id="cli-search" placeholder="Buscar por nombre, RUT o telefono..." style="flex:1;margin-bottom:0;min-width:180px" autocomplete="off" data-no-upper oninput="onClientsSearchInput(this.value)"/>'
-    + '<button class="btn btn-red" style="width:auto;flex-shrink:0;padding:10px 16px" onclick="openClientModal(null)">+ Nuevo cliente</button>'
+    + '<button class="btn btn-red" style="width:auto;flex-shrink:0;padding:10px 16px" onclick="openClientModal(null)">+ Nuevo ingreso</button>'
     + '</div>'
     + '<div id="cli-list-meta" style="font-size:11px;color:var(--wh3);margin-bottom:8px;font-family:var(--mono)">Cargando...</div>'
     + '<div id="cli-list"></div>'
