@@ -862,7 +862,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // CONFIG & DEBUG
 // ═══════════════════════════════════════════════
 const DEBUG = true;
-const APP_VERSION = 'v2.6.OPS-multitec-hotfix6';
+const APP_VERSION = 'v2.6.OPS-catastro-actions';
 const SURL = 'https://jczmupcmeixpwjedfgtk.supabase.co';
 const SKEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impjem11cGNtZWl4cHdqZWRmZ3RrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY5NzMxOTMsImV4cCI6MjA5MjU0OTE5M30.DuICC_pCQGv27lZivieXRRvGz9A1GNkgmhvTvyKo25o';
 var sb = null; // initialized in init()
@@ -7243,17 +7243,106 @@ function renderCatastroList() {
     var thumb = (v.photos && v.photos.frente) ? v.photos.frente : null;
     var clientLine = c ? escapeHtml(c.name) + ' · ' + escapeHtml(c.rut || c.phone || '') : '<span style="color:var(--red)">cliente eliminado</span>';
     var d = v.created_at ? new Date(v.created_at).toLocaleDateString('es-CL') : '';
-    return '<div class="row" style="align-items:center;gap:10px;padding:10px 4px;cursor:pointer" onclick="openVehicleDetail(\'' + v.id + '\')">'
+    var stop = "event.stopPropagation();";
+    return '<div class="row" style="align-items:center;gap:10px;padding:10px 4px;cursor:pointer;flex-wrap:wrap" onclick="openVehicleDetail(\'' + v.id + '\')">'
       + (thumb
          ? '<img src="' + thumb + '" style="width:44px;height:44px;border-radius:4px;object-fit:cover;flex-shrink:0;border:1px solid var(--border)" alt=""/>'
          : '<div style="width:44px;height:44px;border-radius:4px;background:var(--bg3);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:20px">🚗</div>')
-      + '<div style="flex:1;min-width:0">'
+      + '<div style="flex:1;min-width:180px">'
       +   '<div style="font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.02em">' + escapeHtml(v.brand) + ' ' + escapeHtml(v.model) + ' <span style="color:var(--red);font-family:var(--mono);font-weight:700">' + plateFmt + '</span></div>'
       +   '<div style="font-size:11px;color:var(--wh3);margin-top:2px">' + clientLine + (d ? ' · ' + d : '') + '</div>'
       + '</div>'
-      + '<button class="btn-sm" onclick="event.stopPropagation();openVehicleDetail(\'' + v.id + '\')">Ver</button>'
+      + '<div style="display:flex;gap:4px;flex-wrap:wrap">'
+      +   '<button class="btn-sm" onclick="' + stop + 'openVehicleDetail(\'' + v.id + '\')">👁 Ver</button>'
+      +   '<button class="btn-sm" style="border-color:var(--blue);color:var(--blue)" onclick="' + stop + 'editLatestOTForVehicle(\'' + v.id + '\')">✏️ Editar OT</button>'
+      +   '<button class="btn-sm" style="border-color:var(--gold3);color:var(--gold3)" onclick="' + stop + 'editIngresoForVehicle(\'' + v.id + '\')">📋 Editar ingreso</button>'
+      +   '<button class="btn-sm danger" onclick="' + stop + 'deleteVehicleFromCatastro(\'' + v.id + '\')">🗑 Eliminar</button>'
+      + '</div>'
       + '</div>';
   }).join('');
+}
+
+// FASE 2.6: acciones rápidas desde el catastro (vehiculo)
+async function editLatestOTForVehicle(vehicleId) {
+  if (!vehicleId || !sb) return;
+  if (!hasPerm(CU, 'can_ingresar_clientes')) { showGlobalError('Sin permiso', 3000); return; }
+  try {
+    var r = await sb.from('work_orders')
+      .select('id')
+      .eq('vehicle_id', vehicleId)
+      .order('created_at', {ascending: false})
+      .limit(1).maybeSingle();
+    if (!r || !r.data) {
+      showGlobalError('Este vehículo no tiene OT asociada. Crea una nueva con "+ Nueva orden de trabajo" desde Ver.', 5000);
+      return;
+    }
+    editOT(r.data.id);
+  } catch(e) {
+    showGlobalError('Error al buscar OT: ' + e.message, 4500);
+  }
+}
+
+async function editIngresoForVehicle(vehicleId) {
+  if (!vehicleId || !sb) return;
+  if (!hasPerm(CU, 'can_ingresar_clientes')) { showGlobalError('Sin permiso', 3000); return; }
+  try {
+    var rv = await sb.from('client_vehicles').select('client_id').eq('id', vehicleId).maybeSingle();
+    if (!rv || !rv.data || !rv.data.client_id) {
+      showGlobalError('No se pudo localizar el cliente del vehículo.', 4500);
+      return;
+    }
+    // Reutilizamos el modal de ingreso en modo edición. El modal carga el vehículo más reciente del cliente.
+    _clientsViewMode = 'ingreso';
+    openClientModal(rv.data.client_id);
+  } catch(e) {
+    showGlobalError('Error: ' + e.message, 4500);
+  }
+}
+
+async function deleteVehicleFromCatastro(vehicleId) {
+  if (!vehicleId || !sb) return;
+  if (!hasPerm(CU, 'can_ingresar_clientes')) { showGlobalError('Sin permiso', 3000); return; }
+  // Conteo previo para informar al usuario qué se va a borrar
+  var otCount = 0;
+  try {
+    var ro = await sb.from('work_orders').select('id', {count:'exact', head:true}).eq('vehicle_id', vehicleId);
+    otCount = ro.count || 0;
+  } catch(_){}
+  var msg = '<b>Vas a eliminar este vehículo del catastro</b>';
+  if (otCount > 0) {
+    msg += '<br/><br/>Tiene <b>' + otCount + '</b> OT(s) asociadas que también se borrarán en cascada (con checklists, scheduled_services, fotos del bucket).';
+    msg += '<br/><span style="color:var(--red)">Esta acción NO se puede deshacer.</span>';
+  } else {
+    msg += '<br/>No tiene OTs asociadas.';
+  }
+  confirmHard(msg, function(){ _doDeleteVehicleFromCatastro(vehicleId); });
+}
+
+async function _doDeleteVehicleFromCatastro(vehicleId) {
+  try {
+    // Limpiar fotos del bucket (best-effort)
+    try {
+      var rv = await sb.from('client_vehicles').select('photos').eq('id', vehicleId).maybeSingle();
+      if (rv && rv.data && rv.data.photos) {
+        var paths = Object.values(rv.data.photos)
+          .map(function(url){ try { return url.split('/vehicle-photos/').pop(); } catch(_) { return null; } })
+          .filter(Boolean);
+        if (paths.length) await sb.storage.from('vehicle-photos').remove(paths);
+      }
+    } catch(_){}
+    // Borrar el vehículo (cascade hace el resto)
+    var rd = await sb.from('client_vehicles').delete().eq('id', vehicleId);
+    if (rd && rd.error) {
+      showGlobalError('Error al eliminar: ' + rd.error.message, 6000);
+      return;
+    }
+    showGlobalError('Vehículo eliminado del catastro.', 3000);
+    // Refrescar
+    _catVehiclesCache = _catVehiclesCache.filter(function(r){ return r.vehicle.id !== vehicleId; });
+    renderCatastroList();
+  } catch(e) {
+    showGlobalError('Error inesperado: ' + e.message, 5000);
+  }
 }
 
 // ─── Modal detalle vehiculo ───
