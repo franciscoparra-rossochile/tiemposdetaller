@@ -227,13 +227,13 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     </div>
   </div>
   <div class="tab-bar" id="boss-tabbar">
-    <div class="tab" data-tab="b-clientes" onclick="bossTab('b-clientes')" id="tab-clientes" style="display:none">Ingreso Taller</div>
     <div class="tab active" data-tab="b-online" onclick="bossTab('b-online')">En curso</div>
     <div class="tab" data-tab="b-alertas" onclick="bossTab('b-alertas')">Alertas<span class="ndot" id="boss-ndot"></span></div>
     <div class="tab" data-tab="b-calendario" onclick="bossTab('b-calendario')">Calendario</div>
     <div class="tab" data-tab="b-plan" onclick="bossTab('b-plan')">Planificacion</div>
     <div class="tab" data-tab="b-hist" onclick="bossTab('b-hist')">Historial</div>
     <div class="tab" data-tab="b-reportes" onclick="bossTab('b-reportes')">Reportes</div>
+    <div class="tab" data-tab="b-clientes" onclick="bossTab('b-clientes')" id="tab-clientes" style="display:none">Registro Clientes</div>
     <div class="tab" data-tab="b-users" onclick="bossTab('b-users')" id="tab-users" style="display:none">Usuarios</div>
     <div class="tab" data-tab="b-cfg" onclick="bossTab('b-cfg')" id="tab-cfg" style="display:none">Config</div>
   </div>
@@ -446,8 +446,8 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
      ═══════════════════════════════════════════════════════════════ -->
 <div class="overlay" id="m-client" style="display:none">
   <div class="modal" style="max-height:92vh;overflow-y:auto;max-width:480px">
-    <div class="modal-t" id="m-cli-title">Nuevo ingreso a taller</div>
-    <div class="modal-s" id="m-cli-sub">Recepcion de vehiculo - datos del cliente</div>
+    <div class="modal-t" id="m-cli-title">Nuevo cliente</div>
+    <div class="modal-s" id="m-cli-sub">Registro en la base de clientes</div>
     <input type="hidden" id="m-cli-id"/>
     <div id="m-cli-meta" style="font-size:10px;color:var(--wh4);margin-bottom:10px;font-family:var(--mono)"></div>
 
@@ -483,8 +483,8 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 
     <div id="m-cli-err" style="display:none;color:var(--red);font-size:12px;margin:6px 0 8px;font-weight:600;padding:8px;background:var(--red4);border-radius:4px"></div>
 
-    <button class="btn btn-red" id="m-cli-btn" onclick="saveClient()">Registrar ingreso</button>
-    <button class="btn btn-sm danger" id="m-cli-del" onclick="deleteClient()" style="margin-top:8px;width:100%;display:none">Eliminar registro</button>
+    <button class="btn btn-red" id="m-cli-btn" onclick="saveClient()">Guardar cliente</button>
+    <button class="btn btn-sm danger" id="m-cli-del" onclick="deleteClient()" style="margin-top:8px;width:100%;display:none">Eliminar cliente</button>
     <button class="btn btn-out" onclick="closeModal('m-client')" style="margin-top:8px">Cancelar</button>
   </div>
 </div>
@@ -614,7 +614,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // CONFIG & DEBUG
 // ═══════════════════════════════════════════════
 const DEBUG = true;
-const APP_VERSION = 'v2.4.0-FASE2.2A';
+const APP_VERSION = 'v2.4.1-FASE2.1.1';
 const SURL = 'https://jczmupcmeixpwjedfgtk.supabase.co';
 const SKEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impjem11cGNtZWl4cHdqZWRmZ3RrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY5NzMxOTMsImV4cCI6MjA5MjU0OTE5M30.DuICC_pCQGv27lZivieXRRvGz9A1GNkgmhvTvyKo25o';
 var sb = null; // initialized in init()
@@ -720,6 +720,8 @@ function installAutoUppercase() {
 const PERMS = [
   {key:'can_ingresar_clientes', label:'Ingresar clientes', desc:'Puede crear y editar fichas de clientes/vehiculos.', defaultRoles:['admin','jefatura']},
   {key:'is_gestor_comercial',   label:'Gestor comercial',  desc:'Puede ser asignado como gestor comercial al agendar servicios.', defaultRoles:[]},
+  {key:'can_schedule_services', label:'Agendar servicios', desc:'Puede crear/editar servicios en calendario y planificación.', defaultRoles:['admin']},
+  {key:'can_assign_techs',      label:'Asignar tecnicos',  desc:'Puede asignar/cambiar el tecnico responsable de un servicio agendado.', defaultRoles:['admin']},
   {key:'can_visar',             label:'Visar servicios',   desc:'Puede dar visto bueno final a servicios terminados.', defaultRoles:[]},
   {key:'can_doble_control',     label:'Doble control',     desc:'Puede realizar el doble control al cierre del servicio.', defaultRoles:['admin','jefatura','tech']},
   {key:'can_export_data',       label:'Exportar datos',    desc:'Puede descargar listados en Excel/PDF/CSV.', defaultRoles:['admin','jefatura']},
@@ -749,6 +751,32 @@ async function getUsersWithPerm(key) {
     logR('GET_USERS_PERM_ERR', {key: key, msg: e.message}, 'warn');
     return [];
   }
+}
+
+// Helper para deshabilitar un boton/select segun permiso. Visual: opacidad + cursor + tooltip.
+// Nota: como el usuario actual no cambia entre llamadas, podemos llamarlo cada vez que se renderiza un boton.
+function applyPermToControl(el, permKey, deniedTooltip) {
+  if (!el) return;
+  var ok = hasPerm(CU, permKey);
+  el.disabled = !ok;
+  el.title = ok ? '' : (deniedTooltip || 'Sin permiso');
+  el.style.opacity = ok ? '' : '0.5';
+  el.style.cursor = ok ? '' : 'not-allowed';
+}
+
+// Aplicar lock al SELECT de tecnico en el modal de evento segun can_assign_techs
+function applyEvAssignPermLock() {
+  var sel = document.getElementById('m-ev-tech');
+  applyPermToControl(sel, 'can_assign_techs', 'No tienes permiso para asignar tecnicos');
+  // Mostrar nota visual debajo del select si esta bloqueado
+  var note = document.getElementById('m-ev-tech-note');
+  if (!note) {
+    note = document.createElement('div');
+    note.id = 'm-ev-tech-note';
+    note.style.cssText = 'font-size:10px;color:var(--wh4);margin-top:-4px;margin-bottom:8px;font-family:var(--mono)';
+    if (sel && sel.parentNode) sel.parentNode.insertBefore(note, sel.nextSibling);
+  }
+  note.textContent = hasPerm(CU, 'can_assign_techs') ? '' : 'Sin permiso para asignar tecnicos - solo lectura';
 }
 
 function toggleDebug() {
@@ -3424,6 +3452,7 @@ function buildCalToolbar() {
   addBtn.textContent = '+ Agendar servicio';
   addBtn.style.marginBottom = '10px';
   addBtn.onclick = function() { openNewEvent(new Date(calCursor)); };
+  applyPermToControl(addBtn, 'can_schedule_services', 'No tienes permiso para agendar servicios');
   bar.appendChild(addBtn);
 
   // Fila 2: toggle de vista (3 chips)
@@ -3815,7 +3844,9 @@ async function renderBossPlan(body) {
   var events = r1.data || [];
   body.innerHTML = '';
   var addBtn = mk('button','btn btn-red'); addBtn.textContent = '+ Agendar servicio'; addBtn.style.marginBottom = '12px';
-  addBtn.onclick = function() { openNewEvent(null); }; body.appendChild(addBtn);
+  addBtn.onclick = function() { openNewEvent(null); };
+  applyPermToControl(addBtn, 'can_schedule_services', 'No tienes permiso para agendar servicios');
+  body.appendChild(addBtn);
   var hd = mk('div',''); hd.innerHTML = '<div class="lbl">Proximos 7 dias - ' + events.length + ' servicio' + (events.length!==1?'s':'') + '</div>'; body.appendChild(hd);
   if (!events.length) { var emp = mk('div','empty'); emp.style.marginTop='16px'; emp.textContent='Sin servicios planificados'; body.appendChild(emp); return; }
   var byTech = {};
@@ -4531,15 +4562,15 @@ function formatRut(body, dv) {
 
 async function renderBossClientes(body) {
   if (!hasPerm(CU, 'can_ingresar_clientes')) {
-    body.innerHTML = '<div class="card"><div style="text-align:center;color:var(--wh3);padding:18px">No tienes permiso para registrar ingresos al taller.</div></div>';
+    body.innerHTML = '<div class="card"><div style="text-align:center;color:var(--wh3);padding:18px">No tienes permiso para gestionar la base de clientes.</div></div>';
     return;
   }
   body.innerHTML = '<div class="card-accent">'
-    + '<div style="font-size:13px;font-weight:700;color:#111;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">Recepción de vehículos</div>'
-    + '<div style="font-size:11px;color:var(--wh3);margin-bottom:10px;line-height:1.4">Cuando un vehículo llega al taller para servicio, registra aquí los datos del cliente. En la siguiente fase agregarás los datos del vehículo, fotos del estado de entrada y se generará la orden de trabajo para el técnico.</div>'
+    + '<div style="font-size:13px;font-weight:700;color:#111;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">Base de clientes</div>'
+    + '<div style="font-size:11px;color:var(--wh3);margin-bottom:10px;line-height:1.4">Carga aquí tus clientes principales (empresas, organismos públicos, personas frecuentes). Una vez registrados, al recibir un vehículo en taller los podrás seleccionar rápido sin tipear todos los datos de nuevo.</div>'
     + '<div style="display:flex;gap:8px;margin-bottom:10px;align-items:center;flex-wrap:wrap">'
     + '<input type="text" class="inp" id="cli-search" placeholder="Buscar por nombre, RUT o telefono..." style="flex:1;margin-bottom:0;min-width:180px" autocomplete="off" data-no-upper oninput="onClientsSearchInput(this.value)"/>'
-    + '<button class="btn btn-red" style="width:auto;flex-shrink:0;padding:10px 16px" onclick="openClientModal(null)">+ Nuevo ingreso</button>'
+    + '<button class="btn btn-red" style="width:auto;flex-shrink:0;padding:10px 16px" onclick="openClientModal(null)">+ Nuevo cliente</button>'
     + '</div>'
     + '<div id="cli-list-meta" style="font-size:11px;color:var(--wh3);margin-bottom:8px;font-family:var(--mono)">Cargando...</div>'
     + '<div id="cli-list"></div>'
@@ -4794,6 +4825,11 @@ async function deleteClient() {
 // EVENTS CRUD
 // ═══════════════════════════════════════════════
 async function openNewEvent(date) {
+  // FASE 2.1.1: gate de permiso
+  if (!hasPerm(CU, 'can_schedule_services')) {
+    showGlobalError('No tienes permiso para agendar servicios. Contacta al administrador.', 4500);
+    return;
+  }
   editEventId = null;
   document.getElementById('m-ev-title').textContent = 'Agendar servicio';
   document.getElementById('m-ev-id').value = '';
@@ -4805,10 +4841,16 @@ async function openNewEvent(date) {
   document.getElementById('m-ev-dt').value = d.toISOString().slice(0,16);
   document.getElementById('m-ev-err').style.display = 'none';
   await loadEvTechs(null);
+  applyEvAssignPermLock();
   openModal('m-event');
 }
 
 async function openEditEvent(id) {
+  // FASE 2.1.1: gate de permiso. Sin permiso, ni siquiera abrir el modal de edicion.
+  if (!hasPerm(CU, 'can_schedule_services')) {
+    showGlobalError('No tienes permiso para editar servicios agendados.', 4500);
+    return;
+  }
   editEventId = id;
   var {data} = await sb.from('scheduled_services').select('*').eq('id',id).maybeSingle();
   if (!data) return;
@@ -4823,6 +4865,7 @@ async function openEditEvent(id) {
   document.getElementById('m-ev-dt').value = new Date(data.scheduled_at).toISOString().slice(0,16);
   document.getElementById('m-ev-err').style.display = 'none';
   await loadEvTechs(data.technician_id);
+  applyEvAssignPermLock();
   openModal('m-event');
 }
 
@@ -4839,12 +4882,35 @@ async function loadEvTechs(selectedId) {
 }
 
 async function saveEvent() {
+  // FASE 2.1.1: defensa en profundidad - aunque el modal este abierto, validar permiso al guardar.
+  if (!hasPerm(CU, 'can_schedule_services')) {
+    var ee = document.getElementById('m-ev-err');
+    ee.textContent = 'No tienes permiso para guardar cambios en servicios agendados.';
+    ee.style.display = 'block';
+    return;
+  }
   var service = document.getElementById('m-ev-service').value;
   var plate = document.getElementById('m-ev-plate').value.trim().toUpperCase();
   var dt = document.getElementById('m-ev-dt').value;
   var techSel = document.getElementById('m-ev-tech');
   var techId = techSel.value || null;
   var techName = techId ? techSel.options[techSel.selectedIndex].text.split(' (')[0] : 'Sin asignar';
+
+  // FASE 2.1.1: si NO tiene can_assign_techs y esta editando, conservar el tecnico original
+  // (el select esta disabled visualmente pero por seguridad re-leer del DB original al editar).
+  if (editEventId && !hasPerm(CU, 'can_assign_techs')) {
+    try {
+      var origRes = await sb.from('scheduled_services').select('technician_id, technician_name').eq('id', editEventId).maybeSingle();
+      if (origRes && origRes.data) {
+        techId = origRes.data.technician_id;
+        techName = origRes.data.technician_name || 'Sin asignar';
+      }
+    } catch(_){}
+  } else if (!editEventId && !hasPerm(CU, 'can_assign_techs')) {
+    // Nuevo evento sin permiso de asignar: forzar sin asignar
+    techId = null; techName = 'Sin asignar';
+  }
+
   var goal = parseInt(document.getElementById('m-ev-goal').value) || null;
   var notes = document.getElementById('m-ev-notes').value.trim();
   var status = document.getElementById('m-ev-status').value;
