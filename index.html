@@ -416,13 +416,19 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     <input type="hidden" id="ck-rr"/>
     <textarea class="inp" id="ck-anom" placeholder="Anomalias encontradas (opcional)" style="height:52px"></textarea>
     <hr style="border:none;border-top:1px solid var(--border);margin:8px 0"/>
-    <!-- FASE 2.7: Doble control y Visado quedan ocultos. El técnico NO se auto-aprueba.
-         La OT se envía a Visado automáticamente al finalizar (si tiene OT vinculada). -->
-    <input type="hidden" id="ck-doble" value="Pendiente"/>
+    <!-- FASE 2.7: Doble control SI lo hace el técnico (auto-verificación final).
+         Visado queda oculto - lo hace el superior desde su panel. -->
+    <div class="lbl">Doble control <span style="color:var(--red)">*</span> <span style="font-size:10px;color:var(--wh4);font-weight:400">(tu auto-verificación final)</span></div>
+    <div class="radio-group">
+      <button class="radio-btn" onclick="pickRadio('ck-doble','Aprobado',this)">Aprobado</button>
+      <button class="radio-btn" onclick="pickRadio('ck-doble','Rechazado',this)">Rechazado</button>
+    </div>
+    <input type="hidden" id="ck-doble"/>
+    <!-- Visado oculto: lo asigna el superior desde la pestaña Visado -->
     <input type="hidden" id="ck-visado" value="Pendiente"/>
     <div style="background:#f4f7ff;border-left:3px solid var(--blue);padding:8px 10px;border-radius:3px;font-size:11px;color:var(--wh2);margin-bottom:8px;line-height:1.4">
-      <b>📋 Visado automático</b><br/>
-      Al finalizar este servicio, la OT pasará automáticamente a la lista de visado del jefe de taller. Tú NO marcas tu propio doble control ni visado.
+      <b>📋 Visado por jefatura</b><br/>
+      Al finalizar este servicio, la OT pasará automáticamente a la lista de visado del jefe de taller. El visado lo hace un superior, tú no.
     </div>
     <div class="lbl">Observaciones finales</div>
     <textarea class="inp" id="ck-obs" placeholder="Observaciones opcionales" style="height:52px"></textarea>
@@ -521,8 +527,12 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     <div id="m-cli-rut-hint" style="font-size:10px;color:var(--wh4);margin-top:-4px;margin-bottom:8px;font-family:var(--mono)"></div>
 
     <div id="m-cli-birth-wrap">
-      <div class="lbl">Fecha de nacimiento <span style="color:var(--wh4);font-weight:400;text-transform:none;letter-spacing:0">(opcional)</span></div>
-      <input class="inp" id="m-cli-birth" type="date" autocomplete="off"/>
+      <div class="lbl" style="display:flex;justify-content:space-between;align-items:center">
+        <span>Fecha de nacimiento <span style="color:var(--wh4);font-weight:400;text-transform:none;letter-spacing:0">(opcional)</span></span>
+        <a href="#" onclick="event.preventDefault();document.getElementById('m-cli-birth').value='';document.getElementById('m-cli-birth-hint').textContent='Sin registrar — se podrá completar más adelante';" style="font-size:10px;color:var(--blue);text-transform:none;letter-spacing:0;font-weight:400">No registrar</a>
+      </div>
+      <input class="inp" id="m-cli-birth" type="date" autocomplete="off" placeholder="dd/mm/aaaa"/>
+      <div id="m-cli-birth-hint" style="font-size:10px;color:var(--wh4);margin-top:-4px;margin-bottom:8px;font-family:var(--mono);min-height:12px"></div>
     </div>
 
     <div id="m-cli-email-wrap">
@@ -750,8 +760,9 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     </select>
     <div class="lbl">Patente</div>
     <input class="inp" id="m-ev-plate" placeholder="ABCD12" oninput="this.value=this.value.toUpperCase().replace(/[^A-Z0-9]/g,'')"/>
-    <div class="lbl">Fecha y hora</div>
-    <input class="inp" type="datetime-local" id="m-ev-dt"/>
+    <div class="lbl">Fecha y hora <span style="color:var(--wh4);font-weight:400;text-transform:none;letter-spacing:0">(formato 24h, horario taller)</span></div>
+    <input class="inp" type="datetime-local" id="m-ev-dt" step="900" oninput="validateWorkshopHour(this)"/>
+    <div id="m-ev-dt-hint" style="font-size:10px;color:var(--wh4);margin-top:-4px;margin-bottom:8px;font-family:var(--mono);min-height:14px;line-height:1.4">L-X 08:30 a 19:00 · J 08:30 a 18:00 · V 08:30 a 17:00 · S/D cerrado</div>
     <div class="lbl">Técnico designado</div>
     <select class="inp" id="m-ev-tech"><option value="">Sin asignar</option></select>
     <div class="lbl">Tiempo objetivo (min) <span style="color:var(--red)">*</span></div>
@@ -858,7 +869,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // CONFIG & DEBUG
 // ═══════════════════════════════════════════════
 const DEBUG = true;
-const APP_VERSION = 'v2.7.OPS-flujo-visado-auto';
+const APP_VERSION = 'v2.7.OPS-3changes';
 const SURL = 'https://jczmupcmeixpwjedfgtk.supabase.co';
 const SKEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impjem11cGNtZWl4cHdqZWRmZ3RrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY5NzMxOTMsImV4cCI6MjA5MjU0OTE5M30.DuICC_pCQGv27lZivieXRRvGz9A1GNkgmhvTvyKo25o';
 var sb = null; // initialized in init()
@@ -2580,6 +2591,55 @@ async function pollAll() {
 //   = accumulated_paused_ms (de pausas ya cerradas)
 //   + (si esta pausado ahora): (ahora - paused_at)
 //
+// FASE 2.7: validador de horarios del taller para agendamiento.
+// L-X (lunes a miércoles): 08:30 a 19:00 · J: 08:30 a 18:00 · V: 08:30 a 17:00 · S/D: cerrado
+// Devuelve {valid:bool, reason:string}
+function isWithinWorkshopHours(dateInput) {
+  if (!dateInput) return {valid: false, reason: 'Fecha y hora requeridas'};
+  var d = (typeof dateInput === 'string') ? new Date(dateInput) : dateInput;
+  if (isNaN(d.getTime())) return {valid: false, reason: 'Fecha inválida'};
+  var dow = d.getDay(); // 0=dom, 1=lun ... 6=sab
+  var h = d.getHours(), m = d.getMinutes();
+  var minutes = h * 60 + m;
+  var open = 8 * 60 + 30; // 08:30 todos los días laborales
+  var close;
+  if (dow === 0 || dow === 6) {
+    return {valid: false, reason: 'Sábado y domingo el taller está cerrado'};
+  } else if (dow >= 1 && dow <= 3) {
+    close = 19 * 60; // 19:00
+  } else if (dow === 4) {
+    close = 18 * 60; // 18:00 jueves
+  } else if (dow === 5) {
+    close = 17 * 60; // 17:00 viernes
+  }
+  if (minutes < open) return {valid: false, reason: 'El taller abre a las 08:30'};
+  if (minutes > close) {
+    var hh = Math.floor(close/60), mm = close%60;
+    var hStr = String(hh).padStart(2,'0') + ':' + String(mm).padStart(2,'0');
+    var dia = ['domingo','lunes','martes','miércoles','jueves','viernes','sábado'][dow];
+    return {valid: false, reason: 'Los ' + dia + ' el taller cierra a las ' + hStr};
+  }
+  return {valid: true};
+}
+
+function validateWorkshopHour(inputEl) {
+  var hint = document.getElementById('m-ev-dt-hint');
+  if (!hint) return;
+  if (!inputEl.value) {
+    hint.textContent = 'L-X 08:30 a 19:00 · J 08:30 a 18:00 · V 08:30 a 17:00 · S/D cerrado';
+    hint.style.color = 'var(--wh4)';
+    return;
+  }
+  var v = isWithinWorkshopHours(inputEl.value);
+  if (v.valid) {
+    hint.textContent = '✓ Dentro del horario del taller';
+    hint.style.color = 'var(--green)';
+  } else {
+    hint.textContent = '✗ ' + v.reason;
+    hint.style.color = 'var(--red)';
+  }
+}
+
 // FASE 2.6: confirmación tipeada anti-clic accidental para eliminaciones.
 // Usar: confirmHard('Vas a borrar X', function(){ ... realizar borrado ... });
 // Por defecto pide tipear "ELIMINAR". Se puede pasar keyword custom.
@@ -3753,8 +3813,9 @@ async function submitChecklist() {
   if (!aceite) { fail('Selecciona el tipo de aceite'); return; }
   if (!rt) { fail('Selecciona el tipo de prueba de ruta'); return; }
   if (!rr) { fail('Indica el resultado de la prueba de ruta'); return; }
-  if (!doble) { fail('Indica el resultado del doble control'); return; }
-  if (!visado) { fail('Indica el resultado del visado'); return; }
+  if (!doble) { fail('Indica el resultado del doble control (auto-verificación final)'); return; }
+  // FASE 2.7: visado YA NO se pide al técnico — lo hace el superior. Forzar a 'Pendiente'.
+  if (!visado || visado === 'Aprobado' || visado === 'Rechazado') visado = 'Pendiente';
 
   var checklist = {
     litros: parseFloat(litros), aceite: aceite,
@@ -5417,41 +5478,85 @@ async function renderBossPlan(body) {
 // ═══════════════════════════════════════════════
 // BOSS: HISTORIAL
 // ═══════════════════════════════════════════════
+// FASE 2.7: historial con vista detallada + selección múltiple + export por servicio
+var _histData = [];
+var _histSelected = {};
+
 async function renderBossHist(body) {
   body.innerHTML = '<div class="empty"><span class="spin"></span>Cargando...</div>';
-  var {data} = await sb.from('history').select('*').order('ended_at',{ascending:false}).limit(100);
+  var {data} = await sb.from('history').select('*').order('ended_at',{ascending:false}).limit(200);
+  // Cargar checklists de cada sesión (best-effort)
+  var checklistsByKey = {};
+  try {
+    var keys = (data || []).map(function(h){ return 'history_' + h.id; });
+    if (keys.length) {
+      var rck = await sb.from('service_checklists').select('*');
+      if (rck && rck.data) {
+        rck.data.forEach(function(ck){ checklistsByKey[ck.session_key] = ck; });
+      }
+    }
+  } catch(_){}
+
+  _histData = (data || []).map(function(h){
+    h._checklist = checklistsByKey[h.session_key] || null;
+    return h;
+  });
+  _histSelected = {};
+
   body.innerHTML = '';
-  var exportRow = mk('div',''); exportRow.style.cssText='display:flex;gap:8px;margin-bottom:10px';
-  exportRow.innerHTML = '<button class="btn-sm" onclick="exportXLSX()" style="border-color:var(--red);color:var(--red)">Exportar Excel</button><button class="btn-sm" onclick="exportTXT()">Exportar TXT</button>';
-  body.appendChild(exportRow);
-  if (!data || !data.length) { body.innerHTML += '<div class="empty">Sin historial</div>'; return; }
+  // Toolbar fija arriba
+  var bar = mk('div','');
+  bar.style.cssText = 'background:#fff;border:1px solid var(--border);border-radius:4px;padding:10px;margin-bottom:10px;position:sticky;top:0;z-index:5';
+  bar.innerHTML =
+    '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">'
+    + '<button class="btn-sm" onclick="histSelectAll(true)">☑ Todos</button>'
+    + '<button class="btn-sm" onclick="histSelectAll(false)">☐ Ninguno</button>'
+    + '<span id="hist-sel-count" style="font-size:11px;color:var(--wh3);font-family:var(--mono);margin-left:6px">0 seleccionados</span>'
+    + '<span style="flex:1"></span>'
+    + '<button class="btn-sm" style="border-color:var(--red);color:var(--red)" onclick="exportSelectedHist(\'xlsx\')">📊 Excel selección</button>'
+    + '<button class="btn-sm" onclick="exportSelectedHist(\'txt\')">📄 TXT selección</button>'
+    + '<button class="btn-sm" style="border-color:var(--blue);color:var(--blue)" onclick="exportSelectedHist(\'all\')">Exportar TODO</button>'
+    + '</div>';
+  body.appendChild(bar);
+
+  if (!_histData.length) { body.innerHTML += '<div class="empty">Sin historial</div>'; return; }
   var card = mk('div','card');
   var canAdmin = isSuperAdmin();
-  data.forEach(function(r) {
+  _histData.forEach(function(r) {
     var over = r.goal_minutes && r.seconds > r.goal_minutes * 60;
     var row = mk('div','row');
-    row.innerHTML = avatarHTML(r.technician, r.username, 56)
-      + '<div style="flex:1">'
-      + '<div style="font-size:14px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111">' + escapeHTML(r.technician) + '</div>'
+    row.style.cssText = 'cursor:pointer;align-items:flex-start;padding:8px;border-bottom:1px solid var(--border)';
+    row.onclick = function(ev){
+      // Si clickea en el checkbox, no expandir
+      if (ev.target && (ev.target.type === 'checkbox' || ev.target.tagName === 'BUTTON')) return;
+      openHistDetail(r.id);
+    };
+    row.innerHTML =
+      '<input type="checkbox" data-hist-cb="' + r.id + '" onclick="histToggle(\'' + r.id + '\', this.checked); event.stopPropagation();" style="width:18px;height:18px;margin-right:8px;margin-top:6px;cursor:pointer;flex-shrink:0"/>'
+      + avatarHTML(r.technician, r.username, 48)
+      + '<div style="flex:1;min-width:0">'
+      + '<div style="font-size:13px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111">' + escapeHTML(r.technician) + '</div>'
       + '<div style="font-size:11px;color:#666;text-transform:uppercase">' + escapeHTML(r.service) + '</div>'
-      + (r.plate ? '<span class="plate-tag">' + escapeHTML(r.plate) + '</span>' : '')
-      + (r.pauses && r.pauses.length ? '<div style="font-size:10px;color:var(--gold3);margin-top:2px">' + r.pauses.map(function(p){return '• '+escapeHTML(p.reason || '');}).join(' ') + '</div>' : '')
+      + (r.plate ? '<span class="plate-tag" style="margin-top:3px;display:inline-block">' + escapeHTML(r.plate) + '</span>' : '')
+      + (r.pauses && r.pauses.length ? '<div style="font-size:10px;color:var(--gold3);margin-top:2px">' + r.pauses.length + ' pausa(s)</div>' : '')
+      + (r._checklist ? '<div style="font-size:10px;color:var(--blue);margin-top:2px">📋 con checklist</div>' : '')
       + '</div>'
       + '<div style="text-align:right;flex-shrink:0">'
-      + '<div style="font-size:18px;font-weight:700;font-family:var(--mono);color:' + (over?'var(--red)':'var(--green)') + '">' + r.duration + '</div>'
+      + '<div style="font-size:16px;font-weight:700;font-family:var(--mono);color:' + (over?'var(--red)':'var(--green)') + '">' + r.duration + '</div>'
       + (r.goal_minutes ? '<div style="font-size:9px;color:#aaa;text-transform:uppercase">OBJ:' + r.goal_minutes + 'm</div>' : '')
       + '<div style="font-size:10px;color:#aaa">' + fmtD(r.ended_at) + '</div>'
+      + '<button class="btn-sm" style="margin-top:4px;font-size:10px;padding:2px 6px;border-color:var(--blue);color:var(--blue)" onclick="event.stopPropagation();exportSingleHist(\'' + r.id + '\',\'txt\')">⬇ Ficha</button>'
       + '</div>';
 
-    // Admin: boton borrar con event listener (evita problemas de escapado en onclick inline)
     if (canAdmin) {
       var rightCol = row.querySelector('div[style*="text-align:right"]');
       if (rightCol) {
         var delBtn = document.createElement('button');
         delBtn.className = 'btn btn-out';
-        delBtn.style.cssText = 'padding:3px 8px;font-size:9px;color:#c00;border-color:#c00;margin-top:4px';
+        delBtn.style.cssText = 'padding:2px 6px;font-size:9px;color:#c00;border-color:#c00;margin-top:4px;display:block';
         delBtn.textContent = '✕ Borrar';
-        delBtn.onclick = function() {
+        delBtn.onclick = function(ev) {
+          ev.stopPropagation();
           adminDeleteHistory(r.id, r.technician || '', r.service || '', r.plate || '', r.duration || '');
         };
         rightCol.appendChild(delBtn);
@@ -5460,6 +5565,172 @@ async function renderBossHist(body) {
     card.appendChild(row);
   });
   body.appendChild(card);
+}
+
+// Selección múltiple
+function histToggle(id, checked) {
+  if (checked) _histSelected[id] = true;
+  else delete _histSelected[id];
+  var el = document.getElementById('hist-sel-count');
+  if (el) el.textContent = Object.keys(_histSelected).length + ' seleccionados';
+}
+
+function histSelectAll(yes) {
+  _histSelected = {};
+  if (yes) _histData.forEach(function(r){ _histSelected[r.id] = true; });
+  document.querySelectorAll('[data-hist-cb]').forEach(function(cb){
+    cb.checked = !!_histSelected[cb.dataset.histCb];
+  });
+  var el = document.getElementById('hist-sel-count');
+  if (el) el.textContent = Object.keys(_histSelected).length + ' seleccionados';
+}
+
+// Modal de detalle de un servicio del historial (ficha completa)
+function openHistDetail(id) {
+  var r = _histData.find(function(x){ return x.id === id; });
+  if (!r) { showGlobalError('Servicio no encontrado', 3000); return; }
+  // Crear modal simple inline
+  var existing = document.getElementById('m-hist-detail');
+  if (existing) existing.remove();
+  var ov = document.createElement('div');
+  ov.className = 'overlay'; ov.id = 'm-hist-detail'; ov.style.display = 'flex';
+  ov.innerHTML = '<div class="modal" style="max-width:560px"><div class="modal-t">Ficha del servicio</div>'
+    + '<div class="modal-s" style="font-family:var(--mono);font-size:11px">' + escapeHTML(r.technician) + ' · ' + (r.plate || 'sin patente') + ' · ' + fmtD(r.ended_at) + '</div>'
+    + '<div style="margin-top:14px;font-size:12px;line-height:1.6">' + buildHistDetailHTML(r) + '</div>'
+    + '<button class="btn btn-red" onclick="exportSingleHist(\'' + r.id + '\',\'txt\')" style="margin-top:14px">⬇ Descargar ficha (.txt)</button>'
+    + '<button class="btn btn-out" onclick="closeModal(\'m-hist-detail\');document.getElementById(\'m-hist-detail\').remove();" style="margin-top:8px">Cerrar</button>'
+    + '</div>';
+  document.body.appendChild(ov);
+}
+
+function buildHistDetailHTML(r) {
+  var html = '';
+  html += '<div><b>Servicio:</b> ' + escapeHTML(r.service) + '</div>';
+  html += '<div><b>Técnico:</b> ' + escapeHTML(r.technician) + '</div>';
+  html += '<div><b>Patente:</b> ' + escapeHTML(r.plate || '—') + '</div>';
+  html += '<div><b>Duración:</b> ' + r.duration + (r.goal_minutes ? ' (objetivo: ' + r.goal_minutes + 'm)' : '') + '</div>';
+  html += '<div><b>Finalizado:</b> ' + fmtD(r.ended_at) + '</div>';
+  if (r.pauses && r.pauses.length) {
+    html += '<div style="margin-top:8px"><b>Pausas (' + r.pauses.length + '):</b><ul style="margin:4px 0 0 16px;padding:0">';
+    r.pauses.forEach(function(p){
+      var dur = p.duration_ms ? Math.round(p.duration_ms / 1000) + 's' : (p.duration_seconds ? p.duration_seconds + 's' : '');
+      html += '<li>' + escapeHTML(p.reason || '?') + (dur ? ' · ' + dur : '') + '</li>';
+    });
+    html += '</ul></div>';
+  }
+  if (r._checklist) {
+    var ck = r._checklist;
+    html += '<hr style="border:none;border-top:1px solid var(--border);margin:10px 0"/>';
+    html += '<div style="font-weight:700;color:var(--red)">CHECKLIST</div>';
+    if (ck.litros != null) html += '<div>Litros: ' + ck.litros + ' L</div>';
+    if (ck.aceite) html += '<div>Aceite: ' + escapeHTML(ck.aceite) + '</div>';
+    if (ck.prueba_ruta) {
+      var pr = ck.prueba_ruta;
+      var prTxt = (typeof pr === 'object') ? ((pr.tipo || '') + ' · ' + (pr.resultado || '') + (pr.anomalias ? ' · Anomalías: ' + pr.anomalias : '')) : String(pr);
+      html += '<div>Prueba de ruta: ' + escapeHTML(prTxt) + '</div>';
+    }
+    if (ck.doble_control) html += '<div>Doble control (auto-tec): ' + escapeHTML(String(ck.doble_control)) + '</div>';
+    if (ck.visado) html += '<div>Visado superior: ' + escapeHTML(String(ck.visado)) + '</div>';
+    if (ck.observaciones) html += '<div style="margin-top:6px"><b>Observaciones:</b><br/>' + escapeHTML(ck.observaciones) + '</div>';
+  }
+  return html;
+}
+
+// Construye el bloque de texto plano para una sesión (compartido entre single y bulk)
+function buildHistTextBlock(r, num) {
+  var L = [];
+  L.push((num || '') + r.technician);
+  L.push('   Servicio: ' + r.service);
+  L.push('   Patente: ' + (r.plate || '—'));
+  L.push('   Duración: ' + r.duration + (r.goal_minutes ? ' (obj: ' + r.goal_minutes + 'm)' : ''));
+  L.push('   Finalizado: ' + fmtD(r.ended_at));
+  if (r.pauses && r.pauses.length) {
+    L.push('   Pausas: ' + r.pauses.map(function(p){ return p.reason || '?'; }).join(', '));
+  }
+  if (r._checklist) {
+    var ck = r._checklist;
+    var parts = [];
+    if (ck.litros != null) parts.push(ck.litros + 'L');
+    if (ck.aceite) parts.push(ck.aceite);
+    if (ck.prueba_ruta) {
+      var pr = ck.prueba_ruta;
+      var prTxt = (typeof pr === 'object') ? ('Ruta ' + (pr.tipo || '') + ' ' + (pr.resultado || '')) : ('Ruta: ' + pr);
+      parts.push(prTxt);
+    }
+    if (ck.doble_control) parts.push('Doble ctrl: ' + ck.doble_control);
+    if (ck.visado) parts.push('Visado: ' + ck.visado);
+    if (parts.length) L.push('   ' + parts.join(' | '));
+    if (ck.observaciones) L.push('   Observaciones: ' + ck.observaciones);
+  }
+  L.push('');
+  return L.join('\n');
+}
+
+// Exportar UN solo servicio
+function exportSingleHist(id, fmt) {
+  var r = _histData.find(function(x){ return x.id === id; });
+  if (!r) { showGlobalError('Servicio no encontrado', 3000); return; }
+  var txt = 'FICHA DE SERVICIO - ROSSO OPS\n' + '='.repeat(42) + '\n\n' + buildHistTextBlock(r, '');
+  var fname = 'Ficha_' + (r.plate || 'XXXX') + '_' + (r.ended_at || '').slice(0,10) + '.txt';
+  var blob = new Blob([txt], {type: 'text/plain;charset=utf-8'});
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a'); a.href = url; a.download = fname; a.click();
+  setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+  showGlobalError('Ficha descargada: ' + fname, 3000);
+}
+
+// Exportar selección o todo
+async function exportSelectedHist(mode) {
+  var rows;
+  if (mode === 'all') {
+    rows = _histData;
+  } else {
+    var ids = Object.keys(_histSelected);
+    if (ids.length === 0) { showGlobalError('Selecciona al menos un servicio', 4000); return; }
+    rows = _histData.filter(function(r){ return _histSelected[r.id]; });
+  }
+  if (mode === 'xlsx' || mode === 'all') {
+    // Excel: una hoja con filas detalladas
+    if (!window.XLSX) { showGlobalError('XLSX no disponible (recargá la página)', 5000); return; }
+    var dataRows = rows.map(function(r){
+      var ck = r._checklist || {};
+      return {
+        Tecnico: r.technician,
+        Servicio: r.service,
+        Patente: r.plate || '',
+        Duracion: r.duration,
+        Segundos: r.seconds,
+        Objetivo_min: r.goal_minutes || '',
+        Finalizado: r.ended_at,
+        Pausas: (r.pauses || []).map(function(p){return p.reason || '?';}).join(' | '),
+        Litros: ck.litros || '',
+        Aceite: ck.aceite || '',
+        Doble_control: ck.doble_control || '',
+        Visado: ck.visado || '',
+        Observaciones: ck.observaciones || ''
+      };
+    });
+    if (mode === 'xlsx') {
+      var ws = XLSX.utils.json_to_sheet(dataRows);
+      var wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Historial');
+      XLSX.writeFile(wb, 'Historial_Rosso_OPS_seleccion_' + new Date().toISOString().slice(0,10) + '.xlsx');
+      showGlobalError('Excel descargado · ' + rows.length + ' servicio(s)', 3000);
+      return;
+    }
+  }
+  // TXT (selección o all)
+  var header = (mode === 'all' ? 'HISTORIAL COMPLETO' : 'SELECCIÓN DE SERVICIOS');
+  var txt = 'ROSSO OPS - ' + header + '\n' + '='.repeat(42) + '\n\n';
+  rows.forEach(function(r, idx){
+    txt += buildHistTextBlock(r, (idx+1) + '. ');
+  });
+  var fname = (mode === 'all' ? 'Historial_completo_' : 'Historial_seleccion_') + new Date().toISOString().slice(0,10) + '.txt';
+  var blob = new Blob([txt], {type: 'text/plain;charset=utf-8'});
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a'); a.href = url; a.download = fname; a.click();
+  setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+  showGlobalError('TXT descargado · ' + rows.length + ' servicio(s)', 3000);
 }
 
 // ═══════════════════════════════════════════════
@@ -9451,6 +9722,9 @@ async function saveEvent() {
   err.style.display = 'none';
   if (!service) { err.textContent = 'Selecciona un servicio'; err.style.display='block'; return; }
   if (!dt) { err.textContent = 'Ingresa fecha y hora'; err.style.display='block'; return; }
+  // FASE 2.7: validar horario taller (L-X 08:30-19:00, J 08:30-18:00, V 08:30-17:00, S/D cerrado)
+  var wsCheck = isWithinWorkshopHours(dt);
+  if (!wsCheck.valid) { err.textContent = 'Horario fuera del taller: ' + wsCheck.reason + '. Ajustá la fecha y hora.'; err.style.display='block'; return; }
   // FASE 2.4.D-fix: tiempo objetivo obligatorio (para que el sistema pueda medir y alertar)
   if (!goal || goal < 1) { err.textContent = 'Indica un tiempo objetivo en minutos. Es obligatorio para que el sistema mida y alerte si el técnico se excede.'; err.style.display='block'; return; }
   btn.innerHTML = '<span class="spin"></span>'; btn.disabled = true;
