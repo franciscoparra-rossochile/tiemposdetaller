@@ -206,6 +206,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     <div class="tab active" data-tab="t-nuevo" onclick="techTab('t-nuevo')">Nuevo registro</div>
     <div class="tab" data-tab="t-misservicios" onclick="techTab('t-misservicios')">Mis servicios<span class="ndot" id="tech-active-dot"></span></div>
     <div class="tab" data-tab="t-misot" onclick="techTab('t-misot')">Mis OTs<span class="ndot" id="tech-ot-dot"></span></div>
+    <div class="tab" data-tab="t-visado" onclick="techTab('t-visado')" id="tab-tech-visado" style="display:none">Visado<span class="ndot" id="tech-visado-dot"></span></div>
     <div class="tab" data-tab="t-agenda" onclick="techTab('t-agenda')">Agenda</div>
     <div class="tab" data-tab="t-alertas" onclick="techTab('t-alertas')">Alertas<span class="ndot" id="tech-ndot"></span></div>
     <div class="tab" data-tab="t-historial" onclick="techTab('t-historial')">Historial</div>
@@ -236,6 +237,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     <div class="tab" data-tab="b-plan" onclick="bossTab('b-plan')">Planificacion</div>
     <div class="tab" data-tab="b-hist" onclick="bossTab('b-hist')">Historial</div>
     <div class="tab" data-tab="b-reportes" onclick="bossTab('b-reportes')">Reportes</div>
+    <div class="tab" data-tab="b-visado" onclick="bossTab('b-visado')" id="tab-boss-visado" style="display:none">Visado<span class="ndot" id="boss-visado-dot"></span></div>
     <div class="tab" data-tab="b-clientes" onclick="bossTab('b-clientes')" id="tab-clientes" style="display:none">Registro Clientes</div>
     <div class="tab" data-tab="b-users" onclick="bossTab('b-users')" id="tab-users" style="display:none">Usuarios</div>
     <div class="tab" data-tab="b-cfg" onclick="bossTab('b-cfg')" id="tab-cfg" style="display:none">Config</div>
@@ -794,7 +796,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // CONFIG & DEBUG
 // ═══════════════════════════════════════════════
 const DEBUG = true;
-const APP_VERSION = 'v2.8.0-FASE2.4B';
+const APP_VERSION = 'v2.8.1-PDFv2';
 const SURL = 'https://jczmupcmeixpwjedfgtk.supabase.co';
 const SKEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impjem11cGNtZWl4cHdqZWRmZ3RrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY5NzMxOTMsImV4cCI6MjA5MjU0OTE5M30.DuICC_pCQGv27lZivieXRRvGz9A1GNkgmhvTvyKo25o';
 var sb = null; // initialized in init()
@@ -1226,6 +1228,16 @@ function tireItems() {
 const CHECKLISTS_TECH = {
   CAMBIO_ACEITE: {
     label: 'Cambio de aceite',
+    pdf_tasks: [
+      'Cambio de aceite y filtro de aceite',
+      'Anotar código del filtro, litros y marca del aceite usado',
+      'Relleno de líquido limpiaparabrisas',
+      'Marcaje de torque y apriete del filtro de aceite',
+      'Pegar etiqueta de cambio de aceite con próximo km',
+      'Limpieza de zona de trabajo',
+      'Prueba de ruta corta (tipo A)',
+      'Anotar kilometraje de salida'
+    ],
     sections: [
       {title: 'Repuestos utilizados', items: [
         {key:'oil_filter_code', label:'Código del filtro de aceite utilizado', type:'text', required:true},
@@ -1240,6 +1252,22 @@ const CHECKLISTS_TECH = {
   },
   MANT_EXPRESS: {
     label: 'Mantenimiento express',
+    pdf_tasks: [
+      'Cambio de filtro de aceite',
+      'Cambio de filtro de aire',
+      'Cambio de filtro de polen',
+      'Cambio de filtro de petróleo (solo si aplica)',
+      'Cambio de aceite de motor + relleno',
+      'Anotar códigos de filtros, litros y marca de aceite',
+      'Relleno de niveles: limpiaparabrisas, refrigerante, líquido de frenos',
+      'Lectura de escáner',
+      'Reinicio de intervalo de mantenimiento',
+      'Marcaje de torque y apriete del filtro de aceite',
+      'Pegar etiqueta de cambio de aceite',
+      'Limpieza de zona de trabajo',
+      'Prueba de ruta corta (tipo A)',
+      'Anotar kilometraje de salida'
+    ],
     sections: [
       {title: 'Repuestos utilizados', items: [
         {key:'oil_filter_code',    label:'Código filtro de aceite', type:'text', required:true},
@@ -1265,6 +1293,27 @@ const CHECKLISTS_TECH = {
   // ═══ FASE 2.4.B ═══
   MANT_COMPLETO: {
     label: 'Mantenimiento completo',
+    pdf_tasks: [
+      'Cambio de filtros: aceite, aire, polen, petróleo (este último solo si aplica)',
+      'Cambio de aceite de motor + relleno',
+      'Anotar códigos de filtros, litros y marca de aceite',
+      'Revisión completa de frenos: medir discos y pastillas delanteras y traseras (mm)',
+      'Evaluar nivel de desgaste de tren delantero y trasero',
+      'Verificar estado del líquido de frenos',
+      'Revisión completa de suspensión y dirección (12 componentes: espirales, amortiguadores, cazoletas, ballestas, barras, rótulas, bandejas, brazos, axiales, terminales, bieletas, bujes)',
+      'Inspección de bajos del vehículo',
+      'Revisión de los 4 neumáticos',
+      'Relleno de niveles: limpiaparabrisas, refrigerante, líquido de frenos',
+      'Lectura de escáner',
+      'Reinicio de intervalo de mantenimiento',
+      'Diagnóstico técnico: lectura de códigos DTC y registro de hallazgos',
+      'Recomendaciones de servicios futuros',
+      'Marcaje de torque y apriete del filtro de aceite',
+      'Pegar etiqueta de cambio de aceite',
+      'Limpieza de zona de trabajo',
+      'Prueba de ruta',
+      'Anotar kilometraje de salida'
+    ],
     sections: [
       {title: 'Repuestos utilizados', items: [
         {key:'oil_filter_code',    label:'Código filtro de aceite', type:'text', required:true},
@@ -1314,6 +1363,13 @@ const CHECKLISTS_TECH = {
   // — DPF (4 packs) —
   DPF_PACK_ESENCIAL: {
     label: 'Recuperación de DPF — Pack Esencial',
+    pdf_tasks: [
+      'Lectura de escáner ANTES del servicio (códigos, % hollín, suciedad)',
+      'Procedimiento de limpieza Pack Esencial',
+      'Lectura de escáner DESPUÉS del servicio',
+      'Registrar observaciones del estado del DPF',
+      'Prueba de ruta'
+    ],
     sections: [
       {title: 'Procedimiento ejecutado', items: [
         {key:'dpf_proc_realizado',   label:'Procedimiento de limpieza realizado', type:'bool', required:true},
@@ -1326,6 +1382,14 @@ const CHECKLISTS_TECH = {
   },
   DPF_PACK_AVANZADO: {
     label: 'Recuperación de DPF — Pack Avanzado',
+    pdf_tasks: [
+      'Lectura de escáner ANTES (códigos, % hollín, suciedad)',
+      'Procedimiento Avanzado: limpieza profunda',
+      'Lectura de escáner DESPUÉS',
+      'Regeneración forzada post-servicio',
+      'Registrar observaciones',
+      'Prueba de ruta'
+    ],
     sections: [
       {title: 'Procedimiento ejecutado', items: [
         {key:'dpf_proc_realizado',   label:'Procedimiento Avanzado realizado (limpieza profunda)', type:'bool', required:true},
@@ -1339,6 +1403,15 @@ const CHECKLISTS_TECH = {
   },
   DPF_PACK_PREMIUM: {
     label: 'Recuperación de DPF — Pack Premium',
+    pdf_tasks: [
+      'Lectura de escáner ANTES (códigos, % hollín, suciedad)',
+      'Procedimiento Premium: limpieza profunda + admisión',
+      'Limpieza de admisión completa',
+      'Lectura de escáner DESPUÉS',
+      'Regeneración forzada post-servicio',
+      'Registrar observaciones',
+      'Prueba de ruta'
+    ],
     sections: [
       {title: 'Procedimiento ejecutado', items: [
         {key:'dpf_proc_realizado',   label:'Procedimiento Premium realizado (limpieza profunda + admisión)', type:'bool', required:true},
@@ -1353,6 +1426,15 @@ const CHECKLISTS_TECH = {
   },
   DPF_EXTRAIDO: {
     label: 'DPF extraído para recuperación',
+    pdf_tasks: [
+      'Identificar y extraer el DPF',
+      'Anotar N° de pieza / ID interno y fecha de extracción',
+      'Foto + descripción del estado inicial',
+      'Enviar a proveedor / lab externo de recuperación',
+      'Reinstalar el DPF (cuando regrese)',
+      'Resetear códigos y contadores',
+      'Registrar observaciones finales'
+    ],
     sections: [
       {title: 'Datos del DPF retirado', items: [
         {key:'dpf_id',               label:'Identificación / N° de DPF', type:'text', required:true, placeholder:'Número de pieza o ID interno'},
@@ -1371,6 +1453,13 @@ const CHECKLISTS_TECH = {
   // — Diagnóstico —
   DIAGNOSTICO: {
     label: 'Diagnóstico',
+    pdf_tasks: [
+      'Registrar síntoma o falla reportada por el cliente',
+      'Lectura de códigos DTC con escáner',
+      'Pruebas y mediciones técnicas',
+      'Determinar causa raíz / hallazgo',
+      'Recomendaciones y próximos pasos al cliente'
+    ],
     sections: [
       {title: 'Motivo de la consulta', items: [
         {key:'diag_motivo', label:'Síntoma o falla reportada por el cliente', type:'textarea', rows:2, required:true}
@@ -1387,6 +1476,15 @@ const CHECKLISTS_TECH = {
   // — Reprogramación ECU —
   REPROG_ECU: {
     label: 'Reprogramación ECU',
+    pdf_tasks: [
+      'Identificar módulo a intervenir (ECU/TCU/etc.)',
+      'Lectura previa: versión de software actual y DTC presentes',
+      'Cargar archivo / mapa correspondiente al stage solicitado',
+      'Verificar éxito de la reprogramación',
+      'Lectura posterior: versión nueva de software y DTC limpios',
+      'Registrar observaciones técnicas',
+      'Prueba de ruta'
+    ],
     sections: [
       {title: 'Lectura previa', items: [
         {key:'ecu_module',           label:'Módulo intervenido (ECU/TCU/etc.)', type:'text', required:true},
@@ -1409,6 +1507,16 @@ const CHECKLISTS_TECH = {
   // — Servicio de frenos (referencia: el sub-tipo del ingreso indica qué se cambió) —
   FRENOS: {
     label: 'Servicio de frenos',
+    pdf_tasks: [
+      'Ejecutar los trabajos de frenos según lo agendado (ver especificación de la OT)',
+      'Anotar códigos de los repuestos utilizados',
+      'Medir espesor final de discos delantero y trasero (mm)',
+      'Cambio de líquido de frenos (si aplica)',
+      'Marcaje de torque y apriete',
+      'Limpieza de zona de trabajo',
+      'Prueba de ruta para verificar respuesta del freno',
+      'Anotar kilometraje de salida'
+    ],
     sections: [
       {title: 'Trabajos realizados', items: [
         {key:'fr_trabajos',          label:'Confirma los trabajos ejecutados', type:'textarea', rows:3, required:true, placeholder:'Detalla qué se hizo según lo agendado'},
@@ -1426,6 +1534,14 @@ const CHECKLISTS_TECH = {
   // — Reparaciones generales (descripción libre amplia) —
   REPAR_GENERALES: {
     label: 'Reparaciones generales',
+    pdf_tasks: [
+      'Ejecutar la reparación según lo descrito en la OT (ver descripción del cliente)',
+      'Anotar repuestos utilizados con códigos y cantidades',
+      'Registrar horas de trabajo invertidas',
+      'Limpieza de zona de trabajo',
+      'Prueba de ruta (si aplica al tipo de reparación)',
+      'Recomendaciones u observaciones para el cliente'
+    ],
     sections: [
       {title: 'Trabajo realizado', items: [
         {key:'rg_trabajo_descrito',  label:'Descripción del trabajo realizado', type:'textarea', rows:4, required:true},
@@ -1443,6 +1559,15 @@ const CHECKLISTS_TECH = {
   // — Garantía de servicio —
   GARANTIA: {
     label: 'Garantía de servicio',
+    pdf_tasks: [
+      'Registrar el reclamo o falla reportada por el cliente',
+      'Identificar la OT original (si se conoce)',
+      'Diagnosticar la falla',
+      'Determinar si aplica a garantía Rosso',
+      'Aplicar solución correspondiente',
+      'Registrar repuestos cubiertos por garantía',
+      'Comunicar resolución al cliente'
+    ],
     sections: [
       {title: 'Reclamo del cliente', items: [
         {key:'gar_reclamo',          label:'Reclamo o falla reportada por el cliente', type:'textarea', rows:3, required:true},
@@ -2005,7 +2130,7 @@ async function tryRestoreSession() {
     document.getElementById('tech-name').textContent = CU.name;
     document.getElementById('tech-role').textContent = 'Tecnico';
     document.getElementById('btn-back-boss').style.display = 'none';
-    showScreen('s-tech');
+    showScreen('s-tech'); refreshTechTabsVisibility();
     // Esperamos a que cargue liveData antes de decidir la pestana inicial
     startPolling();
     setTimeout(function() {
@@ -2122,7 +2247,7 @@ async function doLogin() {
     document.getElementById('tech-name').textContent = CU.name;
     document.getElementById('tech-role').textContent = 'Tecnico';
     document.getElementById('btn-back-boss').style.display = 'none';
-    showScreen('s-tech');
+    showScreen('s-tech'); refreshTechTabsVisibility();
     // Check if has active/paused services -> go to Mis Servicios
     var myRows = liveData.filter(function(s) { return s.username === CU.username; });
     techTab(myRows.length > 0 ? 't-misservicios' : 't-nuevo');
@@ -2180,7 +2305,7 @@ function enterTechMode() {
   document.getElementById('tech-name').textContent = CU.name;
   document.getElementById('tech-role').textContent = (CU.role === 'admin' ? 'Admin' : 'Jefatura') + ' - modo tecnico';
   document.getElementById('btn-back-boss').style.display = '';
-  showScreen('s-tech');
+  showScreen('s-tech'); refreshTechTabsVisibility();
   // Ir a Mis servicios si tiene servicios activos, si no a Nuevo registro
   var myRows = liveData.filter(function(s) { return s.username === CU.username; });
   techTab(myRows.length > 0 ? 't-misservicios' : 't-nuevo');
@@ -2271,7 +2396,7 @@ async function saveForcedPassword() {
     document.getElementById('tech-name').textContent = CU.name;
     document.getElementById('tech-role').textContent = 'Tecnico';
     document.getElementById('btn-back-boss').style.display = 'none';
-    showScreen('s-tech');
+    showScreen('s-tech'); refreshTechTabsVisibility();
     var myRows = liveData.filter(function(s) { return s.username === CU.username; });
     techTab(myRows.length > 0 ? 't-misservicios' : 't-nuevo');
   } else {
@@ -2473,6 +2598,7 @@ function techTab(t) {
   if (t === 't-nuevo' || t === 't-inicio') renderTechNuevo(body);
   else if (t === 't-misservicios') renderMisServicios(body);
   else if (t === 't-misot') renderTechMisOTs(body);
+  else if (t === 't-visado') renderVisadoPanel(body);
   else if (t === 't-agenda') renderTechAgenda(body);
   else if (t === 't-alertas') { document.getElementById('tech-ndot').classList.remove('show'); renderTechAlertas(body); }
   else if (t === 't-midia') renderTechMiDia(body);
@@ -2497,6 +2623,7 @@ function bossTab(t) {
   else if (t === 'b-clientes') renderBossClientes(body, 'registro');
   else if (t === 'b-ingreso')  renderBossClientes(body, 'ingreso');
   else if (t === 'b-catastro') renderBossCatastro(body);
+  else if (t === 'b-visado')   renderVisadoPanel(body);
 }
 
 // Helper centralizado: refresca la visibilidad de las pestañas de jefe segun el usuario actual.
@@ -2509,10 +2636,22 @@ function refreshBossTabsVisibility() {
   if (elCatastro) elCatastro.style.display = hasPerm(CU, 'can_ingresar_clientes') ? '' : 'none';
   var elClientes = document.getElementById('tab-clientes');
   if (elClientes) elClientes.style.display = hasPerm(CU, 'can_ingresar_clientes') ? '' : 'none';
+  // FASE 2.4.C: pestaña Visado solo para usuarios con can_visar
+  var elBossVisado = document.getElementById('tab-boss-visado');
+  if (elBossVisado) elBossVisado.style.display = hasPerm(CU, 'can_visar') ? '' : 'none';
+  var elTechVisado = document.getElementById('tab-tech-visado');
+  if (elTechVisado) elTechVisado.style.display = hasPerm(CU, 'can_visar') ? '' : 'none';
   var elUsers = document.getElementById('tab-users');
   if (elUsers) elUsers.style.display = (CU.role === 'admin') ? '' : 'none';
   var elCfg = document.getElementById('tab-cfg');
   if (elCfg) elCfg.style.display = (CU.role === 'admin') ? '' : 'none';
+}
+
+// FASE 2.4.C: helper análogo para pantalla técnica (visadores con rol tech ven la tab Visado)
+function refreshTechTabsVisibility() {
+  if (!CU) return;
+  var el = document.getElementById('tab-tech-visado');
+  if (el) el.style.display = hasPerm(CU, 'can_visar') ? '' : 'none';
 }
 
 // ═══════════════════════════════════════════════
@@ -7343,57 +7482,37 @@ async function generateOTPdf(otId) {
     if (o.scheduled_service_id) field('Servicio agendado', 'Sí (vinculado a planificación)');
     y += 2;
 
-    // ─── FASE 2.4 PDF FIX: Pauta a realizar (checklist del servicio) ───
+    // ─── FASE 2.4-PDFv2: Pauta del servicio (lista limpia de acciones) ───
     var techDef = CHECKLISTS_TECH[o.service_classification];
     if (techDef) {
-      sectionTitle('Pauta de servicio a realizar');
+      sectionTitle('Pauta del servicio');
       doc.setFont('helvetica','italic');
       doc.setFontSize(8);
       doc.setTextColor(100, 100, 100);
-      doc.text('El técnico debe completar cada ítem en la app antes de cerrar la OT.', marginX, y, {maxWidth: pageW - marginX*2});
+      doc.text('Acciones que el técnico debe ejecutar. Los valores específicos (códigos, mediciones, observaciones) se registran en la app al cerrar la OT.',
+        marginX, y, {maxWidth: pageW - marginX*2});
       doc.setTextColor(0, 0, 0);
-      y += 4;
+      y += 8;
       doc.setFont('helvetica','normal');
-      doc.setFontSize(9);
-      techDef.sections.forEach(function(sec) {
-        if (y > 265) { doc.addPage(); y = 15; }
-        doc.setFont('helvetica','bold');
-        doc.text(sec.title.toUpperCase(), marginX, y);
-        y += 4;
-        doc.setFont('helvetica','normal');
-        sec.items.forEach(function(it) {
-          if (y > 270) { doc.addPage(); y = 15; }
-          var typeHint = '';
-          if (it.type === 'bool')        typeHint = '  (Sí / No)';
-          else if (it.type === 'number') typeHint = '  (___________)';
-          else if (it.type === 'select') typeHint = '  (' + (it.options || []).join(' / ') + ')';
-          else if (it.type === 'na_text') typeHint = '  (código o N/A)';
-          else                            typeHint = '  (___________________)';
-          var line = '☐ ' + it.label + typeHint;
-          var wrapped = doc.splitTextToSize(line, pageW - marginX*2 - 4);
-          wrapped.forEach(function(ln, idx) {
-            if (y > 270) { doc.addPage(); y = 15; }
-            doc.text(idx === 0 ? ln : '   ' + ln, marginX + 2, y);
-            y += 4;
-          });
+      doc.setFontSize(10);
+      var tasks = techDef.pdf_tasks || [];
+      // Fallback: si no hay pdf_tasks definidas, derivar desde labels de items (sin hints)
+      if (tasks.length === 0) {
+        techDef.sections.forEach(function(sec) {
+          sec.items.forEach(function(it) { tasks.push(it.label); });
         });
-        y += 2;
-      });
-
-      // Doble control
-      if (y > 250) { doc.addPage(); y = 15; }
-      doc.setFont('helvetica','bold');
-      doc.setFontSize(9);
-      doc.text('DOBLE CONTROL DE CIERRE (técnico designado)', marginX, y);
-      y += 4;
-      doc.setFont('helvetica','normal');
-      CHECKLIST_DOBLE_CONTROL.forEach(function(it) {
+      }
+      tasks.forEach(function(t) {
         if (y > 270) { doc.addPage(); y = 15; }
-        var typeHint = it.type === 'bool' ? '  (Sí / No)' : '  (___________)';
-        doc.text('☐ ' + it.label + typeHint, marginX + 2, y);
-        y += 4;
+        var line = '•  ' + t;
+        var wrapped = doc.splitTextToSize(line, pageW - marginX*2 - 4);
+        wrapped.forEach(function(ln, idx) {
+          if (y > 270) { doc.addPage(); y = 15; }
+          doc.text(idx === 0 ? ln : '    ' + ln, marginX + 2, y);
+          y += 5;
+        });
       });
-      y += 3;
+      y += 4;
     }
 
     // ─── Comprobaciones ───
@@ -7532,10 +7651,18 @@ async function openEditEvent(id) {
 }
 
 async function loadEvTechs(selectedId) {
-  var {data} = await sb.from('users').select('id,name,role').order('name');
+  var {data} = await sb.from('users').select('id,name,role,username').order('name');
   var sel = document.getElementById('m-ev-tech');
   sel.innerHTML = '<option value="">Sin asignar</option>';
-  (data||[]).forEach(function(u) {
+  // FASE 2.4.C-fix: dropdown solo muestra técnicos + Oscar Bueno + Nicolás Cisternas.
+  // (Otros usuarios no aparecen aunque sean jefatura/admin.) Si el evento ya tenía
+  // asignado a otra persona, igual la dejamos visible para no romper la edición.
+  var allowed = (data || []).filter(function(u) {
+    return u.role === 'tech'
+        || (u.username && (u.username === 'oscar.bueno' || u.username === 'nicolas.cisternas'))
+        || (selectedId && u.id === selectedId); // mantener seleccionado aunque no matchee
+  });
+  allowed.forEach(function(u) {
     var opt = document.createElement('option');
     opt.value = u.id; opt.textContent = u.name + ' (' + u.role + ')';
     if (selectedId && u.id === selectedId) opt.selected = true;
