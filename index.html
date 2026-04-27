@@ -4696,7 +4696,7 @@ async function openClientModal(cid) {
     document.getElementById('m-cli-phone').value  = c.phone || '';
     document.getElementById('m-cli-notes').value  = c.notes || '';
     selectClientType(c.client_type || 'persona');
-    document.getElementById('m-cli-meta').textContent = 'Creado: ' + fmtDate(c.created_at) + (c.updated_at && c.updated_at !== c.created_at ? ' · Actualizado: ' + fmtDate(c.updated_at) : '');
+    document.getElementById('m-cli-meta').textContent = 'Creado: ' + fmtD(c.created_at) + (c.updated_at && c.updated_at !== c.created_at ? ' · Actualizado: ' + fmtD(c.updated_at) : '');
   } else {
     document.getElementById('m-cli-title').textContent = isIngreso ? 'Nuevo ingreso a taller' : 'Nuevo cliente';
     document.getElementById('m-cli-sub').textContent = isIngreso
