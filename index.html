@@ -228,6 +228,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
   </div>
   <div class="tab-bar" id="boss-tabbar">
     <div class="tab" data-tab="b-ingreso" onclick="bossTab('b-ingreso')" id="tab-ingreso" style="display:none">Ingreso Taller</div>
+    <div class="tab" data-tab="b-catastro" onclick="bossTab('b-catastro')" id="tab-catastro" style="display:none">Catastro Vehículos</div>
     <div class="tab active" data-tab="b-online" onclick="bossTab('b-online')">En curso</div>
     <div class="tab" data-tab="b-alertas" onclick="bossTab('b-alertas')">Alertas<span class="ndot" id="boss-ndot"></span></div>
     <div class="tab" data-tab="b-calendario" onclick="bossTab('b-calendario')">Calendario</div>
@@ -518,17 +519,39 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
         <input class="inp" id="m-veh-km" type="number" min="0" max="9999999" placeholder="Ej: 45000" data-no-upper/>
       </div>
 
-      <!-- COMPROBACIONES INTERIORES -->
-      <div style="border-top:1px solid var(--border);margin:14px -2px 10px;padding-top:12px">
-        <div style="font-size:13px;font-weight:700;color:#111;font-family:'Rajdhani',sans-serif;text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px">Comprobaciones interiores</div>
-        <div style="font-size:10px;color:var(--wh4);margin-bottom:8px">Marca SOLO los items que correspondan al estado del vehículo.</div>
-        <div id="m-veh-checks-int" style="display:flex;flex-direction:column;gap:4px"></div>
+      <!-- SERVICIO Y GESTOR (FASE 2.2.C) -->
+      <div style="border-top:2px solid var(--gold);margin:18px -2px 12px;padding-top:14px">
+        <div style="font-size:14px;font-weight:700;color:#111;font-family:'Rajdhani',sans-serif;text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px">🔧 Servicio a realizar</div>
+
+        <div class="lbl">Tipo de servicio</div>
+        <select class="inp" id="m-srv-type" onchange="onServiceChange()">
+          <option value="">Selecciona servicio...</option>
+        </select>
+
+        <div id="m-srv-sub-wrap" style="display:none">
+          <div class="lbl">Especificación</div>
+          <select class="inp" id="m-srv-sub">
+            <option value="">Selecciona...</option>
+          </select>
+        </div>
+
+        <div id="m-srv-desc-wrap" style="display:none">
+          <div class="lbl">Descripción del trabajo solicitado</div>
+          <textarea class="inp" id="m-srv-desc" rows="2" placeholder="Detalla qué necesita el cliente"></textarea>
+        </div>
+
+        <div class="lbl">Gestor comercial a cargo</div>
+        <select class="inp" id="m-srv-manager">
+          <option value="">Selecciona gestor...</option>
+        </select>
+        <div id="m-srv-manager-hint" style="font-size:10px;color:var(--wh4);margin-top:-4px;margin-bottom:8px;font-family:var(--mono)"></div>
       </div>
 
-      <!-- COMPROBACIONES EXTERIORES -->
-      <div style="border-top:1px solid var(--border);margin:14px -2px 10px;padding-top:12px">
-        <div style="font-size:13px;font-weight:700;color:#111;font-family:'Rajdhani',sans-serif;text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px">Comprobaciones exteriores</div>
-        <div id="m-veh-checks-ext" style="display:flex;flex-direction:column;gap:4px"></div>
+      <!-- COMPROBACIONES (FASE 2.2.C: 4 grupos) -->
+      <div id="m-veh-checks" style="border-top:1px solid var(--border);margin:14px -2px 10px;padding-top:12px"></div>
+      <div id="m-veh-belongings-wrap" style="display:none;margin-top:-4px;margin-bottom:10px">
+        <div class="lbl">Detalle de objetos de valor declarados</div>
+        <textarea class="inp" id="m-veh-belongings-desc" rows="2" placeholder="Ej: notebook al asiento trasero, anteojos en guantera"></textarea>
       </div>
 
       <!-- FOTOS -->
@@ -552,6 +575,54 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     <button class="btn btn-red" id="m-cli-btn" onclick="saveClient()">Guardar cliente</button>
     <button class="btn btn-sm danger" id="m-cli-del" onclick="deleteClient()" style="margin-top:8px;width:100%;display:none">Eliminar cliente</button>
     <button class="btn btn-out" onclick="closeModal('m-client')" style="margin-top:8px">Cancelar</button>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     FASE 2.2.C: MODAL DETALLE DE VEHICULO (Catastro)
+     ═══════════════════════════════════════════════════════════════ -->
+<div class="overlay" id="m-vehicle-detail" style="display:none">
+  <div class="modal" style="max-height:92vh;overflow-y:auto;max-width:520px">
+    <div id="m-vd-body"></div>
+    <button class="btn btn-out" onclick="closeModal('m-vehicle-detail')" style="margin-top:12px">Cerrar</button>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     FASE 2.2.C: MODAL NUEVA OT (servicio adicional para vehículo existente)
+     ═══════════════════════════════════════════════════════════════ -->
+<div class="overlay" id="m-new-ot" style="display:none">
+  <div class="modal" style="max-height:90vh;overflow-y:auto;max-width:440px">
+    <div class="modal-t">Nueva orden de trabajo</div>
+    <div class="modal-s">Servicio adicional para vehículo existente</div>
+    <input type="hidden" id="m-newot-vehid"/>
+    <input type="hidden" id="m-newot-cliid"/>
+
+    <div class="lbl">Tipo de servicio</div>
+    <select class="inp" id="m-newot-srv" onchange="onNewOTServiceChange()">
+      <option value="">Selecciona servicio...</option>
+    </select>
+
+    <div id="m-newot-sub-wrap" style="display:none">
+      <div class="lbl">Especificación</div>
+      <select class="inp" id="m-newot-sub"><option value="">Selecciona...</option></select>
+    </div>
+
+    <div id="m-newot-desc-wrap" style="display:none">
+      <div class="lbl">Descripción del trabajo</div>
+      <textarea class="inp" id="m-newot-desc" rows="2" placeholder="Detalla el trabajo solicitado"></textarea>
+    </div>
+
+    <div class="lbl">Gestor comercial</div>
+    <select class="inp" id="m-newot-mgr"><option value="">Selecciona gestor...</option></select>
+
+    <div class="lbl">Notas / requerimientos del cliente <span style="color:var(--wh4);font-weight:400;text-transform:none">(opcional)</span></div>
+    <textarea class="inp" id="m-newot-notes" rows="2" placeholder="Lo que el cliente solicita o aclara"></textarea>
+
+    <div id="m-newot-err" style="display:none;color:var(--red);font-size:12px;margin:6px 0 8px;font-weight:600;padding:8px;background:var(--red4);border-radius:4px"></div>
+
+    <button class="btn btn-red" id="m-newot-btn" onclick="saveNewOT()">Crear OT</button>
+    <button class="btn btn-out" onclick="closeModal('m-new-ot')" style="margin-top:8px">Cancelar</button>
   </div>
 </div>
 
@@ -680,7 +751,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // CONFIG & DEBUG
 // ═══════════════════════════════════════════════
 const DEBUG = true;
-const APP_VERSION = 'v2.5.0-FASE2.2B';
+const APP_VERSION = 'v2.6.0-FASE2.2C';
 const SURL = 'https://jczmupcmeixpwjedfgtk.supabase.co';
 const SKEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impjem11cGNtZWl4cHdqZWRmZ3RrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY5NzMxOTMsImV4cCI6MjA5MjU0OTE5M30.DuICC_pCQGv27lZivieXRRvGz9A1GNkgmhvTvyKo25o';
 var sb = null; // initialized in init()
@@ -892,36 +963,88 @@ const VEHICLE_BRANDS = {
 };
 
 // ═══════════════════════════════════════════════════════════════
-// FASE 2.2.B: COMPROBACIONES (matchea el Google Form actual)
+// FASE 2.2.C: COMPROBACIONES REORGANIZADAS (anti-garantía falsa)
 // ═══════════════════════════════════════════════════════════════
-const VEHICLE_CHECKS_INTERIOR = [
-  {key:'tapiceria_rajada',     label:'Tapicería rajada'},
-  {key:'sombrillas_buenas',    label:'Sombrillas en buen estado'},
-  {key:'radio',                label:'Tiene radio'},
-  {key:'gomas_piso',           label:'Tiene todas sus gomas de piso'},
-  {key:'cinturones_ok',        label:'Cinturones de seguridad funcionales'},
-  {key:'dinero_interior',      label:'Contiene dinero al interior'},
-  {key:'tag',                  label:'Tiene TAG'},
-  {key:'cargador_usb',         label:'Tiene cargador USB / soporte teléfono'},
-  {key:'documentos_dia',       label:'Documentos al día al interior'},
-  {key:'kit_seguridad',        label:'Kit de seguridad completo'},
-  {key:'chaleco_reflectante',  label:'Chaleco reflectante'},
-  {key:'check_engine',         label:'Check engine encendido'},
-  {key:'plasticos_rotos',      label:'Plásticos o accesorios rotos'}
+// Estructura en 4 categorías. La intención es DOCUMENTAR el estado del
+// vehículo al momento de entrar al taller, para que el cliente no pueda
+// reclamar después que el daño lo causó el taller.
+//
+// Las categorías son:
+//   DAMAGE: daños preexistentes (lo que YA tenía)
+//   MISSING: items que el vehículo NO trae (faltantes)
+//   ALERTS: alertas de estado al ingreso (testigos, ruidos, fugas)
+//   BELONGINGS: pertenencias del cliente que QUEDAN en el vehículo
+//
+// Marcar = la condición SE CUMPLE (ej: si "rayones en pintura" está
+// marcado significa que el vehículo TIENE rayones).
+const VEHICLE_CHECK_GROUPS = [
+  {
+    title: 'Daños preexistentes',
+    note: 'Marca lo que el vehículo YA tenía al ingresar. Esta documentación nos protege ante reclamos posteriores.',
+    color: 'var(--red)',
+    items: [
+      {key:'dmg_rayones_pintura',     label:'Rayones en pintura'},
+      {key:'dmg_abolladuras',         label:'Abolladuras o choques'},
+      {key:'dmg_pintura_saltada',     label:'Pintura saltada / óxido visible'},
+      {key:'dmg_parabrisas',          label:'Parabrisas picado o trizado'},
+      {key:'dmg_vidrios',             label:'Vidrios laterales o luneta dañados'},
+      {key:'dmg_focos',               label:'Faros / focos rotos, picados u opacos'},
+      {key:'dmg_retrovisores',        label:'Espejos retrovisores rotos o sin tapa'},
+      {key:'dmg_llantas',             label:'Llantas rayadas, picadas o golpeadas'},
+      {key:'dmg_neumaticos',          label:'Neumáticos en mal estado / gastados'},
+      {key:'dmg_paragolpes',          label:'Paragolpe delantero o trasero dañado'},
+      {key:'dmg_manillas',            label:'Manillas / tapas exteriores dañadas'},
+      {key:'dmg_bajos',               label:'Bajos golpeados, óxido o fugas visibles'},
+      {key:'dmg_tapiceria',           label:'Tapicería rajada, manchada o quemada'},
+      {key:'dmg_plasticos_int',       label:'Plásticos interiores rotos o sueltos'}
+    ]
+  },
+  {
+    title: 'Faltantes',
+    note: 'Items que el vehículo NO trae al ingresar. Útil para no perder cosas durante el servicio.',
+    color: 'var(--gold)',
+    items: [
+      {key:'falt_repuesto',           label:'Llanta de repuesto / gata / manivela'},
+      {key:'falt_tapon_combustible',  label:'Tapón de combustible'},
+      {key:'falt_insignias',          label:'Insignias o emblemas de marca'},
+      {key:'falt_antena',             label:'Antena'},
+      {key:'falt_tapas_rueda',        label:'Tapas de rueda'},
+      {key:'falt_molduras',           label:'Molduras de carrocería'},
+      {key:'falt_sombrillas',         label:'Sombrillas / parasoles'},
+      {key:'falt_gomas_piso',         label:'Gomas de piso completas'},
+      {key:'falt_documentos',         label:'Documentos al día (circulación / técnica / seguro)'},
+      {key:'falt_kit_seguridad',      label:'Kit de seguridad (chaleco / triángulos / botiquín)'}
+    ]
+  },
+  {
+    title: 'Alertas de estado al ingreso',
+    note: 'Síntomas que el técnico debe revisar — quedan documentados para evitar discusiones.',
+    color: 'var(--blue)',
+    items: [
+      {key:'al_check_engine',         label:'Check engine encendido'},
+      {key:'al_otros_testigos',       label:'Otros testigos del tablero encendidos (ABS, airbag, batería, aceite, etc.)'},
+      {key:'al_ruidos',               label:'Ruidos extraños al encender o moverse'},
+      {key:'al_olores',               label:'Olores anormales (combustible, frenos quemados, plástico)'},
+      {key:'al_goteos',               label:'Goteos visibles bajo el vehículo'},
+      {key:'al_clima',                label:'A/C no enfría / calefacción no calienta'},
+      {key:'al_cinturones',           label:'Cinturones de seguridad no funcionan'}
+    ]
+  },
+  {
+    title: 'Pertenencias del cliente en el vehículo',
+    note: 'Lo que queda dentro del vehículo. Si hay objetos de valor, descríbelos en el campo de detalle.',
+    color: 'var(--green)',
+    items: [
+      {key:'per_tag',                 label:'TAG'},
+      {key:'per_audio',               label:'Sistema de sonido aftermarket / pantalla'},
+      {key:'per_gps_dashcam',         label:'GPS / dashcam / accesorios extra'},
+      {key:'per_cargador_usb',        label:'Cargador USB / soporte teléfono'},
+      {key:'per_otros_valor',         label:'Otros objetos de valor (describir abajo)'}
+    ]
+  }
 ];
-const VEHICLE_CHECKS_EXTERIOR = [
-  {key:'retrovisores_ok',      label:'Retrovisores en buen estado'},
-  {key:'llantas_ok',           label:'Llantas en buen estado'},
-  {key:'abolladuras',          label:'Abolladuras, rayas o choques'},
-  {key:'rayas_pintura',        label:'Rayas en su pintura'},
-  {key:'parabrisas_dano',      label:'Parabrisas tiene daños'},
-  {key:'insignias_ok',         label:'Tiene todas sus insignias de marca'},
-  {key:'neumaticos_ok',        label:'Neumáticos en buen estado'},
-  {key:'molduras_falta',       label:'Faltan molduras u otros de carrocería'},
-  {key:'antena_ok',            label:'Antena correspondiente'},
-  {key:'manillas_ok',          label:'Manillas en buen estado (incl. portalón)'},
-  {key:'tuercas_rueda',        label:'Tiene todas sus tuercas de rueda'}
-];
+
+// 5 vistas de fotos del vehiculo
 
 // 5 vistas de fotos del vehiculo
 const VEHICLE_PHOTOS = [
@@ -930,6 +1053,41 @@ const VEHICLE_PHOTOS = [
   {key:'trasera',         label:'Parte trasera'},
   {key:'costado_copiloto',label:'Costado copiloto'},
   {key:'tablero',         label:'Tablero (motor encendido)'}
+];
+
+// ═══════════════════════════════════════════════════════════════
+// FASE 2.2.C: CATALOGO DE SERVICIOS DE INGRESO
+// ═══════════════════════════════════════════════════════════════
+// Lista de tipos de servicio que se ofrecen al recibir un vehículo.
+// Algunos tienen sub-categorías (frenos, diagnósticos, ECU, DPF) y
+// otros requieren descripción libre (reparaciones generales).
+const SERVICES_INGRESO = [
+  {key:'CAMBIO_ACEITE',         label:'Cambio de aceite + filtro de aceite'},
+  {key:'MANT_EXPRESS',          label:'Mantenimiento express'},
+  {key:'MANT_PAUTA',            label:'Mantenimiento con pauta de inspección'},
+  {key:'MANT_COMPLETO',         label:'Mantenimiento completo'},
+  {key:'MANT_CAJA',             label:'Mantenimiento de caja de cambios'},
+  {key:'PAUTA_INSPECCION',      label:'Pauta de inspección'},
+  {key:'DPF_RECUP',             label:'Recuperación de DPF', subs:[
+      'Pack Esencial','Pack Avanzado','Pack Premium',
+      'Pack Integral (DPF + Limpieza Admisión)','Sin Mantenimiento']},
+  {key:'DPF_EXTRAIDO',          label:'DPF extraído para recuperación'},
+  {key:'REGEN_FORZADA',         label:'Regeneración forzada'},
+  {key:'REPAR_GENERALES',       label:'Reparaciones generales (describir)', needsDesc: true},
+  {key:'FRENOS',                label:'Servicio de frenos', subs:[
+      'Diagnóstico','Pastillas delanteras + rectificado',
+      'Pastillas + discos delanteros',
+      'Pastillas o balatas traseras + rectificado',
+      'Pastillas + discos / tambor traseros',
+      'Cambio líquido de frenos','Ajuste de frenos']},
+  {key:'DIAGNOSTICO',           label:'Diagnóstico', subs:[
+      'Escáner','Pauta de inspección','Diagnóstico básico',
+      'Diagnóstico medio','Diagnóstico avanzado']},
+  {key:'REPROG_ECU',            label:'Reprogramación ECU', subs:[
+      'Stage 1','Stage 2','Eliminación de módulo']},
+  {key:'GARANTIA',              label:'Garantía de servicio', needsDesc: true},
+  {key:'LICITACION',            label:'Licitación pública'},
+  {key:'CONVENIO',              label:'Convenio empresas'}
 ];
 
 // ═══════════════════════════════════════════════════════════════
@@ -1969,6 +2127,7 @@ function bossTab(t) {
   else if (t === 'b-cfg') renderBossCfg(body);
   else if (t === 'b-clientes') renderBossClientes(body, 'registro');
   else if (t === 'b-ingreso')  renderBossClientes(body, 'ingreso');
+  else if (t === 'b-catastro') renderBossCatastro(body);
 }
 
 // Helper centralizado: refresca la visibilidad de las pestañas de jefe segun el usuario actual.
@@ -1977,6 +2136,8 @@ function refreshBossTabsVisibility() {
   if (!CU) return;
   var elIngreso = document.getElementById('tab-ingreso');
   if (elIngreso) elIngreso.style.display = hasPerm(CU, 'can_ingresar_clientes') ? '' : 'none';
+  var elCatastro = document.getElementById('tab-catastro');
+  if (elCatastro) elCatastro.style.display = hasPerm(CU, 'can_ingresar_clientes') ? '' : 'none';
   var elClientes = document.getElementById('tab-clientes');
   if (elClientes) elClientes.style.display = hasPerm(CU, 'can_ingresar_clientes') ? '' : 'none';
   var elUsers = document.getElementById('tab-users');
@@ -4626,9 +4787,11 @@ async function openUserModal(uid) {
   openModal('m-create-user');
 }
 
-// FASE 2.2.B: hook llamado desde openClientModal para preparar el bloque ingreso
+// FASE 2.2.B/C: hook llamado desde openClientModal para preparar el bloque ingreso
 function setupIngresoBlock() {
   buildBrandsDropdown();
+  buildServicesDropdown();
+  buildManagersDropdown();
   buildCheckboxes();
   buildPhotosGrid();
   resetIngresoBlock();
@@ -5067,9 +5230,10 @@ async function saveClient() {
     if (email && email.indexOf('@') === -1) { err.textContent = 'Correo inválido'; err.style.display='block'; return; }
   }
 
-  // ─── Validación vehículo (solo en modo ingreso) ───
+  // ─── Validación vehículo + servicio (solo en modo ingreso) ───
   var vehBrand = '', vehModel = '', vehPlate = '', vehKm = null, vehComments = '';
   var vehChecks = {};
+  var srvKey = '', srvSub = '', srvDesc = '', mgrId = null, mgrName = '';
   if (isIngreso) {
     vehBrand = document.getElementById('m-veh-brand').value;
     vehModel = document.getElementById('m-veh-model').value.trim().toUpperCase();
@@ -5081,15 +5245,37 @@ async function saveClient() {
     if (!vehModel) { err.textContent = 'Indica el modelo del vehículo'; err.style.display='block'; return; }
     var pv = validatePlate(vehPlate);
     if (!pv.valid) { err.textContent = 'Patente inválida: ' + pv.error; err.style.display='block'; return; }
-    vehPlate = pv.clean; // sin separadores para BD
+    vehPlate = pv.clean;
     if (vehKm == null || isNaN(vehKm) || vehKm < 0) { err.textContent = 'Indica el kilometraje de entrada'; err.style.display='block'; return; }
 
-    // Recolectar checks marcados
-    document.querySelectorAll('#m-veh-checks-int input[type=checkbox], #m-veh-checks-ext input[type=checkbox]').forEach(function(cb) {
+    // SERVICIO + GESTOR (FASE 2.2.C)
+    srvKey  = document.getElementById('m-srv-type').value;
+    srvSub  = document.getElementById('m-srv-sub').value || '';
+    srvDesc = document.getElementById('m-srv-desc').value.trim();
+    var mgrSel = document.getElementById('m-srv-manager');
+    mgrId   = mgrSel.value || null;
+    mgrName = mgrId ? (mgrSel.options[mgrSel.selectedIndex].dataset.name || mgrSel.options[mgrSel.selectedIndex].text) : '';
+
+    if (!srvKey) { err.textContent = 'Selecciona el tipo de servicio que viene a hacer el cliente'; err.style.display='block'; return; }
+    var srvDef = SERVICES_INGRESO.find(function(x){ return x.key === srvKey; });
+    if (srvDef && srvDef.subs && srvDef.subs.length && !srvSub) {
+      err.textContent = 'Falta la especificación del servicio'; err.style.display='block'; return;
+    }
+    if (srvDef && srvDef.needsDesc && !srvDesc) {
+      err.textContent = 'Indica una breve descripción del trabajo solicitado'; err.style.display='block'; return;
+    }
+    if (!mgrId) { err.textContent = 'Asigna un gestor comercial responsable'; err.style.display='block'; return; }
+
+    // COMPROBACIONES (todos los checkboxes del bloque, agrupados por categoría)
+    document.querySelectorAll('#m-veh-checks input[type=checkbox]').forEach(function(cb) {
       vehChecks[cb.dataset.checkKey] = cb.checked;
     });
+    // Si marcó "Otros objetos de valor", capturar la descripción
+    var belDescEl = document.getElementById('m-veh-belongings-desc');
+    if (belDescEl && vehChecks['per_otros_valor']) {
+      vehChecks['per_otros_valor_desc'] = belDescEl.value.trim();
+    }
 
-    // Validar al menos foto frente y patente (foto de tablero se sugiere pero no se bloquea)
     if (!_ingPhotosBlobs.frente) { err.textContent = 'Falta la foto del frente del vehículo'; err.style.display='block'; return; }
   }
 
@@ -5159,6 +5345,7 @@ async function saveClient() {
     }
 
     btn.innerHTML = '<span class="spin"></span> Guardando vehículo...';
+    var vehicleId = null;
     try {
       var vehPayload = {
         client_id: clientId,
@@ -5171,13 +5358,43 @@ async function saveClient() {
         comments: vehComments || null,
         created_by: CU ? CU.id : null
       };
-      var rv = await sb.from('client_vehicles').insert(vehPayload);
+      var rv = await sb.from('client_vehicles').insert(vehPayload).select('id').single();
       if (rv.error) throw new Error(rv.error.message);
+      vehicleId = rv.data && rv.data.id;
     } catch(e) {
       btn.innerHTML = 'Registrar ingreso'; btn.disabled = false;
       err.textContent = 'Error al guardar vehículo: ' + e.message;
       err.style.display = 'block';
       return;
+    }
+
+    // FASE 2.2.C: Crear work_order asociada al vehículo recién ingresado
+    btn.innerHTML = '<span class="spin"></span> Generando orden de trabajo...';
+    try {
+      var woPayload = {
+        client_id: clientId,
+        vehicle_id: vehicleId,
+        service_classification: srvKey,
+        service_subtype: srvSub || null,
+        service_description: srvDesc || null,
+        commercial_manager_id: mgrId,
+        commercial_manager_name: mgrName || null,
+        client_notes: vehComments || null,
+        status: 'open',
+        created_by: CU ? CU.id : null,
+        updated_by: CU ? CU.id : null
+      };
+      var rwo = await sb.from('work_orders').insert(woPayload);
+      if (rwo.error) {
+        // No hacemos rollback automático del vehículo (no transacciones aquí),
+        // pero advertimos: el ingreso quedó pero sin OT. El admin puede crearla
+        // luego desde el catastro.
+        logR('SAVE_WO_ERR', {msg: rwo.error.message}, 'err');
+        showGlobalError('Vehículo guardado pero la OT falló: ' + rwo.error.message + '. Créala manualmente desde Catastro.', 7000);
+      }
+    } catch(e) {
+      logR('SAVE_WO_THREW', {msg: e.message}, 'err');
+      showGlobalError('Vehículo guardado pero la OT falló: ' + e.message, 6000);
     }
   }
 
@@ -5226,21 +5443,102 @@ function onVehBrandChange() {
   });
 }
 
-// Renderizar checkboxes de comprobaciones interior y exterior
+// FASE 2.2.C: Renderizar 4 grupos de comprobaciones (anti-garantia falsa)
 function buildCheckboxes() {
-  var c1 = document.getElementById('m-veh-checks-int');
-  var c2 = document.getElementById('m-veh-checks-ext');
-  if (!c1 || !c2) return;
-  if (c1.children.length > 0) return; // ya construido
-  function render(list, container) {
-    container.innerHTML = list.map(function(c) {
-      return '<label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;user-select:none;padding:5px 6px;border:1px solid #eee;border-radius:3px;font-size:12px;line-height:1.3">'
-        + '<input type="checkbox" data-check-key="' + c.key + '" style="margin-top:2px;flex-shrink:0"/>'
+  var container = document.getElementById('m-veh-checks');
+  if (!container) return;
+  if (container.children.length > 0) return; // ya construido
+  container.innerHTML = VEHICLE_CHECK_GROUPS.map(function(g) {
+    var items = g.items.map(function(c) {
+      return '<label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;user-select:none;padding:5px 6px;border:1px solid #eee;border-radius:3px;font-size:12px;line-height:1.3;background:#fff">'
+        + '<input type="checkbox" data-check-key="' + c.key + '" onchange="onCheckChanged(this)" style="margin-top:2px;flex-shrink:0"/>'
         + '<span>' + c.label + '</span></label>';
     }).join('');
+    return '<div style="margin-bottom:14px">'
+      + '<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">'
+      +   '<div style="width:4px;height:14px;background:' + g.color + ';border-radius:2px"></div>'
+      +   '<div style="font-size:12px;font-weight:700;color:#111;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.05em">' + g.title + '</div>'
+      + '</div>'
+      + '<div style="font-size:10px;color:var(--wh4);margin-bottom:6px;line-height:1.3">' + g.note + '</div>'
+      + '<div style="display:flex;flex-direction:column;gap:4px">' + items + '</div>'
+      + '</div>';
+  }).join('');
+}
+
+// Mostrar/ocultar el textarea de detalle de pertenencias cuando se marca "Otros objetos de valor"
+function onCheckChanged(cb) {
+  if (cb.dataset.checkKey === 'per_otros_valor') {
+    var wrap = document.getElementById('m-veh-belongings-wrap');
+    if (wrap) wrap.style.display = cb.checked ? '' : 'none';
   }
-  render(VEHICLE_CHECKS_INTERIOR, c1);
-  render(VEHICLE_CHECKS_EXTERIOR, c2);
+}
+
+// Llenar el dropdown de servicios (una vez)
+function buildServicesDropdown() {
+  var sel = document.getElementById('m-srv-type');
+  if (!sel || sel.options.length > 1) return;
+  SERVICES_INGRESO.forEach(function(s) {
+    var o = document.createElement('option');
+    o.value = s.key; o.textContent = s.label;
+    sel.appendChild(o);
+  });
+}
+
+// Cuando cambia el servicio: mostrar sub-categoria o descripcion segun corresponda
+function onServiceChange() {
+  var key = document.getElementById('m-srv-type').value;
+  var subWrap = document.getElementById('m-srv-sub-wrap');
+  var descWrap = document.getElementById('m-srv-desc-wrap');
+  var subSel = document.getElementById('m-srv-sub');
+  if (!key) {
+    subWrap.style.display = 'none';
+    descWrap.style.display = 'none';
+    return;
+  }
+  var s = SERVICES_INGRESO.find(function(x){ return x.key === key; });
+  if (!s) return;
+  // Sub-categoria
+  if (s.subs && s.subs.length) {
+    subSel.innerHTML = '<option value="">Selecciona...</option>';
+    s.subs.forEach(function(sub) {
+      var o = document.createElement('option');
+      o.value = sub; o.textContent = sub;
+      subSel.appendChild(o);
+    });
+    subWrap.style.display = '';
+  } else {
+    subSel.value = '';
+    subWrap.style.display = 'none';
+  }
+  // Descripcion libre
+  descWrap.style.display = s.needsDesc ? '' : 'none';
+}
+
+// Llenar el dropdown de gestores comerciales
+async function buildManagersDropdown() {
+  var sel = document.getElementById('m-srv-manager');
+  if (!sel) return;
+  var hint = document.getElementById('m-srv-manager-hint');
+  sel.innerHTML = '<option value="">Selecciona gestor...</option>';
+  try {
+    var managers = await getUsersWithPerm('is_gestor_comercial');
+    if (!managers || managers.length === 0) {
+      if (hint) {
+        hint.textContent = 'Aún no hay usuarios marcados como gestor comercial. Pídele al admin que asigne el permiso "Gestor comercial" en Usuarios.';
+        hint.style.color = 'var(--gold)';
+      }
+      return;
+    }
+    if (hint) hint.textContent = '';
+    managers.sort(function(a,b){ return (a.name||'').localeCompare(b.name||''); }).forEach(function(u) {
+      var o = document.createElement('option');
+      o.value = u.id; o.dataset.name = u.name; o.textContent = u.name;
+      sel.appendChild(o);
+    });
+  } catch(e) {
+    logR('LOAD_MANAGERS_ERR', {msg: e.message}, 'err');
+    if (hint) { hint.textContent = 'Error cargando gestores: ' + e.message; hint.style.color = 'var(--red)'; }
+  }
 }
 
 // Renderizar las 5 cajas de upload de fotos
@@ -5302,8 +5600,18 @@ function resetIngresoBlock() {
   document.getElementById('m-veh-plate-hint').textContent = '';
   document.getElementById('m-veh-km').value = '';
   document.getElementById('m-veh-comments').value = '';
+  // Reset servicio + gestor + descripcion
+  var srvType = document.getElementById('m-srv-type'); if (srvType) srvType.value = '';
+  var srvSub  = document.getElementById('m-srv-sub');  if (srvSub) srvSub.value = '';
+  var srvDesc = document.getElementById('m-srv-desc'); if (srvDesc) srvDesc.value = '';
+  var srvMgr  = document.getElementById('m-srv-manager'); if (srvMgr) srvMgr.value = '';
+  var subWrap = document.getElementById('m-srv-sub-wrap'); if (subWrap) subWrap.style.display = 'none';
+  var descWrap = document.getElementById('m-srv-desc-wrap'); if (descWrap) descWrap.style.display = 'none';
+  // Reset belongings detail
+  var belWrap = document.getElementById('m-veh-belongings-wrap'); if (belWrap) belWrap.style.display = 'none';
+  var belDesc = document.getElementById('m-veh-belongings-desc'); if (belDesc) belDesc.value = '';
   // Reset checkboxes
-  document.querySelectorAll('#m-veh-checks-int input[type=checkbox], #m-veh-checks-ext input[type=checkbox]').forEach(function(cb){ cb.checked = false; });
+  document.querySelectorAll('#m-veh-checks input[type=checkbox]').forEach(function(cb){ cb.checked = false; });
   // Reset photo previews
   VEHICLE_PHOTOS.forEach(function(p) {
     var prev = document.getElementById('m-veh-photo-prev-' + p.key);
@@ -5404,6 +5712,318 @@ function plateLiveCheck(el) {
 document.addEventListener('blur', function(ev){
   if (ev.target && ev.target.id === 'm-veh-plate') plateLiveCheck(ev.target);
 }, true);
+
+// ═══════════════════════════════════════════════════════════════
+// FASE 2.2.C: PESTAÑA CATASTRO DE VEHICULOS
+// ═══════════════════════════════════════════════════════════════
+// Lista TODOS los vehículos registrados (no solo del día como Ingreso Taller).
+// Permite jefatura/admin acceder a la base histórica completa, ver fotos,
+// ver datos del cliente, ver órdenes de trabajo asociadas y crear nuevas OT.
+var _catVehiclesCache = []; // [{vehicle, client}]
+var _catSearch = '';
+
+async function renderBossCatastro(body) {
+  if (!hasPerm(CU, 'can_ingresar_clientes')) {
+    body.innerHTML = '<div class="card"><div style="text-align:center;color:var(--wh3);padding:18px">No tienes permiso para acceder al catastro.</div></div>';
+    return;
+  }
+  body.innerHTML = '<div class="card-accent">'
+    + '<div style="font-size:13px;font-weight:700;color:#111;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">Catastro de Vehículos</div>'
+    + '<div style="font-size:11px;color:var(--wh3);margin-bottom:10px;line-height:1.4">Base completa de vehículos que han ingresado al taller. Toca cualquier vehículo para ver sus fotos, comprobaciones, órdenes de trabajo asociadas y crear nuevas órdenes.</div>'
+    + '<div style="display:flex;gap:8px;margin-bottom:10px;align-items:center;flex-wrap:wrap">'
+    + '<input type="text" class="inp" id="cat-search" placeholder="Buscar por patente, marca, modelo, cliente o RUT..." style="flex:1;margin-bottom:0;min-width:180px" autocomplete="off" data-no-upper oninput="onCatastroSearch(this.value)"/>'
+    + '</div>'
+    + '<div id="cat-meta" style="font-size:11px;color:var(--wh3);margin-bottom:8px;font-family:var(--mono)">Cargando catastro...</div>'
+    + '<div id="cat-list"></div>'
+    + '</div>';
+  document.getElementById('cat-search').value = _catSearch;
+  await loadCatastro();
+}
+
+async function loadCatastro() {
+  if (!sb) return;
+  var meta = document.getElementById('cat-meta');
+  if (meta) meta.textContent = 'Cargando...';
+  try {
+    // 1) Vehículos
+    var rv = await sb.from('client_vehicles').select('*').order('created_at', {ascending: false}).limit(1000);
+    if (rv.error) {
+      if (meta) meta.textContent = 'Error: ' + rv.error.message;
+      return;
+    }
+    // 2) Clientes (los necesitamos para mostrar nombre/RUT). Usamos cache si está cargado.
+    if (_clientsCache.length === 0) {
+      var rc = await sb.from('clients').select('*').limit(2000);
+      if (rc.error) { if (meta) meta.textContent = 'Error: ' + rc.error.message; return; }
+      _clientsCache = rc.data || [];
+    }
+    var byId = {};
+    _clientsCache.forEach(function(c){ byId[c.id] = c; });
+    _catVehiclesCache = (rv.data || []).map(function(v){
+      return {vehicle: v, client: byId[v.client_id] || null};
+    });
+    renderCatastroList();
+  } catch(e) {
+    if (meta) meta.textContent = 'Error de conexion: ' + e.message;
+  }
+}
+
+function onCatastroSearch(v) {
+  _catSearch = (v || '').trim().toUpperCase();
+  renderCatastroList();
+}
+
+function renderCatastroList() {
+  var list = document.getElementById('cat-list');
+  var meta = document.getElementById('cat-meta');
+  if (!list) return;
+  var q = _catSearch;
+  var filtered = _catVehiclesCache;
+  if (q) {
+    filtered = _catVehiclesCache.filter(function(row) {
+      var v = row.vehicle, c = row.client || {};
+      return (v.plate || '').toUpperCase().indexOf(q) !== -1
+          || (v.brand || '').toUpperCase().indexOf(q) !== -1
+          || (v.model || '').toUpperCase().indexOf(q) !== -1
+          || (c.name  || '').toUpperCase().indexOf(q) !== -1
+          || (c.rut   || '').toUpperCase().indexOf(q) !== -1
+          || (c.phone || '').indexOf(q) !== -1;
+    });
+  }
+  if (meta) meta.textContent = filtered.length + ' de ' + _catVehiclesCache.length + ' vehículo(s)';
+  if (filtered.length === 0) {
+    list.innerHTML = '<div class="empty" style="padding:24px;text-align:center;color:var(--wh4);line-height:1.5">'
+      + (_catVehiclesCache.length === 0
+         ? 'Aún no hay vehículos registrados. Cuando hagas un ingreso completo desde Ingreso Taller (cliente + vehículo), aparecerá aquí.'
+         : 'No se encontraron vehículos con ese filtro.')
+      + '</div>';
+    return;
+  }
+  list.innerHTML = filtered.map(function(row) {
+    var v = row.vehicle, c = row.client;
+    var pv = validatePlate(v.plate || '');
+    var plateFmt = pv.valid ? pv.formatted : (v.plate || 'sin patente');
+    var thumb = (v.photos && v.photos.frente) ? v.photos.frente : null;
+    var clientLine = c ? escapeHtml(c.name) + ' · ' + escapeHtml(c.rut || c.phone || '') : '<span style="color:var(--red)">cliente eliminado</span>';
+    var d = v.created_at ? new Date(v.created_at).toLocaleDateString('es-CL') : '';
+    return '<div class="row" style="align-items:center;gap:10px;padding:10px 4px;cursor:pointer" onclick="openVehicleDetail(\'' + v.id + '\')">'
+      + (thumb
+         ? '<img src="' + thumb + '" style="width:44px;height:44px;border-radius:4px;object-fit:cover;flex-shrink:0;border:1px solid var(--border)" alt=""/>'
+         : '<div style="width:44px;height:44px;border-radius:4px;background:var(--bg3);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:20px">🚗</div>')
+      + '<div style="flex:1;min-width:0">'
+      +   '<div style="font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.02em">' + escapeHtml(v.brand) + ' ' + escapeHtml(v.model) + ' <span style="color:var(--red);font-family:var(--mono);font-weight:700">' + plateFmt + '</span></div>'
+      +   '<div style="font-size:11px;color:var(--wh3);margin-top:2px">' + clientLine + (d ? ' · ' + d : '') + '</div>'
+      + '</div>'
+      + '<button class="btn-sm" onclick="event.stopPropagation();openVehicleDetail(\'' + v.id + '\')">Ver</button>'
+      + '</div>';
+  }).join('');
+}
+
+// ─── Modal detalle vehiculo ───
+async function openVehicleDetail(vehicleId) {
+  var row = _catVehiclesCache.find(function(r){ return r.vehicle.id === vehicleId; });
+  if (!row) { showGlobalError('Vehículo no encontrado en cache, recarga la pestaña Catastro', 4000); return; }
+  var v = row.vehicle, c = row.client;
+  // Cargar OTs asociadas
+  var ots = [];
+  try {
+    var ro = await sb.from('work_orders').select('*').eq('vehicle_id', vehicleId).order('created_at', {ascending: false});
+    if (!ro.error) ots = ro.data || [];
+  } catch(_){}
+
+  var pv = validatePlate(v.plate || '');
+  var plateFmt = pv.valid ? pv.formatted : v.plate;
+  var content = document.getElementById('m-vd-body');
+  if (!content) return;
+
+  // Header
+  var header = '<div style="margin-bottom:12px">'
+    + '<div style="font-size:18px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase">' + escapeHtml(v.brand) + ' ' + escapeHtml(v.model) + ' <span style="color:var(--red);font-family:var(--mono)">' + plateFmt + '</span></div>'
+    + (c ? '<div style="font-size:13px;color:var(--wh2);margin-top:4px">' + escapeHtml(c.name) + ' · ' + escapeHtml(c.rut || '') + ' · ' + escapeHtml(c.phone || '') + '</div>' : '')
+    + '<div style="font-size:11px;color:var(--wh4);margin-top:2px;font-family:var(--mono)">Ingresado: ' + (v.created_at ? new Date(v.created_at).toLocaleString('es-CL') : '?') + ' · KM ' + (v.km_entry || '?') + '</div>'
+    + '</div>';
+
+  // Galería de fotos
+  var photosHtml = '<div class="lbl">Fotografías de ingreso</div>';
+  if (v.photos && Object.keys(v.photos).length > 0) {
+    photosHtml += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:14px">'
+      + VEHICLE_PHOTOS.filter(function(p){ return v.photos[p.key]; }).map(function(p) {
+        return '<a href="' + v.photos[p.key] + '" target="_blank" rel="noopener" style="display:block;text-decoration:none">'
+          + '<img src="' + v.photos[p.key] + '" style="width:100%;aspect-ratio:1.3/1;object-fit:cover;border-radius:4px;border:1px solid var(--border)" alt=""/>'
+          + '<div style="font-size:10px;color:var(--wh3);text-align:center;margin-top:2px;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase">' + p.label + '</div>'
+          + '</a>';
+      }).join('')
+      + '</div>';
+  } else {
+    photosHtml += '<div style="font-size:11px;color:var(--wh4);font-style:italic;margin-bottom:14px">Sin fotos cargadas</div>';
+  }
+
+  // Comprobaciones marcadas (agrupadas)
+  var checksHtml = '<div class="lbl">Comprobaciones registradas al ingreso</div>';
+  var ck = v.comprobaciones || {};
+  var anyMarked = false;
+  VEHICLE_CHECK_GROUPS.forEach(function(g) {
+    var marked = g.items.filter(function(it){ return ck[it.key] === true; });
+    if (marked.length === 0) return;
+    anyMarked = true;
+    checksHtml += '<div style="margin-bottom:10px">'
+      + '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">'
+      +   '<div style="width:3px;height:12px;background:' + g.color + ';border-radius:2px"></div>'
+      +   '<div style="font-size:11px;font-weight:700;color:#111;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.04em">' + g.title + '</div>'
+      + '</div>'
+      + '<ul style="margin:0;padding-left:18px;font-size:12px;color:var(--wh2);line-height:1.5">'
+      + marked.map(function(it){ return '<li>' + escapeHtml(it.label) + '</li>'; }).join('')
+      + '</ul>'
+      + '</div>';
+  });
+  if (ck['per_otros_valor_desc']) {
+    anyMarked = true;
+    checksHtml += '<div style="font-size:11px;color:var(--wh3);background:#fff8e0;padding:6px 8px;border-left:3px solid var(--gold);border-radius:3px;margin-top:6px"><b>Objetos de valor declarados:</b> ' + escapeHtml(ck['per_otros_valor_desc']) + '</div>';
+  }
+  if (!anyMarked) {
+    checksHtml += '<div style="font-size:11px;color:var(--wh4);font-style:italic;margin-bottom:10px">Ningún ítem marcado al ingreso (vehículo entró sin observaciones).</div>';
+  }
+
+  // Comentarios
+  var commentsHtml = '';
+  if (v.comments) {
+    commentsHtml = '<div class="lbl">Comentarios / requerimientos</div>'
+      + '<div style="font-size:12px;color:var(--wh2);background:#f8f8f8;padding:8px 10px;border-radius:3px;margin-bottom:14px;line-height:1.4">' + escapeHtml(v.comments) + '</div>';
+  }
+
+  // Lista de OTs
+  var otsHtml = '<div class="lbl">Órdenes de trabajo</div>';
+  if (ots.length === 0) {
+    otsHtml += '<div style="font-size:11px;color:var(--wh4);font-style:italic;margin-bottom:8px">No hay órdenes de trabajo registradas para este vehículo.</div>';
+  } else {
+    otsHtml += '<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px">'
+      + ots.map(function(o) {
+        var srvDef = SERVICES_INGRESO.find(function(x){ return x.key === o.service_classification; });
+        var srvLabel = srvDef ? srvDef.label : (o.service_classification || '?');
+        var statusColor = o.status === 'closed' ? 'var(--green)' :
+                          o.status === 'cancelled' ? 'var(--wh4)' :
+                          o.status === 'in_progress' ? 'var(--gold)' : 'var(--blue)';
+        return '<div style="border:1px solid var(--border);border-left:3px solid ' + statusColor + ';border-radius:3px;padding:8px 10px;background:#fff">'
+          + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">'
+          +   '<div style="font-size:13px;font-weight:700;font-family:\'Rajdhani\',sans-serif">' + escapeHtml(srvLabel) + (o.service_subtype ? ' · ' + escapeHtml(o.service_subtype) : '') + '</div>'
+          +   '<div style="font-size:10px;color:' + statusColor + ';font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.06em">OT-' + (o.ot_number || '?') + ' · ' + (o.status || '?') + '</div>'
+          + '</div>'
+          + (o.service_description ? '<div style="font-size:11px;color:var(--wh2);margin-top:4px">' + escapeHtml(o.service_description) + '</div>' : '')
+          + '<div style="font-size:10px;color:var(--wh4);margin-top:4px;font-family:var(--mono)">'
+          +   (o.commercial_manager_name ? 'Gestor: ' + escapeHtml(o.commercial_manager_name) + ' · ' : '')
+          +   (o.created_at ? 'Creada: ' + new Date(o.created_at).toLocaleDateString('es-CL') : '')
+          + '</div>'
+          + '</div>';
+      }).join('')
+      + '</div>';
+  }
+
+  // Botón Nueva OT
+  var newOtHtml = '<button class="btn btn-red" onclick="openNewOTForVehicle(\'' + v.id + '\', \'' + (v.client_id || '') + '\')">+ Nueva orden de trabajo</button>';
+
+  content.innerHTML = header + photosHtml + checksHtml + commentsHtml + otsHtml + newOtHtml;
+  openModal('m-vehicle-detail');
+}
+
+// ─── Crear nueva OT desde el catastro (vehículo ya existe) ───
+async function openNewOTForVehicle(vehicleId, clientId) {
+  if (!hasPerm(CU, 'can_ingresar_clientes')) { showGlobalError('Sin permiso', 3000); return; }
+  // Reusamos el modal pequeño m-new-ot
+  document.getElementById('m-newot-vehid').value = vehicleId;
+  document.getElementById('m-newot-cliid').value = clientId;
+  document.getElementById('m-newot-err').style.display = 'none';
+  // Llenar dropdowns servicio + gestor (reuso de los del modal de ingreso)
+  var srvSel = document.getElementById('m-newot-srv');
+  if (srvSel.options.length <= 1) {
+    SERVICES_INGRESO.forEach(function(s){
+      var o = document.createElement('option');
+      o.value = s.key; o.textContent = s.label;
+      srvSel.appendChild(o);
+    });
+  }
+  srvSel.value = '';
+  var subSel = document.getElementById('m-newot-sub');
+  subSel.innerHTML = '<option value="">Selecciona...</option>';
+  document.getElementById('m-newot-sub-wrap').style.display = 'none';
+  document.getElementById('m-newot-desc-wrap').style.display = 'none';
+  document.getElementById('m-newot-desc').value = '';
+  document.getElementById('m-newot-notes').value = '';
+  // Gestores
+  var mgrSel = document.getElementById('m-newot-mgr');
+  mgrSel.innerHTML = '<option value="">Selecciona gestor...</option>';
+  try {
+    var managers = await getUsersWithPerm('is_gestor_comercial');
+    managers.sort(function(a,b){ return (a.name||'').localeCompare(b.name||''); }).forEach(function(u){
+      var o = document.createElement('option');
+      o.value = u.id; o.dataset.name = u.name; o.textContent = u.name;
+      mgrSel.appendChild(o);
+    });
+  } catch(_){}
+  closeModal('m-vehicle-detail');
+  openModal('m-new-ot');
+}
+
+function onNewOTServiceChange() {
+  var key = document.getElementById('m-newot-srv').value;
+  var subWrap = document.getElementById('m-newot-sub-wrap');
+  var descWrap = document.getElementById('m-newot-desc-wrap');
+  var subSel = document.getElementById('m-newot-sub');
+  if (!key) { subWrap.style.display='none'; descWrap.style.display='none'; return; }
+  var s = SERVICES_INGRESO.find(function(x){ return x.key === key; });
+  if (!s) return;
+  if (s.subs && s.subs.length) {
+    subSel.innerHTML = '<option value="">Selecciona...</option>';
+    s.subs.forEach(function(sub){ var o=document.createElement('option'); o.value=sub; o.textContent=sub; subSel.appendChild(o); });
+    subWrap.style.display = '';
+  } else {
+    subSel.value = ''; subWrap.style.display = 'none';
+  }
+  descWrap.style.display = s.needsDesc ? '' : 'none';
+}
+
+async function saveNewOT() {
+  var vehId = document.getElementById('m-newot-vehid').value;
+  var cliId = document.getElementById('m-newot-cliid').value;
+  var srvKey = document.getElementById('m-newot-srv').value;
+  var srvSub = document.getElementById('m-newot-sub').value || '';
+  var srvDesc = document.getElementById('m-newot-desc').value.trim();
+  var mgrSel = document.getElementById('m-newot-mgr');
+  var mgrId = mgrSel.value || null;
+  var mgrName = mgrId ? (mgrSel.options[mgrSel.selectedIndex].dataset.name || mgrSel.options[mgrSel.selectedIndex].text) : '';
+  var notes = document.getElementById('m-newot-notes').value.trim();
+  var err = document.getElementById('m-newot-err');
+  err.style.display = 'none';
+
+  if (!srvKey) { err.textContent = 'Selecciona el servicio'; err.style.display='block'; return; }
+  var s = SERVICES_INGRESO.find(function(x){ return x.key === srvKey; });
+  if (s && s.subs && s.subs.length && !srvSub) { err.textContent = 'Falta especificación'; err.style.display='block'; return; }
+  if (s && s.needsDesc && !srvDesc) { err.textContent = 'Indica la descripción del trabajo'; err.style.display='block'; return; }
+  if (!mgrId) { err.textContent = 'Asigna un gestor comercial'; err.style.display='block'; return; }
+
+  var btn = document.getElementById('m-newot-btn');
+  btn.innerHTML = '<span class="spin"></span> Creando...'; btn.disabled = true;
+
+  var payload = {
+    client_id: cliId, vehicle_id: vehId,
+    service_classification: srvKey, service_subtype: srvSub || null,
+    service_description: srvDesc || null,
+    commercial_manager_id: mgrId, commercial_manager_name: mgrName,
+    client_notes: notes || null,
+    status: 'open',
+    created_by: CU ? CU.id : null, updated_by: CU ? CU.id : null
+  };
+  try {
+    var r = await sb.from('work_orders').insert(payload);
+    if (r.error) throw new Error(r.error.message);
+  } catch(e) {
+    btn.innerHTML = 'Crear OT'; btn.disabled = false;
+    err.textContent = 'Error: ' + e.message; err.style.display='block';
+    return;
+  }
+  btn.innerHTML = 'Crear OT'; btn.disabled = false;
+  closeModal('m-new-ot');
+  showGlobalError('Orden de trabajo creada', 2500);
+}
 
 async function deleteClient() {
   if (!_editClientId) return;
