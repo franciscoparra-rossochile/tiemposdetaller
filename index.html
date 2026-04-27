@@ -649,7 +649,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     <input class="inp" id="m-ev-plate" placeholder="ABCD12" oninput="this.value=this.value.toUpperCase().replace(/[^A-Z0-9]/g,'')"/>
     <div class="lbl">Fecha y hora</div>
     <input class="inp" type="datetime-local" id="m-ev-dt"/>
-    <div class="lbl">Responsable</div>
+    <div class="lbl">Técnico designado</div>
     <select class="inp" id="m-ev-tech"><option value="">Sin asignar</option></select>
     <div class="lbl">Tiempo objetivo (min)</div>
     <input class="inp" type="number" id="m-ev-goal" placeholder="Ej: 60" min="1" max="480"/>
@@ -889,6 +889,24 @@ async function getUsersWithPerm(key) {
     return res.data.filter(function(u){ return hasPerm(u, key); });
   } catch(e) {
     logR('GET_USERS_PERM_ERR', {key: key, msg: e.message}, 'warn');
+    return [];
+  }
+}
+
+// FASE 2.2.C-fix: Devuelve usuarios con permiso EXPLÍCITAMENTE asignado.
+// A diferencia de getUsersWithPerm, NO incluye admins por inheritance.
+// Útil para "lista de gestores comerciales" donde solo importan los marcados explícitamente,
+// no todos los que podrían hacerlo por su rol.
+async function getUsersWithExplicitPerm(key) {
+  if (!sb) return [];
+  try {
+    var res = await sb.from('users').select('*');
+    if (res.error || !res.data) return [];
+    return res.data.filter(function(u){
+      return u.permissions && typeof u.permissions === 'object' && u.permissions[key] === true;
+    });
+  } catch(e) {
+    logR('GET_USERS_EXP_PERM_ERR', {key: key, msg: e.message}, 'warn');
     return [];
   }
 }
@@ -5694,7 +5712,7 @@ async function buildManagersDropdown() {
   var hint = document.getElementById('m-srv-manager-hint');
   sel.innerHTML = '<option value="">Selecciona gestor...</option>';
   try {
-    var managers = await getUsersWithPerm('is_gestor_comercial');
+    var managers = await getUsersWithExplicitPerm("is_gestor_comercial");
     if (!managers || managers.length === 0) {
       if (hint) {
         hint.textContent = 'Aún no hay usuarios marcados como gestor comercial. Pídele al admin que asigne el permiso "Gestor comercial" en Usuarios.';
@@ -6207,7 +6225,7 @@ async function openNewOTForVehicle(vehicleId, clientId) {
   var mgrSel = document.getElementById('m-newot-mgr');
   mgrSel.innerHTML = '<option value="">Selecciona gestor...</option>';
   try {
-    var managers = await getUsersWithPerm('is_gestor_comercial');
+    var managers = await getUsersWithExplicitPerm("is_gestor_comercial");
     managers.sort(function(a,b){ return (a.name||'').localeCompare(b.name||''); }).forEach(function(u){
       var o = document.createElement('option');
       o.value = u.id; o.dataset.name = u.name; o.textContent = u.name;
@@ -6435,7 +6453,7 @@ async function generateOTPdf(otId) {
     y += 4;
     doc.setFontSize(8);
     doc.text('Firma cliente', marginX, y);
-    doc.text('Firma técnico responsable', pageW - marginX, y, {align:'right'});
+    doc.text('Firma técnico designado', pageW - marginX, y, {align:'right'});
 
     // Footer
     doc.setFontSize(7);
