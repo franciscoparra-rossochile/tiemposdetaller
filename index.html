@@ -862,7 +862,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // CONFIG & DEBUG
 // ═══════════════════════════════════════════════
 const DEBUG = true;
-const APP_VERSION = 'v2.6.OPS-multitec-hotfix4';
+const APP_VERSION = 'v2.6.OPS-multitec-hotfix5';
 const SURL = 'https://jczmupcmeixpwjedfgtk.supabase.co';
 const SKEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impjem11cGNtZWl4cHdqZWRmZ3RrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY5NzMxOTMsImV4cCI6MjA5MjU0OTE5M30.DuICC_pCQGv27lZivieXRRvGz9A1GNkgmhvTvyKo25o';
 var sb = null; // initialized in init()
@@ -5277,6 +5277,43 @@ async function renderBossPlan(body) {
   var in7 = new Date(); in7.setDate(in7.getDate()+7); in7.setHours(23,59,59,999);
   var r1 = await sb.from('scheduled_services').select('*').gte('scheduled_at',today.toISOString()).lte('scheduled_at',in7.toISOString()).neq('status','cancelado').order('scheduled_at');
   var events = r1.data || [];
+
+  // FASE 2.6 FIX (v4): Cruce en vivo con active_sessions y history.
+  // Para CADA evento, miramos si hay una sesion activa o finalizada hoy con la
+  // misma patente. Si la hay, sobreescribimos el status para mostrar el estado
+  // real, sin depender de que la BD scheduled_services.status este sincronizado.
+  try {
+    var liveByPlate = {};
+    (liveData || []).forEach(function(s){
+      if (s.plate && s.plate !== 'Logistica de taller') {
+        liveByPlate[s.plate] = s.status; // 'running' | 'paused' | 'checklist_pending'
+      }
+    });
+    // Tambien consultar history de hoy para marcar 'completado'
+    var todayStartISO = today.toISOString();
+    var rhist = await sb.from('history')
+      .select('plate, ended_at')
+      .gte('ended_at', todayStartISO)
+      .order('ended_at', {ascending: false});
+    var histByPlate = {};
+    if (rhist && rhist.data) {
+      rhist.data.forEach(function(h){
+        if (h.plate && !histByPlate[h.plate]) histByPlate[h.plate] = h.ended_at;
+      });
+    }
+    events.forEach(function(e){
+      if (!e.plate) return;
+      var liveSt = liveByPlate[e.plate];
+      if (liveSt === 'running' || liveSt === 'paused') {
+        e._derived_status = liveSt === 'running' ? 'en_proceso' : 'pausado';
+        e._derived_color = 'live';
+      } else if (histByPlate[e.plate]) {
+        // Si hay history hoy y NO esta en activa, asumimos completado
+        e._derived_status = 'completado';
+        e._derived_color = 'done';
+      }
+    });
+  } catch(_){}
   body.innerHTML = '';
   var addBtn = mk('button','btn btn-red'); addBtn.textContent = '+ Agendar servicio'; addBtn.style.marginBottom = '12px';
   addBtn.onclick = function() { openNewEvent(null); };
@@ -5304,7 +5341,15 @@ async function renderBossPlan(body) {
       var dm = Math.round((dt-now)/60000);
       var past=dm<0; var soon=dm>=0&&dm<=60;
       var bc=past?'var(--red)':soon?'var(--gold)':'var(--blue)';
-      var st=e.status||'pendiente';
+      // FASE 2.6: prioridad: estado derivado (live/history) > BD
+      var st = e._derived_status || e.status || 'pendiente';
+      var stClass = 'b-pend';
+      var stLabel = st;
+      if (st === 'en_proceso') { stClass = 'b-run'; stLabel = 'EN CURSO'; }
+      else if (st === 'pausado') { stClass = 'b-pau'; stLabel = 'PAUSADO'; }
+      else if (st === 'completado') { stClass = 'b-done'; stLabel = 'COMPLETADO'; }
+      else if (st === 'cancelado') { stClass = 'b-over'; stLabel = 'CANCELADO'; }
+      else if (st === 'reagendado') { stClass = 'b-pend'; stLabel = 'REAGENDADO'; }
       h += '<div onclick="openEditEvent(\'' + e.id + '\')" style="background:#fff;border:1px solid #eee;border-left:4px solid ' + bc + ';border-radius:3px;padding:9px;margin-bottom:6px;cursor:pointer">';
       h += '<div style="display:flex;justify-content:space-between;align-items:flex-start">';
       h += '<div><div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111">' + e.service + '</div>';
@@ -5313,7 +5358,7 @@ async function renderBossPlan(body) {
       h += '<span style="font-size:10px;color:#666">' + dt.toLocaleDateString('es-CL',{weekday:'short',day:'2-digit',month:'short'}) + ' ' + dt.toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'}) + '</span>';
       if (e.goal_minutes) h += '<span style="font-size:9px;color:#aaa;text-transform:uppercase">OBJ:' + e.goal_minutes + 'm</span>';
       h += '</div>' + (e.notes ? '<div style="font-size:10px;color:#999;margin-top:3px">' + e.notes + '</div>' : '') + '</div>';
-      h += '<div style="text-align:right;flex-shrink:0;margin-left:8px"><span class="badge ' + (st==='completado'?'b-done':st==='cancelado'?'b-over':'b-pend') + '">' + st + '</span>';
+      h += '<div style="text-align:right;flex-shrink:0;margin-left:8px"><span class="badge ' + stClass + '">' + stLabel + '</span>';
       if (past) h += '<div style="font-size:9px;color:var(--red);font-weight:700;margin-top:2px">ATRASADO</div>';
       else if (soon) h += '<div style="font-size:9px;color:var(--gold);font-weight:700;margin-top:2px">EN ' + dm + 'min</div>';
       h += '</div></div></div>';
