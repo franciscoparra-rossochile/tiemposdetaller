@@ -862,7 +862,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // CONFIG & DEBUG
 // ═══════════════════════════════════════════════
 const DEBUG = true;
-const APP_VERSION = 'v2.6.OPS-multitec-hotfix5';
+const APP_VERSION = 'v2.6.OPS-multitec-hotfix6';
 const SURL = 'https://jczmupcmeixpwjedfgtk.supabase.co';
 const SKEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impjem11cGNtZWl4cHdqZWRmZ3RrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY5NzMxOTMsImV4cCI6MjA5MjU0OTE5M30.DuICC_pCQGv27lZivieXRRvGz9A1GNkgmhvTvyKo25o';
 var sb = null; // initialized in init()
@@ -5275,6 +5275,14 @@ async function renderBossPlan(body) {
   body.innerHTML = '<div class="empty"><span class="spin"></span>Cargando...</div>';
   var today = new Date(); today.setHours(0,0,0,0);
   var in7 = new Date(); in7.setDate(in7.getDate()+7); in7.setHours(23,59,59,999);
+
+  // FASE 2.6 FIX (v5): forzar fetchLive si liveData esta vacio o stale.
+  // Si el admin entra directo a Planificacion sin pasar por En Curso,
+  // liveData puede estar vacio y el cruce no muestra el estado real.
+  try {
+    if (!liveData || liveData.length === 0) await fetchLive();
+  } catch(_){}
+
   var r1 = await sb.from('scheduled_services').select('*').gte('scheduled_at',today.toISOString()).lte('scheduled_at',in7.toISOString()).neq('status','cancelado').order('scheduled_at');
   var events = r1.data || [];
 
@@ -5286,7 +5294,9 @@ async function renderBossPlan(body) {
     var liveByPlate = {};
     (liveData || []).forEach(function(s){
       if (s.plate && s.plate !== 'Logistica de taller') {
-        liveByPlate[s.plate] = s.status; // 'running' | 'paused' | 'checklist_pending'
+        // Normalizar: comparar sin guiones ni espacios
+        var p = (s.plate || '').toUpperCase().replace(/[^A-Z0-9]/g,'');
+        liveByPlate[p] = s.status;
       }
     });
     // Tambien consultar history de hoy para marcar 'completado'
@@ -5298,22 +5308,25 @@ async function renderBossPlan(body) {
     var histByPlate = {};
     if (rhist && rhist.data) {
       rhist.data.forEach(function(h){
-        if (h.plate && !histByPlate[h.plate]) histByPlate[h.plate] = h.ended_at;
+        if (h.plate) {
+          var p = (h.plate || '').toUpperCase().replace(/[^A-Z0-9]/g,'');
+          if (!histByPlate[p]) histByPlate[p] = h.ended_at;
+        }
       });
     }
     events.forEach(function(e){
       if (!e.plate) return;
-      var liveSt = liveByPlate[e.plate];
+      // Normalizar la patente del evento para matchear bien
+      var ep = (e.plate || '').toUpperCase().replace(/[^A-Z0-9]/g,'');
+      var liveSt = liveByPlate[ep];
       if (liveSt === 'running' || liveSt === 'paused') {
         e._derived_status = liveSt === 'running' ? 'en_proceso' : 'pausado';
-        e._derived_color = 'live';
-      } else if (histByPlate[e.plate]) {
-        // Si hay history hoy y NO esta en activa, asumimos completado
+      } else if (histByPlate[ep]) {
         e._derived_status = 'completado';
-        e._derived_color = 'done';
       }
     });
-  } catch(_){}
+    logR('PLAN_LIVE_CROSS', {events: events.length, live_keys: Object.keys(liveByPlate).length, hist_keys: Object.keys(histByPlate).length});
+  } catch(e){ logR('PLAN_CROSS_ERR', {msg: e.message}, 'warn'); }
   body.innerHTML = '';
   var addBtn = mk('button','btn btn-red'); addBtn.textContent = '+ Agendar servicio'; addBtn.style.marginBottom = '12px';
   addBtn.onclick = function() { openNewEvent(null); };
