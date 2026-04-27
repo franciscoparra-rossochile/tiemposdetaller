@@ -816,7 +816,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // CONFIG & DEBUG
 // ═══════════════════════════════════════════════
 const DEBUG = true;
-const APP_VERSION = 'v2.2.QA-STABLE';
+const APP_VERSION = 'v2.2.QA-STABLE-1';
 const SURL = 'https://jczmupcmeixpwjedfgtk.supabase.co';
 const SKEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impjem11cGNtZWl4cHdqZWRmZ3RrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY5NzMxOTMsImV4cCI6MjA5MjU0OTE5M30.DuICC_pCQGv27lZivieXRRvGz9A1GNkgmhvTvyKo25o';
 var sb = null; // initialized in init()
@@ -8402,9 +8402,15 @@ async function deleteEvent() {
     .update({cancelled: true})
     .eq('scheduled_service_id', editEventId);
   if (notifErr) logR('CANCEL_NOTIF_ERR', {err: notifErr.message}, 'err');
-  // Borrar el servicio agendado
-  await sb.from('scheduled_services').delete().eq('id', editEventId);
+  // Borrar el servicio agendado — QA-STABLE: chequear error antes de cerrar modal
+  var rDel = await sb.from('scheduled_services').delete().eq('id', editEventId);
+  if (rDel && rDel.error) {
+    logR('DELETE_EVENT_ERR', {err: rDel.error.message}, 'err');
+    showGlobalError('No se pudo eliminar el servicio agendado: ' + rDel.error.message, 6000);
+    return;
+  }
   closeModal('m-event');
+  showGlobalError('Servicio agendado eliminado.', 2500);
   if (curBossTab === 'b-calendario') renderBossCal(document.getElementById('boss-body'));
   if (curBossTab === 'b-plan') renderBossPlan(document.getElementById('boss-body'));
 }
@@ -9199,4 +9205,3 @@ window.addEventListener('offline', function() {
 </script>
 </body>
 </html>
-  
