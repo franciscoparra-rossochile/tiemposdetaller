@@ -796,7 +796,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // CONFIG & DEBUG
 // ═══════════════════════════════════════════════
 const DEBUG = true;
-const APP_VERSION = 'v2.8.1-PDFv2';
+const APP_VERSION = 'v2.8.2-OTbtns';
 const SURL = 'https://jczmupcmeixpwjedfgtk.supabase.co';
 const SKEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impjem11cGNtZWl4cHdqZWRmZ3RrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY5NzMxOTMsImV4cCI6MjA5MjU0OTE5M30.DuICC_pCQGv27lZivieXRRvGz9A1GNkgmhvTvyKo25o';
 var sb = null; // initialized in init()
@@ -5550,13 +5550,20 @@ async function loadUnassignedToday() {
           var v = vehs[o.vehicle_id], c = clis[o.client_id];
           var srv = SERVICES_INGRESO.find(function(x){return x.key===o.service_classification;});
           var srvLabel = srv ? srv.label : (o.service_classification || '?');
-          return '<div style="background:#fff;border:1px solid #e5d49a;border-radius:3px;padding:8px;margin-bottom:5px;cursor:pointer" onclick="openVehicleDetail(\'' + (o.vehicle_id || '') + '\')">'
-            + '<div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif">OT-' + (o.ot_number || '?') + ' · ' + escapeHtml(srvLabel) + (o.service_subtype ? ' · ' + escapeHtml(o.service_subtype) : '') + '</div>'
-            + '<div style="font-size:11px;color:var(--wh3);margin-top:2px">'
-            + (v ? escapeHtml(v.brand) + ' ' + escapeHtml(v.model) + ' · ' + escapeHtml(v.plate) : 'vehículo desconocido')
-            + (c ? ' · ' + escapeHtml(c.name) : '')
-            + (o.commercial_manager_name ? ' · gestor: ' + escapeHtml(o.commercial_manager_name) : '')
-            + '</div></div>';
+          return '<div style="background:#fff;border:1px solid #e5d49a;border-radius:3px;padding:8px;margin-bottom:5px;display:flex;align-items:center;gap:8px">'
+            + '<div style="flex:1;min-width:0">'
+            +   '<div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif">OT-' + (o.ot_number || '?') + ' · ' + escapeHtml(srvLabel) + (o.service_subtype ? ' · ' + escapeHtml(o.service_subtype) : '') + '</div>'
+            +   '<div style="font-size:11px;color:var(--wh3);margin-top:2px">'
+            +     (v ? escapeHtml(v.brand) + ' ' + escapeHtml(v.model) + ' · ' + escapeHtml(v.plate) : 'vehículo desconocido')
+            +     (c ? ' · ' + escapeHtml(c.name) : '')
+            +     (o.commercial_manager_name ? ' · gestor: ' + escapeHtml(o.commercial_manager_name) : '')
+            +   '</div>'
+            + '</div>'
+            + '<div style="display:flex;gap:4px;flex-shrink:0">'
+            +   (o.vehicle_id ? '<button class="btn-sm" onclick="openVehicleDetail(\'' + o.vehicle_id + '\')">Ver</button>' : '')
+            +   '<button class="btn-sm" onclick="generateOTPdf(\'' + o.id + '\')">📄 PDF</button>'
+            + '</div>'
+            + '</div>';
         }).join('')
       + '</div>';
   } catch(e) {
@@ -6615,8 +6622,21 @@ function renderCatastroList() {
 
 // ─── Modal detalle vehiculo ───
 async function openVehicleDetail(vehicleId) {
-  var row = _catVehiclesCache.find(function(r){ return r.vehicle.id === vehicleId; });
-  if (!row) { showGlobalError('Vehículo no encontrado en cache, recarga la pestaña Catastro', 4000); return; }
+  if (!vehicleId) { showGlobalError('Vehículo sin ID', 3000); return; }
+  var row = _catVehiclesCache.find(function(r){ return r.vehicle && r.vehicle.id === vehicleId; });
+  // FASE 2.4.C-fix: si no está en cache (ej. abriendo desde Ingreso Taller sin haber pasado por Catastro),
+  // cargarlo on-demand desde la BD y agregarlo al cache.
+  if (!row && sb) {
+    try {
+      var rv = await sb.from('client_vehicles').select('*').eq('id', vehicleId).maybeSingle();
+      if (rv && rv.data) {
+        var rc = rv.data.client_id ? await sb.from('clients').select('*').eq('id', rv.data.client_id).maybeSingle() : {data:null};
+        row = {vehicle: rv.data, client: (rc && rc.data) || null};
+        _catVehiclesCache.push(row);
+      }
+    } catch(e) { logR('OPEN_VEH_LOAD_ERR', {msg: e.message}, 'warn'); }
+  }
+  if (!row) { showGlobalError('Vehículo no encontrado. Verifica que la OT tenga vehículo asociado.', 4000); return; }
   var v = row.vehicle, c = row.client;
   // Cargar OTs asociadas
   var ots = [];
@@ -6702,7 +6722,8 @@ async function openVehicleDetail(vehicleId) {
           +   '<div style="font-size:13px;font-weight:700;font-family:\'Rajdhani\',sans-serif">' + escapeHtml(srvLabel) + (o.service_subtype ? ' · ' + escapeHtml(o.service_subtype) : '') + '</div>'
           +   '<div style="font-size:10px;color:' + statusColor + ';font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.06em">OT-' + (o.ot_number || '?') + ' · ' + (o.status || '?') + '</div>'
           + '</div>'
-          + (o.service_description ? '<div style="font-size:11px;color:var(--wh2);margin-top:4px">' + escapeHtml(o.service_description) + '</div>' : '')
+          + (o.service_description ? '<div style="font-size:11px;color:var(--wh2);margin-top:4px"><b>Descripción:</b> ' + escapeHtml(o.service_description) + '</div>' : '')
+          + (o.client_notes ? '<div style="font-size:11px;color:var(--wh2);margin-top:4px;background:#fff8e0;padding:5px 7px;border-left:2px solid var(--gold);border-radius:2px"><b>Notas del cliente:</b> ' + escapeHtml(o.client_notes) + '</div>' : '')
           + '<div style="font-size:10px;color:var(--wh4);margin-top:4px;font-family:var(--mono)">'
           +   (o.commercial_manager_name ? 'Gestor: ' + escapeHtml(o.commercial_manager_name) + ' · ' : '')
           +   (o.created_at ? 'Creada: ' + new Date(o.created_at).toLocaleDateString('es-CL') : '')
@@ -7549,12 +7570,18 @@ async function generateOTPdf(otId) {
     }
     y += 2;
 
-    // ─── Comentarios ───
-    if (v.comments || o.client_notes) {
-      sectionTitle('Comentarios / requerimientos del cliente');
-      var notes = v.comments || o.client_notes;
-      var lines = doc.splitTextToSize(String(notes), pageW - marginX*2);
-      lines.forEach(function(ln){
+    // ─── Comentarios (mostramos AMBOS por separado si existen) ───
+    if (v.comments) {
+      sectionTitle('Comentarios del ingreso original');
+      doc.splitTextToSize(String(v.comments), pageW - marginX*2).forEach(function(ln){
+        if (y > 270) { doc.addPage(); y = 15; }
+        doc.text(ln, marginX, y); y += 4;
+      });
+      y += 3;
+    }
+    if (o.client_notes && o.client_notes !== v.comments) {
+      sectionTitle('Notas / requerimientos de esta OT');
+      doc.splitTextToSize(String(o.client_notes), pageW - marginX*2).forEach(function(ln){
         if (y > 270) { doc.addPage(); y = 15; }
         doc.text(ln, marginX, y); y += 4;
       });
