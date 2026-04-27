@@ -862,7 +862,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // CONFIG & DEBUG
 // ═══════════════════════════════════════════════
 const DEBUG = true;
-const APP_VERSION = 'v2.7.OPS-soft-archive';
+const APP_VERSION = 'v2.7.OPS-flujo-visado';
 const SURL = 'https://jczmupcmeixpwjedfgtk.supabase.co';
 const SKEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impjem11cGNtZWl4cHdqZWRmZ3RrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY5NzMxOTMsImV4cCI6MjA5MjU0OTE5M30.DuICC_pCQGv27lZivieXRRvGz9A1GNkgmhvTvyKo25o';
 var sb = null; // initialized in init()
@@ -7572,8 +7572,8 @@ async function openVehicleDetailFromClient(vehicleId) {
 // que están abiertas sin asignar (status='open' AND assigned_user_id IS NULL).
 // Permite al técnico:
 //   1) Ver datos del cliente + vehículo + servicio
-//   2) Llenar el checklist técnico del servicio (estado pasa a pending_double_check)
-//   3) Hacer doble control (estado pasa a pending_visado)
+//   2) Llenar el checklist técnico del servicio (estado pasa a pending_visado DIRECTAMENTE - FASE 2.7)
+//   3) (Opcional) Doble control - ya no es bloqueante, queda como verificación interna
 // El visado lo hace después un visador (Fase 2.4.C).
 var _myOTsCache = []; // [{ot, vehicle, client}]
 var _activeOT   = null; // OT actualmente abierta en el modal
@@ -7891,7 +7891,10 @@ async function saveTechChecklist() {
     tech_completed_by: CU ? CU.id : null,
     tech_completed_by_name: CU ? CU.name : null
   });
-  var newStatus = o.status === 'pending_visado' || o.status === 'closed' ? o.status : 'pending_double_check';
+  // FASE 2.7: Después de completar el checklist técnico, la OT pasa DIRECTO a
+  // pending_visado (saltando pending_double_check). El doble control sigue
+  // disponible como paso opcional pero no bloquea el visado.
+  var newStatus = (o.status === 'pending_visado' || o.status === 'closed') ? o.status : 'pending_visado';
 
   try {
     var r = await sb.from('work_orders').update({
@@ -7911,9 +7914,27 @@ async function saveTechChecklist() {
 
   btn.innerHTML = 'Guardar checklist'; btn.disabled = false;
   closeModal('m-tech-checklist');
-  showGlobalError('Checklist guardado. Ahora puedes hacer el doble control.', 3500);
+  showGlobalError('✓ Checklist guardado. La OT quedó pendiente de visado.', 4000);
+
+  // FASE 2.7: notificar a los visadores que tienen una OT nueva esperándolos
+  try {
+    var visadores = getUsersWithExplicitPerm('can_visar') || [];
+    for (var iv = 0; iv < visadores.length; iv++) {
+      var u = visadores[iv];
+      await sb.from('notifications').insert({
+        type: 'visado',
+        title: 'Nueva OT pendiente de visado',
+        sub: 'OT-' + (o.ot_number || '?') + ' · ' + (o.service_classification || '?') + ' por ' + (CU ? CU.name : 'técnico'),
+        target_user_id: u.id,
+        work_order_id: o.id
+      });
+    }
+  } catch(_){}
+
   // Refrescar lista
   if (curTechTab === 't-misot') await loadMyOTs();
+  if (curTechTab === 't-visado') await loadVisadoOTs();
+  if (curBossTab === 'b-visado') await loadVisadoOTs();
 }
 
 // ─── Modal DOBLE CONTROL ───
