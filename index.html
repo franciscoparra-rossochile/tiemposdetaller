@@ -862,7 +862,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // CONFIG & DEBUG
 // ═══════════════════════════════════════════════
 const DEBUG = true;
-const APP_VERSION = 'v2.6.OPS-catastro-actions';
+const APP_VERSION = 'v2.7.OPS-soft-archive';
 const SURL = 'https://jczmupcmeixpwjedfgtk.supabase.co';
 const SKEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impjem11cGNtZWl4cHdqZWRmZ3RrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY5NzMxOTMsImV4cCI6MjA5MjU0OTE5M30.DuICC_pCQGv27lZivieXRRvGz9A1GNkgmhvTvyKo25o';
 var sb = null; // initialized in init()
@@ -7182,8 +7182,14 @@ async function loadCatastro() {
   var meta = document.getElementById('cat-meta');
   if (meta) meta.textContent = 'Cargando...';
   try {
-    // 1) Vehículos
-    var rv = await sb.from('client_vehicles').select('*').order('created_at', {ascending: false}).limit(1000);
+    // 1) Vehículos (FASE 2.7: filtrar archivados)
+    // Si la columna 'archived' aun no existe (migracion no aplicada), Supabase lanza error;
+    // hacemos fallback al query original sin filtro.
+    var rv = await sb.from('client_vehicles').select('*').or('archived.is.null,archived.eq.false').order('created_at', {ascending: false}).limit(1000);
+    if (rv && rv.error && /archived/.test(rv.error.message || '')) {
+      logR('CATASTRO_NO_ARCHIVED_COL', {msg: rv.error.message}, 'warn');
+      rv = await sb.from('client_vehicles').select('*').order('created_at', {ascending: false}).limit(1000);
+    }
     if (rv.error) {
       if (meta) meta.textContent = 'Error: ' + rv.error.message;
       return;
@@ -7256,7 +7262,7 @@ function renderCatastroList() {
       +   '<button class="btn-sm" onclick="' + stop + 'openVehicleDetail(\'' + v.id + '\')">👁 Ver</button>'
       +   '<button class="btn-sm" style="border-color:var(--blue);color:var(--blue)" onclick="' + stop + 'editLatestOTForVehicle(\'' + v.id + '\')">✏️ Editar OT</button>'
       +   '<button class="btn-sm" style="border-color:var(--gold3);color:var(--gold3)" onclick="' + stop + 'editIngresoForVehicle(\'' + v.id + '\')">📋 Editar ingreso</button>'
-      +   '<button class="btn-sm danger" onclick="' + stop + 'deleteVehicleFromCatastro(\'' + v.id + '\')">🗑 Eliminar</button>'
+      +   '<button class="btn-sm" style="border-color:#888;color:#888" onclick="' + stop + 'deleteVehicleFromCatastro(\'' + v.id + '\')">📦 Archivar</button>'
       + '</div>'
       + '</div>';
   }).join('');
@@ -7302,42 +7308,39 @@ async function editIngresoForVehicle(vehicleId) {
 async function deleteVehicleFromCatastro(vehicleId) {
   if (!vehicleId || !sb) return;
   if (!hasPerm(CU, 'can_ingresar_clientes')) { showGlobalError('Sin permiso', 3000); return; }
-  // Conteo previo para informar al usuario qué se va a borrar
+  // FASE 2.7: archivado en lugar de borrado destructivo
   var otCount = 0;
   try {
     var ro = await sb.from('work_orders').select('id', {count:'exact', head:true}).eq('vehicle_id', vehicleId);
     otCount = ro.count || 0;
   } catch(_){}
-  var msg = '<b>Vas a eliminar este vehículo del catastro</b>';
-  if (otCount > 0) {
-    msg += '<br/><br/>Tiene <b>' + otCount + '</b> OT(s) asociadas que también se borrarán en cascada (con checklists, scheduled_services, fotos del bucket).';
-    msg += '<br/><span style="color:var(--red)">Esta acción NO se puede deshacer.</span>';
-  } else {
-    msg += '<br/>No tiene OTs asociadas.';
-  }
-  confirmHard(msg, function(){ _doDeleteVehicleFromCatastro(vehicleId); });
+  var msg = '<b>Vas a archivar este vehículo del catastro</b>';
+  msg += '<br/><br/>Quedará oculto de la lista pero <b>NO se eliminan</b>:';
+  msg += '<br/>• Las fotos del bucket';
+  msg += '<br/>• Las OTs históricas';
+  msg += '<br/>• Los checklists ni el visado';
+  if (otCount > 0) msg += '<br/><br/>Este vehículo tiene <b>' + otCount + '</b> OT(s) que se conservarán intactas.';
+  msg += '<br/><br/><span style="color:var(--green2)">Reversible: un admin puede des-archivarlo desde Supabase.</span>';
+  confirmHard(msg, function(){ _doArchiveVehicle(vehicleId); }, {keyword: 'ARCHIVAR'});
 }
 
-async function _doDeleteVehicleFromCatastro(vehicleId) {
+async function _doArchiveVehicle(vehicleId) {
   try {
-    // Limpiar fotos del bucket (best-effort)
-    try {
-      var rv = await sb.from('client_vehicles').select('photos').eq('id', vehicleId).maybeSingle();
-      if (rv && rv.data && rv.data.photos) {
-        var paths = Object.values(rv.data.photos)
-          .map(function(url){ try { return url.split('/vehicle-photos/').pop(); } catch(_) { return null; } })
-          .filter(Boolean);
-        if (paths.length) await sb.storage.from('vehicle-photos').remove(paths);
-      }
-    } catch(_){}
-    // Borrar el vehículo (cascade hace el resto)
-    var rd = await sb.from('client_vehicles').delete().eq('id', vehicleId);
+    var rd = await sb.from('client_vehicles').update({
+      archived: true,
+      archived_at: new Date().toISOString(),
+      archived_by: CU ? CU.username : null
+    }).eq('id', vehicleId);
     if (rd && rd.error) {
-      showGlobalError('Error al eliminar: ' + rd.error.message, 6000);
+      // Fallback: si la columna 'archived' no existe (no se corrió la migración), avisar
+      if (/archived/.test(rd.error.message)) {
+        showGlobalError('Falta correr la migración fase_2_7_archived.sql en Supabase. El vehículo NO se eliminó.', 9000);
+        return;
+      }
+      showGlobalError('Error al archivar: ' + rd.error.message, 6000);
       return;
     }
-    showGlobalError('Vehículo eliminado del catastro.', 3000);
-    // Refrescar
+    showGlobalError('✓ Vehículo archivado. Las fotos y OTs históricas se conservan.', 4000);
     _catVehiclesCache = _catVehiclesCache.filter(function(r){ return r.vehicle.id !== vehicleId; });
     renderCatastroList();
   } catch(e) {
@@ -8988,6 +8991,141 @@ async function generateRecepcionConforme(otId) {
     y += 7;
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(10);
+
+    // ─── COMPROBACIONES DE INGRESO ───
+    var ck = (v && v.comprobaciones) || {};
+    var anyMarked = false;
+    if (typeof VEHICLE_CHECK_GROUPS !== 'undefined' && VEHICLE_CHECK_GROUPS.length) {
+      var anyGroupHas = VEHICLE_CHECK_GROUPS.some(function(g){
+        return g.items.some(function(it){ return ck[it.key] === true; });
+      });
+      if (anyGroupHas) {
+        sectionTitle('Comprobaciones registradas al ingreso');
+        VEHICLE_CHECK_GROUPS.forEach(function(g){
+          var marked = g.items.filter(function(it){ return ck[it.key] === true; });
+          if (!marked.length) return;
+          anyMarked = true;
+          if (y > 270) { doc.addPage(); y = 15; }
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(9);
+          doc.text(g.title + ':', marginX, y); y += 4;
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(9);
+          marked.forEach(function(it){
+            if (y > 273) { doc.addPage(); y = 15; }
+            doc.text('  • ' + it.label, marginX, y); y += 3.8;
+          });
+          y += 1;
+        });
+        if (ck['per_otros_valor_desc']) {
+          if (y > 270) { doc.addPage(); y = 15; }
+          doc.setFont('helvetica', 'bold');
+          doc.text('Objetos de valor declarados:', marginX, y); y += 4;
+          doc.setFont('helvetica', 'normal');
+          doc.splitTextToSize(String(ck['per_otros_valor_desc']), pageW - marginX*2).forEach(function(ln){
+            if (y > 273) { doc.addPage(); y = 15; }
+            doc.text(ln, marginX, y); y += 4;
+          });
+          y += 1;
+        }
+        y += 2;
+        doc.setFontSize(10);
+      }
+    }
+
+    // ─── PROTOCOLOS DE SEGURIDAD + KM PRUEBA DE RUTA ───
+    var cd = o.checklist_data || {};
+    var tc = cd.tech_checklist || {};
+    var protocols = [];
+    var kmStart = tc.km_inicio || tc.km_start || tc.km_entrada;
+    var kmEnd   = tc.km_final || tc.km_end || tc.km_salida || tc.km_prueba_ruta;
+    var pruebaRuta = tc.prueba_ruta || tc.test_route || tc.prueba_ruta_realizada;
+    if (pruebaRuta) protocols.push('Prueba de ruta realizada' + (pruebaRuta.tipo ? ' (' + pruebaRuta.tipo + ')' : ''));
+    if (tc.litros) protocols.push('Litros de aceite cargados: ' + tc.litros);
+    if (tc.aceite || tc.tipo_aceite) protocols.push('Tipo de aceite: ' + (tc.aceite || tc.tipo_aceite));
+    Object.keys(tc).forEach(function(k){
+      // Capturar campos booleanos true (protocolos extra)
+      if (typeof tc[k] === 'boolean' && tc[k] === true && k !== 'prueba_ruta' && k !== 'doble_control_done' && k !== 'visado_done') {
+        protocols.push(k.replace(/_/g, ' '));
+      }
+    });
+    if (protocols.length || kmStart || kmEnd) {
+      sectionTitle('Protocolos de seguridad y prueba de ruta');
+      if (kmStart || kmEnd) {
+        if (y > 273) { doc.addPage(); y = 15; }
+        doc.setFont('helvetica', 'bold');
+        doc.text('Kilometraje:', marginX, y);
+        doc.setFont('helvetica', 'normal');
+        var kmText = '';
+        if (kmStart) kmText += 'Ingreso ' + kmStart + ' km';
+        if (kmEnd)   kmText += (kmText ? '   ·   ' : '') + 'Salida ' + kmEnd + ' km';
+        if (kmStart && kmEnd) {
+          var diff = (parseInt(kmEnd) || 0) - (parseInt(kmStart) || 0);
+          if (diff > 0) kmText += '   ·   Recorrido en taller: ' + diff + ' km';
+        }
+        doc.text(kmText, marginX + 28, y);
+        y += 5;
+      }
+      protocols.forEach(function(p){
+        if (y > 273) { doc.addPage(); y = 15; }
+        doc.setFont('helvetica', 'normal');
+        doc.text('• ' + p, marginX, y); y += 4;
+      });
+      if (tc.observaciones) {
+        if (y > 270) { doc.addPage(); y = 15; }
+        doc.setFont('helvetica', 'bold');
+        doc.text('Observaciones técnicas:', marginX, y); y += 4;
+        doc.setFont('helvetica', 'normal');
+        doc.splitTextToSize(String(tc.observaciones), pageW - marginX*2).forEach(function(ln){
+          if (y > 273) { doc.addPage(); y = 15; }
+          doc.text(ln, marginX, y); y += 4;
+        });
+      }
+      y += 3;
+    }
+
+    // ─── DOBLE CONTROL ───
+    var dc = cd.double_check || {};
+    if (dc && (dc.por || dc.realizado_por || dc.observaciones || dc.confirmado)) {
+      sectionTitle('Doble control');
+      if (y > 273) { doc.addPage(); y = 15; }
+      doc.setFont('helvetica', 'normal');
+      var dcLine = 'Realizado por: ' + (dc.por || dc.realizado_por || '—');
+      if (dc.fecha || dc.at) dcLine += '   ·   ' + (dc.fecha || dc.at);
+      doc.text(dcLine, marginX, y); y += 5;
+      if (dc.observaciones) {
+        doc.splitTextToSize('Observaciones: ' + dc.observaciones, pageW - marginX*2).forEach(function(ln){
+          if (y > 273) { doc.addPage(); y = 15; }
+          doc.text(ln, marginX, y); y += 4;
+        });
+      }
+      y += 3;
+    }
+
+    // ─── VISADO ───
+    if (cd.visado_at || cd.visado_by || cd.visado_status) {
+      sectionTitle('Visado final');
+      if (y > 273) { doc.addPage(); y = 15; }
+      doc.setFont('helvetica', 'normal');
+      var vLine = 'Visado por: ' + (cd.visado_by || '—');
+      if (cd.visado_at) vLine += '   ·   ' + new Date(cd.visado_at).toLocaleString('es-CL');
+      doc.text(vLine, marginX, y); y += 5;
+      if (cd.visado_status) {
+        doc.setFont('helvetica', 'bold');
+        var vColor = (cd.visado_status === 'aprobado') ? [30,110,30] : (cd.visado_status === 'rechazado') ? [204,26,26] : [80,80,80];
+        doc.setTextColor(vColor[0], vColor[1], vColor[2]);
+        doc.text('Estado: ' + cd.visado_status.toUpperCase(), marginX, y); y += 5;
+        doc.setTextColor(0,0,0);
+        doc.setFont('helvetica', 'normal');
+      }
+      if (cd.visado_notes) {
+        doc.splitTextToSize('Notas del visado: ' + cd.visado_notes, pageW - marginX*2).forEach(function(ln){
+          if (y > 273) { doc.addPage(); y = 15; }
+          doc.text(ln, marginX, y); y += 4;
+        });
+      }
+      y += 3;
+    }
 
     // Observaciones del taller
     if (o.client_notes || o.service_description) {
