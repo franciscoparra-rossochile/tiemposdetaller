@@ -1266,78 +1266,6 @@ const CHECKLIST_DOBLE_CONTROL = [
   {key:'dc_km_exit',       label:'Kilometraje de salida', type:'number', required:true}
 ];
 
-// FASE 2.4.D: VISADO OPERATIVO (10 secciones / 34 items)
-// Definido por Nicolas Gomez (supervisor de operaciones), abril 2026.
-// Lo completa el VISADOR fisicamente verificando el vehiculo antes de aprobar.
-// Cada item tiene 3 estados: 'ok' | 'obs' | 'na'. Si hay obs, se requiere
-// comentario por seccion. El visado SIN ESTO COMPLETO no se puede aprobar.
-const VISADO_CHECKLIST = [
-  {n:1, title:'Montaje y torque', items:[
-    {key:'v1_torque_ruedas',    label:'Torque de ruedas verificado'},
-    {key:'v1_tapon_filtro',     label:'Tapón de cárter / filtro de aceite OK'},
-    {key:'v1_componentes',      label:'Componentes intervenidos firmes'},
-    {key:'v1_protecciones',     label:'Protecciones instaladas'}
-  ]},
-  {n:2, title:'Niveles y fugas', items:[
-    {key:'v2_nivel_aceite',     label:'Nivel de aceite motor OK'},
-    {key:'v2_nivel_refrig',     label:'Nivel de refrigerante OK'},
-    {key:'v2_nivel_frenos',     label:'Nivel líquido de frenos OK'},
-    {key:'v2_sin_fugas',        label:'Sin fugas (general)'}
-  ]},
-  {n:3, title:'Motor y funcionamiento', items:[
-    {key:'v3_arranque',         label:'Arranque normal'},
-    {key:'v3_ralenti',          label:'Ralentí estable'},
-    {key:'v3_sin_ruidos',       label:'Sin ruidos anormales'},
-    {key:'v3_respuesta',        label:'Respuesta normal'}
-  ]},
-  {n:4, title:'Tablero y escáner', items:[
-    {key:'v4_sin_testigos',     label:'Sin testigos activos'},
-    {key:'v4_escaneo',          label:'Escaneo sin códigos (o justificados)'}
-  ]},
-  {n:5, title:'Seguridad (frenos / dirección)', items:[
-    {key:'v5_pedal_freno',      label:'Pedal de freno firme'},
-    {key:'v5_frenado',          label:'Frenado normal'},
-    {key:'v5_direccion',        label:'Dirección sin ruidos ni juegos'}
-  ]},
-  {n:6, title:'Sistema eléctrico / alimentación', items:[
-    {key:'v6_voltaje',          label:'Voltaje de batería correcto'},
-    {key:'v6_bornes',           label:'Bornes firmes / sin sulfato'},
-    {key:'v6_masas',            label:'Masas OK (visual)'},
-    {key:'v6_fusibles',         label:'Fusibles / relés OK'}
-  ]},
-  {n:7, title:'Luces', items:[
-    {key:'v7_principales',      label:'Luces principales'},
-    {key:'v7_freno',            label:'Luces de freno'},
-    {key:'v7_intermitentes',    label:'Intermitentes'},
-    {key:'v7_retroceso',        label:'Retroceso'}
-  ]},
-  {n:8, title:'Alineación (verificación rápida)', items:[
-    {key:'v8_volante',          label:'Volante recto'},
-    {key:'v8_carga_lado',       label:'Vehículo no se carga a un lado'},
-    {key:'v8_neumaticos',       label:'Neumáticos sin desgaste irregular evidente'}
-  ]},
-  {n:9, title:'Prueba final', items:[
-    {key:'v9_prueba_ruta',      label:'Prueba de ruta realizada'},
-    {key:'v9_sin_ruidos',       label:'Sin ruidos / vibraciones'},
-    {key:'v9_temperatura',      label:'Temperatura normal'}
-  ]},
-  {n:10, title:'Cierre', items:[
-    {key:'v10_fichas',          label:'Fichas completas'},
-    {key:'v10_etiqueta',        label:'Etiqueta de aceite'},
-    {key:'v10_limpieza',        label:'Limpieza general'}
-  ]}
-];
-
-// Total de items - util para mostrar progreso
-const VISADO_TOTAL_ITEMS = VISADO_CHECKLIST.reduce(function(s, sec){return s + sec.items.length;}, 0);
-
-// Lista plana de keys para iteracion rapida
-const VISADO_ALL_KEYS = (function(){
-  var arr = [];
-  VISADO_CHECKLIST.forEach(function(sec){ sec.items.forEach(function(it){ arr.push(it.key); }); });
-  return arr;
-})();
-
 // FASE 2.4.B: helpers para opciones repetidas
 const DESGASTE_OPTS    = ['Bajo','Medio','Alto','Crítico','N/A'];
 const TIRE_STATE_OPTS  = ['Buen estado','Con daño estructural','Desgaste disparejo','Huevos','Caducados'];
@@ -1387,7 +1315,8 @@ const CHECKLISTS_TECH = {
       'Pegar etiqueta de cambio de aceite con próximo km',
       'Limpieza de zona de trabajo',
       'Prueba de ruta corta (tipo A)',
-      'Anotar kilometraje de salida'
+      'Anotar kilometraje de salida',
+      'Registrar observaciones técnicas / informe del mecánico'
     ],
     sections: [
       {title: 'Repuestos utilizados', items: [
@@ -1398,7 +1327,11 @@ const CHECKLISTS_TECH = {
       {title: 'Niveles', items: [
         {key:'wiper_fluid', label:'Relleno de líquido limpiaparabrisas', type:'bool', required:true}
       ]},
-      {title: 'Prueba de ruta', items: CHECKLIST_PRUEBA_RUTA}
+      {title: 'Prueba de ruta', items: CHECKLIST_PRUEBA_RUTA},
+      {title: 'Observaciones del mecánico', items: [
+        {key:'tech_observations', label:'Comentarios e información técnica para el informe', type:'textarea', rows:3,
+         placeholder:'Estado general del motor, recomendaciones para próxima visita, hallazgos relevantes, etc.'}
+      ]}
     ]
   },
   MANT_EXPRESS: {
@@ -1437,7 +1370,11 @@ const CHECKLISTS_TECH = {
         {key:'scanner_read',    label:'Lectura de escáner realizada', type:'bool', required:true},
         {key:'service_reset',   label:'Reinicio de intervalo de mantenimiento', type:'bool', required:true}
       ]},
-      {title: 'Prueba de ruta', items: CHECKLIST_PRUEBA_RUTA}
+      {title: 'Prueba de ruta', items: CHECKLIST_PRUEBA_RUTA},
+      {title: 'Observaciones del mecánico', items: [
+        {key:'tech_observations', label:'Comentarios e información técnica para el informe', type:'textarea', rows:3,
+         placeholder:'Estado del vehículo, hallazgos, sugerencias al cliente, repuestos a controlar a futuro, etc.'}
+      ]}
     ]
   },
 
@@ -1609,7 +1546,8 @@ const CHECKLISTS_TECH = {
       'Lectura de códigos DTC con escáner',
       'Pruebas y mediciones técnicas',
       'Determinar causa raíz / hallazgo',
-      'Recomendaciones y próximos pasos al cliente'
+      'Recomendaciones y próximos pasos al cliente',
+      'Registrar uso de aceite (si aplica) y observaciones extra del mecánico'
     ],
     sections: [
       {title: 'Motivo de la consulta', items: [
@@ -1620,6 +1558,16 @@ const CHECKLISTS_TECH = {
         {key:'diag_pruebas',         label:'Pruebas / mediciones realizadas', type:'textarea', rows:3, required:true},
         {key:'diag_resultado',       label:'Hallazgo / causa raíz determinada', type:'textarea', rows:2, required:true},
         {key:'diag_recomendaciones', label:'Recomendaciones / próximos pasos', type:'textarea', rows:2, required:true}
+      ]},
+      {title: 'Uso de aceite', items: [
+        {key:'oil_used',             label:'¿Se usó aceite en este servicio?', type:'bool', required:true},
+        {key:'oil_filter_code',      label:'Código del filtro de aceite', type:'text', required_if:'oil_used', placeholder:'Solo si se usó aceite'},
+        {key:'oil_liters',           label:'Litros de aceite usados', type:'number', step:0.1, required_if:'oil_used', placeholder:'Solo si se usó aceite'},
+        {key:'oil_brand',            label:'Marca y tipo de aceite', type:'text', required_if:'oil_used', placeholder:'Ej: Liqui Moly 5W30'}
+      ]},
+      {title: 'Observaciones del mecánico', items: [
+        {key:'tech_observations',    label:'Comentarios e información técnica para el informe', type:'textarea', rows:3,
+         placeholder:'Información complementaria, contexto del cliente, recomendaciones extra, etc.'}
       ]}
     ]
   },
@@ -1634,7 +1582,8 @@ const CHECKLISTS_TECH = {
       'Verificar éxito de la reprogramación',
       'Lectura posterior: versión nueva de software y DTC limpios',
       'Registrar observaciones técnicas',
-      'Prueba de ruta'
+      'Prueba de ruta',
+      'Registrar uso de aceite (si aplica)'
     ],
     sections: [
       {title: 'Lectura previa', items: [
@@ -1651,6 +1600,12 @@ const CHECKLISTS_TECH = {
         {key:'ecu_dtc_post',         label:'Lectura DTC después (debe estar limpio)', type:'textarea', rows:2, required:true},
         {key:'ecu_observaciones',    label:'Observaciones técnicas', type:'textarea', rows:2}
       ]},
+      {title: 'Uso de aceite', items: [
+        {key:'oil_used',             label:'¿Se usó aceite en este servicio?', type:'bool', required:true},
+        {key:'oil_filter_code',      label:'Código del filtro de aceite', type:'text', required_if:'oil_used', placeholder:'Solo si se usó aceite'},
+        {key:'oil_liters',           label:'Litros de aceite usados', type:'number', step:0.1, required_if:'oil_used', placeholder:'Solo si se usó aceite'},
+        {key:'oil_brand',            label:'Marca y tipo de aceite', type:'text', required_if:'oil_used', placeholder:'Ej: Liqui Moly 5W30'}
+      ]},
       {title: 'Prueba de ruta', items: CHECKLIST_PRUEBA_RUTA}
     ]
   },
@@ -1666,7 +1621,8 @@ const CHECKLISTS_TECH = {
       'Marcaje de torque y apriete',
       'Limpieza de zona de trabajo',
       'Prueba de ruta para verificar respuesta del freno',
-      'Anotar kilometraje de salida'
+      'Anotar kilometraje de salida',
+      'Registrar uso de aceite (si aplica) y observaciones técnicas'
     ],
     sections: [
       {title: 'Trabajos realizados', items: [
@@ -1678,7 +1634,17 @@ const CHECKLISTS_TECH = {
         {key:'fr_disc_rear_mm',      label:'Espesor disco/tambor trasero post-servicio (mm)', type:'number', step:0.1, unit:'mm'},
         {key:'fr_fluid_changed',     label:'¿Se cambió líquido de frenos?', type:'bool', required:true}
       ]},
-      {title: 'Prueba de ruta', items: CHECKLIST_PRUEBA_RUTA}
+      {title: 'Uso de aceite', items: [
+        {key:'oil_used',             label:'¿Se usó aceite en este servicio?', type:'bool', required:true},
+        {key:'oil_filter_code',      label:'Código del filtro de aceite', type:'text', required_if:'oil_used', placeholder:'Solo si se usó aceite'},
+        {key:'oil_liters',           label:'Litros de aceite usados', type:'number', step:0.1, required_if:'oil_used', placeholder:'Solo si se usó aceite'},
+        {key:'oil_brand',            label:'Marca y tipo de aceite', type:'text', required_if:'oil_used', placeholder:'Ej: Liqui Moly 5W30'}
+      ]},
+      {title: 'Prueba de ruta', items: CHECKLIST_PRUEBA_RUTA},
+      {title: 'Observaciones del mecánico', items: [
+        {key:'tech_observations', label:'Comentarios e información técnica para el informe', type:'textarea', rows:3,
+         placeholder:'Estado de los frenos, recomendaciones, anomalías detectadas, próxima revisión sugerida, etc.'}
+      ]}
     ]
   },
 
@@ -1691,7 +1657,8 @@ const CHECKLISTS_TECH = {
       'Registrar horas de trabajo invertidas',
       'Limpieza de zona de trabajo',
       'Prueba de ruta (si aplica al tipo de reparación)',
-      'Recomendaciones u observaciones para el cliente'
+      'Recomendaciones u observaciones para el cliente',
+      'Registrar uso de aceite (si aplica)'
     ],
     sections: [
       {title: 'Trabajo realizado', items: [
@@ -1699,6 +1666,12 @@ const CHECKLISTS_TECH = {
         {key:'rg_repuestos',         label:'Repuestos utilizados (códigos + cantidades)', type:'textarea', rows:3, required:true},
         {key:'rg_horas_trabajo',     label:'Horas de trabajo invertidas', type:'number', step:0.5, required:true, unit:'horas'},
         {key:'rg_observaciones',     label:'Observaciones / recomendaciones', type:'textarea', rows:2}
+      ]},
+      {title: 'Uso de aceite', items: [
+        {key:'oil_used',             label:'¿Se usó aceite en este servicio?', type:'bool', required:true},
+        {key:'oil_filter_code',      label:'Código del filtro de aceite', type:'text', required_if:'oil_used', placeholder:'Solo si se usó aceite'},
+        {key:'oil_liters',           label:'Litros de aceite usados', type:'number', step:0.1, required_if:'oil_used', placeholder:'Solo si se usó aceite'},
+        {key:'oil_brand',            label:'Marca y tipo de aceite', type:'text', required_if:'oil_used', placeholder:'Ej: Liqui Moly 5W30'}
       ]},
       {title: 'Prueba de ruta (si aplica)', items: [
         {key:'rg_test_realizada',    label:'¿Se realizó prueba de ruta?', type:'bool', required:true},
@@ -1717,7 +1690,8 @@ const CHECKLISTS_TECH = {
       'Determinar si aplica a garantía Rosso',
       'Aplicar solución correspondiente',
       'Registrar repuestos cubiertos por garantía',
-      'Comunicar resolución al cliente'
+      'Comunicar resolución al cliente',
+      'Registrar uso de aceite (si aplica) y observaciones del mecánico'
     ],
     sections: [
       {title: 'Reclamo del cliente', items: [
@@ -1729,6 +1703,16 @@ const CHECKLISTS_TECH = {
         {key:'gar_diagnostico',      label:'Diagnóstico técnico', type:'textarea', rows:3, required:true},
         {key:'gar_solucion',         label:'Solución aplicada', type:'textarea', rows:2, required:true},
         {key:'gar_repuestos',        label:'Repuestos usados (cubiertos por garantía)', type:'textarea', rows:2}
+      ]},
+      {title: 'Uso de aceite', items: [
+        {key:'oil_used',             label:'¿Se usó aceite en este servicio?', type:'bool', required:true},
+        {key:'oil_filter_code',      label:'Código del filtro de aceite', type:'text', required_if:'oil_used', placeholder:'Solo si se usó aceite'},
+        {key:'oil_liters',           label:'Litros de aceite usados', type:'number', step:0.1, required_if:'oil_used', placeholder:'Solo si se usó aceite'},
+        {key:'oil_brand',            label:'Marca y tipo de aceite', type:'text', required_if:'oil_used', placeholder:'Ej: Liqui Moly 5W30'}
+      ]},
+      {title: 'Observaciones del mecánico', items: [
+        {key:'tech_observations',    label:'Comentarios e información técnica para el informe', type:'textarea', rows:3,
+         placeholder:'Contexto del caso, decisión tomada, comunicación al cliente, etc.'}
       ]}
     ]
   }
@@ -4043,9 +4027,16 @@ async function doFinish(checklist, sessionKey) {
         // FASE 2.7 BUG-FIX: auto-promover la OT a pending_visado al cerrar el cronometro.
         // Antes el tecnico se auto-marcaba "visado aprobado" en su propio checklist y la OT
         // se quedaba en assigned/open. Ahora al finalizar se manda a Benjamin / visadores.
+        // FASE 2.7-fix abr 2026: skip para servicios de apoyo logistico (Lavado, Estandar
+        // de taller, Compras, Movimiento, Cierre). Estos no llevan checklist tecnico ni
+        // necesitan visado: cierran directo. Ver srvNeedsChecklist().
+        var skipVisado = (sess && sess.service && !srvNeedsChecklist(sess.service));
+        if (skipVisado) {
+          logR('OT_SKIP_VISADO_LOGISTICO', {srv: sess && sess.service, wo: woId});
+        }
         try {
           var rGet = await sb.from('work_orders').select('status,ot_number,service_classification').eq('id', woId).maybeSingle();
-          if (rGet && rGet.data && ['open','assigned','in_progress','pending_double_check'].indexOf(rGet.data.status) !== -1) {
+          if (rGet && rGet.data && !skipVisado && ['open','assigned','in_progress','pending_double_check'].indexOf(rGet.data.status) !== -1) {
             await sb.from('work_orders').update({
               status: 'pending_visado',
               updated_by: CU ? CU.id : null
@@ -8775,34 +8766,9 @@ async function openVisadoModal(otId) {
 
   html += '<div style="margin-top:14px"><button class="btn-sm" onclick="generateOTPdf(\'' + o.id + '\')">📄 Descargar PDF</button></div>';
 
-  // ───── VISADO OPERATIVO (10 secciones de Nicolas) ─────
-  // Si la OT ya fue rechazada antes y el tecnico la corrigio, puede haber un
-  // visado_checklist previo de la sesion anterior. Lo cargamos como estado
-  // inicial para que el visador no tenga que llenarlo todo de nuevo, pero
-  // queda visible y editable.
-  var prevVisadoCk = (cd.visado_checklist && typeof cd.visado_checklist === 'object') ? cd.visado_checklist : {};
-  _visadoFormState = {}; // estado en memoria del formulario
-  VISADO_ALL_KEYS.forEach(function(k){ _visadoFormState[k] = prevVisadoCk[k] || null; });
-  _visadoFormSecObs = {}; // observaciones por seccion: {1: '...', 2: '...'}
-  VISADO_CHECKLIST.forEach(function(sec){
-    _visadoFormSecObs[sec.n] = (prevVisadoCk['sec_obs_' + sec.n] || '');
-  });
-
-  html += '<div style="border-top:3px solid var(--gold);margin-top:16px;padding-top:10px">'
-    + '<div style="font-size:13px;font-weight:700;color:#111;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">⚖️ Visado operativo · 10 puntos</div>'
-    + '<div style="font-size:11px;color:var(--wh3);margin-bottom:8px;line-height:1.4">Verifica fisicamente cada item en el vehiculo. Marca <b>OK</b> si esta correcto, <b>Obs</b> si tiene observacion (con detalle), o <b>N/A</b> si no aplica al servicio.</div>'
-    + '<div id="visado-form-progress" style="font-size:11px;color:var(--wh3);font-family:var(--mono);margin-bottom:8px"></div>'
-    + '<div id="visado-form-body"></div>'
-    + '<div id="visado-form-resumen" style="margin-top:10px;padding:10px;background:var(--bg3);border-radius:4px;font-size:12px;font-family:var(--mono)"></div>'
-    + '</div>';
-
   document.getElementById('m-visado-body').innerHTML = html;
   document.getElementById('m-visado-rejection').value = '';
   document.getElementById('m-visado-rejection-wrap').style.display = 'none';
-
-  // Render del formulario del visado (despues de inyectar el HTML padre)
-  renderVisadoForm();
-
   openModal('m-visado');
 }
 
@@ -8810,196 +8776,16 @@ function showRejectionForm() {
   document.getElementById('m-visado-rejection-wrap').style.display = '';
 }
 
-// ═══════════════════════════════════════════════════════════════
-// VISADO OPERATIVO - Formulario de 10 secciones (Nicolas G., abr 2026)
-// ═══════════════════════════════════════════════════════════════
-
-// Estado del formulario de visado mientras esta abierto el modal.
-// Se resetea cada vez que se abre openVisadoModal con datos previos si
-// la OT ya tenia un visado_checklist (caso: rechazada y reabierta).
-var _visadoFormState = {};   // {key: 'ok'|'obs'|'na'|null}
-var _visadoFormSecObs = {};  // {n: 'detalle de obs de seccion n'}
-
-// Renderiza el formulario completo del visado en #visado-form-body
-function renderVisadoForm() {
-  var wrap = document.getElementById('visado-form-body');
-  if (!wrap) return;
-  var html = '';
-  VISADO_CHECKLIST.forEach(function(sec) {
-    html += '<div class="card-accent" style="margin-bottom:8px;border-left:3px solid var(--gold)">';
-    html += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">';
-    html += '<div style="font-size:11px;font-weight:700;color:#111;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.04em">' + sec.n + '. ' + sec.title + '</div>';
-    html += '<div class="visado-sec-status" id="vsec-st-' + sec.n + '" style="font-size:10px;font-family:var(--mono);color:var(--wh3)"></div>';
-    html += '</div>';
-    sec.items.forEach(function(it) {
-      var cur = _visadoFormState[it.key];
-      html += '<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px dotted #eee;gap:8px">';
-      html += '<div style="font-size:11px;flex:1;line-height:1.3">' + escapeHtml(it.label) + '</div>';
-      html += '<div style="display:flex;gap:3px;flex-shrink:0">';
-      ['ok','obs','na'].forEach(function(opt) {
-        var lbl = opt === 'ok' ? 'OK' : opt === 'obs' ? 'Obs' : 'N/A';
-        var sel = cur === opt;
-        var bg = sel ? (opt === 'ok' ? 'var(--green)' : opt === 'obs' ? 'var(--gold)' : '#888') : 'var(--bg2)';
-        var col = sel ? '#fff' : 'var(--wh2)';
-        var bd = sel ? bg : 'var(--border)';
-        html += '<button type="button" data-key="' + it.key + '" data-opt="' + opt + '" '
-              + 'onclick="pickVisadoItem(\'' + it.key + '\',\'' + opt + '\')" '
-              + 'style="padding:5px 9px;font-size:10px;font-weight:700;border:1px solid ' + bd + ';background:' + bg + ';color:' + col + ';border-radius:3px;cursor:pointer;font-family:var(--mono);min-width:34px">' + lbl + '</button>';
-      });
-      html += '</div>';
-      html += '</div>';
-    });
-    // Textarea de observaciones (solo visible si hay 1+ item con OBS en esa seccion)
-    html += '<div id="vsec-obs-wrap-' + sec.n + '" style="display:none;margin-top:6px">';
-    html += '<textarea class="inp" id="vsec-obs-' + sec.n + '" rows="2" '
-          + 'placeholder="Detalle de las observaciones de esta seccion (obligatorio si hay items con Obs)" '
-          + 'style="height:48px;font-size:12px" '
-          + 'oninput="_visadoFormSecObs[' + sec.n + ']=this.value;updateVisadoFormUI()">' + escapeHtml(_visadoFormSecObs[sec.n] || '') + '</textarea>';
-    html += '</div>';
-    html += '</div>';
-  });
-  wrap.innerHTML = html;
-  updateVisadoFormUI();
-}
-
-// Marca un item del visado con un valor
-function pickVisadoItem(key, opt) {
-  _visadoFormState[key] = opt;
-  // Actualizar visualmente los 3 botones de ese item
-  var btns = document.querySelectorAll('button[data-key="' + key + '"]');
-  btns.forEach(function(b) {
-    var o = b.dataset.opt;
-    var sel = (o === opt);
-    var bg = sel ? (o === 'ok' ? 'var(--green)' : o === 'obs' ? 'var(--gold)' : '#888') : 'var(--bg2)';
-    var col = sel ? '#fff' : 'var(--wh2)';
-    var bd = sel ? bg : 'var(--border)';
-    b.style.background = bg; b.style.color = col; b.style.borderColor = bd;
-  });
-  updateVisadoFormUI();
-}
-
-// Cuenta items en cada estado, total y por seccion
-function visadoFormCounts() {
-  var total = {ok:0, obs:0, na:0, pending:0};
-  var bySec = {};
-  VISADO_CHECKLIST.forEach(function(sec) {
-    var s = {ok:0, obs:0, na:0, pending:0};
-    sec.items.forEach(function(it) {
-      var v = _visadoFormState[it.key];
-      if (v === 'ok') { s.ok++; total.ok++; }
-      else if (v === 'obs') { s.obs++; total.obs++; }
-      else if (v === 'na') { s.na++; total.na++; }
-      else { s.pending++; total.pending++; }
-    });
-    bySec[sec.n] = s;
-  });
-  return {total: total, bySec: bySec};
-}
-
-// Actualiza UI: progreso, status por seccion, visibilidad de textareas, resumen,
-// y habilita/deshabilita el boton Aprobar.
-function updateVisadoFormUI() {
-  var c = visadoFormCounts();
-  var done = c.total.ok + c.total.obs + c.total.na;
-
-  // Progreso global
-  var p = document.getElementById('visado-form-progress');
-  if (p) p.textContent = 'Avance: ' + done + ' / ' + VISADO_TOTAL_ITEMS + ' items';
-
-  // Status por seccion + visibilidad de textareas de obs
-  VISADO_CHECKLIST.forEach(function(sec) {
-    var s = c.bySec[sec.n];
-    var st = document.getElementById('vsec-st-' + sec.n);
-    if (st) {
-      if (s.pending > 0) { st.textContent = (sec.items.length - s.pending) + '/' + sec.items.length; st.style.color = 'var(--wh3)'; }
-      else if (s.obs > 0) { st.textContent = '⚠ ' + s.obs + ' obs'; st.style.color = 'var(--gold3)'; }
-      else { st.textContent = '✓ OK'; st.style.color = 'var(--green2)'; }
-    }
-    var obsWrap = document.getElementById('vsec-obs-wrap-' + sec.n);
-    if (obsWrap) obsWrap.style.display = s.obs > 0 ? 'block' : 'none';
-  });
-
-  // Resumen global
-  var resumen = document.getElementById('visado-form-resumen');
-  if (resumen) {
-    var status = c.total.pending > 0 ? 'PENDIENTE' : c.total.obs > 0 ? 'CON OBSERVACIONES' : 'TODO OK';
-    var color = c.total.pending > 0 ? 'var(--wh3)' : c.total.obs > 0 ? 'var(--gold3)' : 'var(--green2)';
-    resumen.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center">'
-      + '<span style="color:' + color + ';font-weight:700">' + status + '</span>'
-      + '<span>OK: ' + c.total.ok + ' · Obs: ' + c.total.obs + ' · N/A: ' + c.total.na + (c.total.pending > 0 ? ' · Pend: ' + c.total.pending : '') + '</span>'
-      + '</div>';
-  }
-
-  // Habilitar/deshabilitar boton Aprobar
-  var apr = document.getElementById('m-visado-approve-btn');
-  if (apr) {
-    var canApprove = c.total.pending === 0;
-    // Si hay obs en alguna seccion sin texto explicativo, tampoco habilitar
-    if (canApprove) {
-      for (var i=0; i<VISADO_CHECKLIST.length; i++) {
-        var sn = VISADO_CHECKLIST[i].n;
-        if (c.bySec[sn].obs > 0 && (!_visadoFormSecObs[sn] || !_visadoFormSecObs[sn].trim())) {
-          canApprove = false; break;
-        }
-      }
-    }
-    apr.disabled = !canApprove;
-    apr.style.opacity = canApprove ? '1' : '0.5';
-    apr.style.cursor = canApprove ? 'pointer' : 'not-allowed';
-    if (c.total.pending > 0) {
-      apr.innerHTML = '✓ Aprobar visado (faltan ' + c.total.pending + ')';
-    } else if (c.total.obs > 0) {
-      apr.innerHTML = '✓ Aprobar visado con observaciones';
-    } else {
-      apr.innerHTML = '✓ Aprobar visado';
-    }
-  }
-}
-
-// Construye el snapshot del visado para persistir en checklist_data
-function buildVisadoCkSnapshot() {
-  var ck = {};
-  VISADO_ALL_KEYS.forEach(function(k){ ck[k] = _visadoFormState[k] || null; });
-  VISADO_CHECKLIST.forEach(function(sec){
-    if ((_visadoFormSecObs[sec.n] || '').trim()) ck['sec_obs_' + sec.n] = _visadoFormSecObs[sec.n].trim();
-  });
-  var c = visadoFormCounts();
-  ck._summary = {ok: c.total.ok, obs: c.total.obs, na: c.total.na};
-  ck._global = c.total.obs > 0 ? 'con_observaciones' : 'aprobado';
-  return ck;
-}
-
 async function approveVisado() {
   if (!_activeVisadoOT) return;
   var o = _activeVisadoOT.ot;
   var btn = document.getElementById('m-visado-approve-btn');
-
-  // Validar que el visado de 10 puntos este completo
-  var c = visadoFormCounts();
-  if (c.total.pending > 0) {
-    showGlobalError('Faltan ' + c.total.pending + ' items del visado por marcar', 4500);
-    return;
-  }
-  // Validar que cada seccion con obs tenga su detalle
-  for (var i=0; i<VISADO_CHECKLIST.length; i++) {
-    var sec = VISADO_CHECKLIST[i];
-    if (c.bySec[sec.n].obs > 0 && (!_visadoFormSecObs[sec.n] || !_visadoFormSecObs[sec.n].trim())) {
-      showGlobalError('Falta detalle de observaciones en: ' + sec.title, 4500);
-      var t = document.getElementById('vsec-obs-' + sec.n);
-      if (t) t.focus();
-      return;
-    }
-  }
-
   btn.innerHTML = '<span class="spin"></span> Aprobando...'; btn.disabled = true;
-  var visadoCk = buildVisadoCkSnapshot();
   var newCD = Object.assign({}, o.checklist_data || {}, {
     visado_at: new Date().toISOString(),
     visado_by: CU ? CU.id : null,
     visado_by_name: CU ? CU.name : null,
-    visado_approved: true,
-    visado_checklist: visadoCk,                    // detalle completo de los 10 puntos
-    visado_global: visadoCk._global                // 'aprobado' | 'con_observaciones'
+    visado_approved: true
   });
   try {
     var r = await sb.from('work_orders').update({checklist_data:newCD, status:'closed', updated_by: CU?CU.id:null}).eq('id', o.id);
@@ -9007,11 +8793,11 @@ async function approveVisado() {
   } catch(e) { btn.innerHTML='✓ Aprobar visado'; btn.disabled=false; showGlobalError('Error: '+e.message, 5000); return; }
   // Notificar al gestor
   if (o.commercial_manager_id) {
-    try { await sb.from('notifications').insert({type:'visado_done', title:'✓ OT-'+(o.ot_number||'?')+' visada', sub:'Aprobada por '+CU.name + (visadoCk._global === 'con_observaciones' ? ' (con observaciones)' : ''), target_user_id:o.commercial_manager_id, work_order_id:o.id}); } catch(_){}
+    try { await sb.from('notifications').insert({type:'visado_done', title:'✓ OT-'+(o.ot_number||'?')+' visada', sub:'Aprobada por '+CU.name, target_user_id:o.commercial_manager_id, work_order_id:o.id}); } catch(_){}
   }
   btn.innerHTML='✓ Aprobar visado'; btn.disabled=false;
   closeModal('m-visado');
-  showGlobalError('OT aprobada y cerrada' + (visadoCk._global === 'con_observaciones' ? ' (con observaciones)' : ''), 3500);
+  showGlobalError('OT aprobada y cerrada', 3000);
   await loadVisadoOTs();
 }
 
@@ -9703,78 +9489,21 @@ async function generateRecepcionConforme(otId) {
     }
 
     // ─── VISADO ───
-    // FASE 2.4.D: ahora usamos campos nuevos (visado_by_name, visado_approved,
-    // visado_global, visado_checklist) ademas de los legacy para retrocompat.
-    if (cd.visado_at || cd.visado_by || cd.visado_by_name || cd.visado_status || cd.visado_approved !== undefined) {
-      sectionTitle('Visado operativo');
+    if (cd.visado_at || cd.visado_by || cd.visado_status) {
+      sectionTitle('Visado final');
       if (y > 273) { doc.addPage(); y = 15; }
       doc.setFont('helvetica', 'normal');
-      var visadorName = cd.visado_by_name || cd.visado_by || '—';
-      var vLine = 'Visado por: ' + visadorName;
+      var vLine = 'Visado por: ' + (cd.visado_by || '—');
       if (cd.visado_at) vLine += '   ·   ' + new Date(cd.visado_at).toLocaleString('es-CL');
       doc.text(vLine, marginX, y); y += 5;
-
-      // Estado: usa el nuevo visado_global o cae al legacy visado_status
-      var visStatus = cd.visado_global
-        || (cd.visado_approved === true ? 'aprobado' : cd.visado_approved === false ? 'rechazado' : null)
-        || cd.visado_status;
-      if (visStatus) {
+      if (cd.visado_status) {
         doc.setFont('helvetica', 'bold');
-        var vColor = (visStatus === 'aprobado') ? [30,110,30]
-                   : (visStatus === 'con_observaciones') ? [200,134,10]
-                   : (visStatus === 'rechazado') ? [204,26,26] : [80,80,80];
+        var vColor = (cd.visado_status === 'aprobado') ? [30,110,30] : (cd.visado_status === 'rechazado') ? [204,26,26] : [80,80,80];
         doc.setTextColor(vColor[0], vColor[1], vColor[2]);
-        var visStatusLabel = visStatus === 'con_observaciones' ? 'CON OBSERVACIONES' : visStatus.toUpperCase();
-        doc.text('Estado: ' + visStatusLabel, marginX, y); y += 5;
+        doc.text('Estado: ' + cd.visado_status.toUpperCase(), marginX, y); y += 5;
         doc.setTextColor(0,0,0);
         doc.setFont('helvetica', 'normal');
       }
-
-      // ─── Detalle de los 10 puntos del visado (Nicolas, abr 2026) ───
-      if (cd.visado_checklist && typeof cd.visado_checklist === 'object') {
-        var vck = cd.visado_checklist;
-        // Resumen rapido
-        if (vck._summary) {
-          doc.setFontSize(9);
-          doc.text('Items: ' + vck._summary.ok + ' OK · ' + vck._summary.obs + ' Obs · ' + vck._summary.na + ' N/A', marginX, y);
-          y += 4;
-          doc.setFontSize(10);
-        }
-        // Por cada seccion: titulo + items con su estado, y obs si tiene
-        VISADO_CHECKLIST.forEach(function(sec) {
-          if (y > 270) { doc.addPage(); y = 15; }
-          // Solo imprimir secciones con al menos 1 item respondido
-          var anyAnswered = sec.items.some(function(it){ return vck[it.key]; });
-          if (!anyAnswered) return;
-          doc.setFont('helvetica', 'bold');
-          doc.setFontSize(9);
-          doc.text(sec.n + '. ' + sec.title, marginX, y); y += 4;
-          doc.setFont('helvetica', 'normal');
-          sec.items.forEach(function(it) {
-            var v = vck[it.key];
-            if (!v) return;
-            var mark = v === 'ok' ? '[OK] ' : v === 'obs' ? '[OBS] ' : v === 'na' ? '[N/A] ' : '[?] ';
-            var line = '   ' + mark + it.label;
-            doc.splitTextToSize(line, pageW - marginX*2 - 5).forEach(function(ln){
-              if (y > 273) { doc.addPage(); y = 15; }
-              doc.text(ln, marginX, y); y += 3.5;
-            });
-          });
-          // Observaciones de la seccion
-          if (vck['sec_obs_' + sec.n]) {
-            doc.setFont('helvetica', 'italic');
-            doc.splitTextToSize('   Obs: ' + vck['sec_obs_' + sec.n], pageW - marginX*2 - 5).forEach(function(ln){
-              if (y > 273) { doc.addPage(); y = 15; }
-              doc.text(ln, marginX, y); y += 3.5;
-            });
-            doc.setFont('helvetica', 'normal');
-          }
-          y += 1;
-          doc.setFontSize(10);
-        });
-      }
-
-      // Notas legacy (campo viejo, mantener retrocompat)
       if (cd.visado_notes) {
         doc.splitTextToSize('Notas del visado: ' + cd.visado_notes, pageW - marginX*2).forEach(function(ln){
           if (y > 273) { doc.addPage(); y = 15; }
