@@ -593,6 +593,25 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════
+     FASE 2.4.C: MODAL DE VISADO (review + aprobar/rechazar)
+     ═══════════════════════════════════════════════════════════════ -->
+<div class="overlay" id="m-visado" style="display:none">
+  <div class="modal" style="max-height:92vh;overflow-y:auto;max-width:520px">
+    <div id="m-visado-body"></div>
+    <div id="m-visado-rejection-wrap" style="display:none;margin-top:14px;padding:10px;background:var(--red4);border-left:3px solid var(--red);border-radius:3px">
+      <div class="lbl">Motivo del rechazo</div>
+      <textarea class="inp" id="m-visado-rejection" rows="3" placeholder="Describe qué falta o está mal hecho. Esto se enviará al técnico."></textarea>
+      <button class="btn btn-red" id="m-visado-reject-btn" onclick="rejectVisado()" style="margin-top:6px">Confirmar rechazo</button>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:6px;margin-top:14px">
+      <button class="btn btn-green" id="m-visado-approve-btn" onclick="approveVisado()" style="background:var(--green);color:#fff">✓ Aprobar visado</button>
+      <button class="btn btn-out" onclick="showRejectionForm()" style="border-color:var(--red);color:var(--red)">✗ Rechazar con observaciones</button>
+      <button class="btn btn-out" onclick="closeModal('m-visado')">Cerrar sin acción</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════
      FASE 2.4.A: MODAL DETALLE OT (vista del técnico — Mis OTs)
      ═══════════════════════════════════════════════════════════════ -->
 <div class="overlay" id="m-my-ot" style="display:none">
@@ -797,7 +816,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // CONFIG & DEBUG
 // ═══════════════════════════════════════════════
 const DEBUG = true;
-const APP_VERSION = 'v2.9.1-alerts+goals+cascade';
+const APP_VERSION = 'v2.9.2-visado+sched-resilient';
 const SURL = 'https://jczmupcmeixpwjedfgtk.supabase.co';
 const SKEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impjem11cGNtZWl4cHdqZWRmZ3RrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY5NzMxOTMsImV4cCI6MjA5MjU0OTE5M30.DuICC_pCQGv27lZivieXRRvGz9A1GNkgmhvTvyKo25o';
 var sb = null; // initialized in init()
@@ -2637,11 +2656,12 @@ function refreshBossTabsVisibility() {
   if (elCatastro) elCatastro.style.display = hasPerm(CU, 'can_ingresar_clientes') ? '' : 'none';
   var elClientes = document.getElementById('tab-clientes');
   if (elClientes) elClientes.style.display = hasPerm(CU, 'can_ingresar_clientes') ? '' : 'none';
-  // FASE 2.4.C: pestaña Visado solo para usuarios con can_visar
+  // FASE 2.4.C-fix: pestaña Visado SOLO para visadores explícitos (no para admins por inheritance).
+  var isVisador = !!(CU.permissions && CU.permissions.can_visar === true);
   var elBossVisado = document.getElementById('tab-boss-visado');
-  if (elBossVisado) elBossVisado.style.display = hasPerm(CU, 'can_visar') ? '' : 'none';
+  if (elBossVisado) elBossVisado.style.display = isVisador ? '' : 'none';
   var elTechVisado = document.getElementById('tab-tech-visado');
-  if (elTechVisado) elTechVisado.style.display = hasPerm(CU, 'can_visar') ? '' : 'none';
+  if (elTechVisado) elTechVisado.style.display = isVisador ? '' : 'none';
   var elUsers = document.getElementById('tab-users');
   if (elUsers) elUsers.style.display = (CU.role === 'admin') ? '' : 'none';
   var elCfg = document.getElementById('tab-cfg');
@@ -2651,8 +2671,9 @@ function refreshBossTabsVisibility() {
 // FASE 2.4.C: helper análogo para pantalla técnica (visadores con rol tech ven la tab Visado)
 function refreshTechTabsVisibility() {
   if (!CU) return;
+  var isVisador = !!(CU.permissions && CU.permissions.can_visar === true);
   var el = document.getElementById('tab-tech-visado');
-  if (el) el.style.display = hasPerm(CU, 'can_visar') ? '' : 'none';
+  if (el) el.style.display = isVisador ? '' : 'none';
 }
 
 // ═══════════════════════════════════════════════
@@ -7534,6 +7555,191 @@ async function saveNewOT() {
   if (curBossTab === 'b-ingreso')  await loadUnassignedToday();
 }
 
+// ═══════════════════════════════════════════════════════════════
+// FASE 2.4.C: PANEL DE VISADO (solo visadores: Nicolás, Benjamin C, Oscar Bueno)
+// ═══════════════════════════════════════════════════════════════
+var _visadoCache = [];
+var _activeVisadoOT = null;
+
+async function renderVisadoPanel(body) {
+  var isVisador = !!(CU && CU.permissions && CU.permissions.can_visar === true);
+  if (!isVisador) {
+    body.innerHTML = '<div class="card"><div style="text-align:center;color:var(--wh3);padding:18px">No tienes permiso de visado.</div></div>';
+    return;
+  }
+  body.innerHTML = '<div class="card-accent">'
+    + '<div style="font-size:13px;font-weight:700;color:#111;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">⚖️ OTs pendientes de visado</div>'
+    + '<div style="font-size:11px;color:var(--wh3);margin-bottom:10px;line-height:1.4">OTs donde el técnico ya completó checklist + doble control. Revisa el trabajo y aprueba o rechaza con observaciones.</div>'
+    + '<div id="visado-meta" style="font-size:11px;color:var(--wh3);margin-bottom:8px;font-family:var(--mono)">Cargando...</div>'
+    + '<div id="visado-list"></div>'
+    + '</div>';
+  await loadVisadoOTs();
+}
+
+async function loadVisadoOTs() {
+  var meta = document.getElementById('visado-meta');
+  var list = document.getElementById('visado-list');
+  if (!meta || !list || !sb) return;
+  try {
+    var rOT = await sb.from('work_orders').select('*').eq('status', 'pending_visado').order('updated_at', {ascending: true}).limit(200);
+    if (rOT.error) { meta.textContent = 'Error: ' + rOT.error.message; return; }
+    var ots = rOT.data || [];
+    if (ots.length === 0) {
+      meta.textContent = '0 OTs pendientes de visado';
+      list.innerHTML = '<div class="empty" style="padding:24px;text-align:center;color:var(--wh4)">No hay OTs esperando visado en este momento.</div>';
+      return;
+    }
+    var vehIds = Array.from(new Set(ots.map(function(o){return o.vehicle_id;}).filter(Boolean)));
+    var cliIds = Array.from(new Set(ots.map(function(o){return o.client_id;}).filter(Boolean)));
+    var vehs = {}, clis = {};
+    if (vehIds.length) { var rv = await sb.from('client_vehicles').select('*').in('id', vehIds); (rv.data || []).forEach(function(v){vehs[v.id]=v;}); }
+    if (cliIds.length) { var rc = await sb.from('clients').select('id,name,rut,phone').in('id', cliIds); (rc.data || []).forEach(function(c){clis[c.id]=c;}); }
+    _visadoCache = ots.map(function(o){return {ot:o, vehicle:vehs[o.vehicle_id]||null, client:clis[o.client_id]||null};});
+    meta.textContent = ots.length + ' OT' + (ots.length===1?'':'s') + ' pendiente' + (ots.length===1?'':'s');
+    list.innerHTML = _visadoCache.map(function(r){
+      var o=r.ot, v=r.vehicle, c=r.client;
+      var srv = SERVICES_INGRESO.find(function(x){return x.key === o.service_classification;});
+      var srvLabel = srv ? srv.label : (o.service_classification || '?');
+      var pv = v ? validatePlate(v.plate || '') : {valid:false};
+      var plate = pv.valid ? pv.formatted : (v && v.plate || '?');
+      var cd = o.checklist_data || {};
+      var techBy = cd.tech_completed_by_name || '?';
+      var dcAt = cd.double_check_completed_at ? new Date(cd.double_check_completed_at).toLocaleString('es-CL') : '?';
+      return '<div style="background:#fff;border:1px solid var(--gold);border-left:4px solid var(--gold);border-radius:3px;padding:10px;margin-bottom:6px;cursor:pointer" onclick="openVisadoModal(\'' + o.id + '\')">'
+        + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:4px">'
+        +   '<div style="font-size:13px;font-weight:700;font-family:\'Rajdhani\',sans-serif">OT-' + (o.ot_number || '?') + ' · ' + escapeHtml(srvLabel) + '</div>'
+        +   '<div style="font-size:9px;color:var(--gold3);font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.06em">⏳ Pendiente</div>'
+        + '</div>'
+        + (o.service_subtype ? '<div style="font-size:11px;color:var(--wh2);margin-bottom:2px">' + escapeHtml(o.service_subtype) + '</div>' : '')
+        + '<div style="font-size:11px;color:var(--wh3)">' + (v ? escapeHtml(v.brand) + ' ' + escapeHtml(v.model) + ' · ' + plate : '?') + (c ? ' · ' + escapeHtml(c.name) : '') + '</div>'
+        + '<div style="font-size:10px;color:var(--wh4);margin-top:2px;font-family:var(--mono)">Técnico: ' + escapeHtml(techBy) + ' · Cerrado: ' + dcAt + '</div>'
+        + '</div>';
+    }).join('');
+  } catch(e) { meta.textContent = 'Error: ' + e.message; }
+}
+
+async function openVisadoModal(otId) {
+  var row = _visadoCache.find(function(r){return r.ot.id === otId;});
+  if (!row) { await loadVisadoOTs(); row = _visadoCache.find(function(r){return r.ot.id === otId;}); }
+  if (!row) { showGlobalError('OT no encontrada', 4000); return; }
+  _activeVisadoOT = row;
+  var o=row.ot, v=row.vehicle, c=row.client, cd = o.checklist_data || {};
+  var srv = SERVICES_INGRESO.find(function(x){return x.key === o.service_classification;});
+  var srvLabel = srv ? srv.label : (o.service_classification || '?');
+  var pv = v ? validatePlate(v.plate || '') : {valid:false};
+  var plate = pv.valid ? pv.formatted : (v && v.plate || '?');
+  var techDef = CHECKLISTS_TECH[o.service_classification];
+
+  var html = '<div class="modal-t">Visado OT-' + (o.ot_number || '?') + '</div>'
+    + '<div class="modal-s">' + escapeHtml(srvLabel) + (o.service_subtype ? ' · ' + escapeHtml(o.service_subtype) : '') + '</div>'
+    + '<div style="margin:10px 0;padding:8px;background:#f8f8f8;border-radius:3px;font-size:11px;line-height:1.5">'
+    +   '<b>Vehículo:</b> ' + (v ? escapeHtml(v.brand) + ' ' + escapeHtml(v.model) + ' · ' + plate + ' · KM ' + (v.km_entry||'?') : '?') + '<br/>'
+    +   '<b>Cliente:</b> ' + (c ? escapeHtml(c.name) + ' · ' + escapeHtml(c.rut || c.phone || '') : '?') + '<br/>'
+    +   '<b>Gestor:</b> ' + escapeHtml(o.commercial_manager_name || '?') + '<br/>'
+    +   '<b>Técnico:</b> ' + escapeHtml(cd.tech_completed_by_name || '?')
+    + '</div>';
+
+  if (techDef && cd.tech_checklist) {
+    html += '<div style="border-top:2px solid var(--red);margin-top:12px;padding-top:8px"><div style="font-size:12px;font-weight:700;color:#111;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">Checklist técnico realizado</div>';
+    techDef.sections.forEach(function(sec) {
+      html += '<div style="margin-bottom:8px"><div style="font-size:10px;font-weight:700;color:var(--red);font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.04em;margin-bottom:3px">' + escapeHtml(sec.title) + '</div>';
+      sec.items.forEach(function(it) {
+        var val = cd.tech_checklist[it.key];
+        var displayVal = val === true ? '<span style="color:var(--green);font-weight:700">SÍ</span>'
+                       : val === false ? '<span style="color:var(--red);font-weight:700">NO</span>'
+                       : (val == null || val === '') ? '<span style="color:var(--wh4)">—</span>'
+                       : '<b>' + escapeHtml(String(val)) + '</b>';
+        html += '<div style="font-size:11px;color:var(--wh2);padding:3px 0;border-bottom:1px dotted #eee"><span style="color:var(--wh3)">' + escapeHtml(it.label) + ':</span> ' + displayVal + '</div>';
+      });
+      html += '</div>';
+    });
+    html += '</div>';
+  }
+
+  if (cd.double_check) {
+    html += '<div style="border-top:2px solid var(--gold);margin-top:12px;padding-top:8px"><div style="font-size:12px;font-weight:700;color:#111;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">Doble control de cierre</div>';
+    CHECKLIST_DOBLE_CONTROL.forEach(function(it) {
+      var val = cd.double_check[it.key];
+      var displayVal = val === true ? '<span style="color:var(--green);font-weight:700">✓ SÍ</span>'
+                     : val === false ? '<span style="color:var(--red);font-weight:700">✗ NO</span>'
+                     : (val != null ? '<b>' + escapeHtml(String(val)) + '</b>' : '<span style="color:var(--wh4)">—</span>');
+      html += '<div style="font-size:11px;color:var(--wh2);padding:3px 0;border-bottom:1px dotted #eee"><span style="color:var(--wh3)">' + escapeHtml(it.label) + ':</span> ' + displayVal + '</div>';
+    });
+    html += '</div>';
+  }
+
+  if (v && v.photos && Object.keys(v.photos).length > 0) {
+    html += '<div style="border-top:1px solid var(--border);margin-top:12px;padding-top:8px"><div style="font-size:12px;font-weight:700;color:#111;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">Fotos de ingreso</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">'
+      + VEHICLE_PHOTOS.filter(function(p){return v.photos[p.key];}).map(function(p){
+          return '<a href="' + v.photos[p.key] + '" target="_blank" rel="noopener"><img src="' + v.photos[p.key] + '" style="width:100%;aspect-ratio:1.3/1;object-fit:cover;border-radius:3px;border:1px solid var(--border)" alt=""/><div style="font-size:9px;color:var(--wh3);text-align:center">' + p.label + '</div></a>';
+        }).join('')
+      + '</div></div>';
+  }
+
+  html += '<div style="margin-top:14px"><button class="btn-sm" onclick="generateOTPdf(\'' + o.id + '\')">📄 Descargar PDF</button></div>';
+
+  document.getElementById('m-visado-body').innerHTML = html;
+  document.getElementById('m-visado-rejection').value = '';
+  document.getElementById('m-visado-rejection-wrap').style.display = 'none';
+  openModal('m-visado');
+}
+
+function showRejectionForm() {
+  document.getElementById('m-visado-rejection-wrap').style.display = '';
+}
+
+async function approveVisado() {
+  if (!_activeVisadoOT) return;
+  var o = _activeVisadoOT.ot;
+  var btn = document.getElementById('m-visado-approve-btn');
+  btn.innerHTML = '<span class="spin"></span> Aprobando...'; btn.disabled = true;
+  var newCD = Object.assign({}, o.checklist_data || {}, {
+    visado_at: new Date().toISOString(),
+    visado_by: CU ? CU.id : null,
+    visado_by_name: CU ? CU.name : null,
+    visado_approved: true
+  });
+  try {
+    var r = await sb.from('work_orders').update({checklist_data:newCD, status:'closed', updated_by: CU?CU.id:null}).eq('id', o.id);
+    if (r.error) throw new Error(r.error.message);
+  } catch(e) { btn.innerHTML='✓ Aprobar visado'; btn.disabled=false; showGlobalError('Error: '+e.message, 5000); return; }
+  // Notificar al gestor
+  if (o.commercial_manager_id) {
+    try { await sb.from('notifications').insert({type:'visado_done', title:'✓ OT-'+(o.ot_number||'?')+' visada', sub:'Aprobada por '+CU.name, target_user_id:o.commercial_manager_id, work_order_id:o.id}); } catch(_){}
+  }
+  btn.innerHTML='✓ Aprobar visado'; btn.disabled=false;
+  closeModal('m-visado');
+  showGlobalError('OT aprobada y cerrada', 3000);
+  await loadVisadoOTs();
+}
+
+async function rejectVisado() {
+  if (!_activeVisadoOT) return;
+  var rej = document.getElementById('m-visado-rejection');
+  var reason = rej && rej.value ? rej.value.trim() : '';
+  if (!reason) { showGlobalError('Indica el motivo del rechazo', 4000); return; }
+  var o = _activeVisadoOT.ot;
+  var btn = document.getElementById('m-visado-reject-btn');
+  btn.innerHTML = '<span class="spin"></span> Rechazando...'; btn.disabled = true;
+  var newCD = Object.assign({}, o.checklist_data || {}, {
+    visado_rejection: {reason:reason, at:new Date().toISOString(), by:CU?CU.id:null, by_name:CU?CU.name:null},
+    visado_approved: false
+  });
+  try {
+    var r = await sb.from('work_orders').update({checklist_data:newCD, status:'in_progress', updated_by:CU?CU.id:null}).eq('id', o.id);
+    if (r.error) throw new Error(r.error.message);
+  } catch(e) { btn.innerHTML='Confirmar rechazo'; btn.disabled=false; showGlobalError('Error: '+e.message, 5000); return; }
+  // Notificar al técnico
+  var techId = (o.checklist_data && o.checklist_data.double_check_completed_by) || (o.checklist_data && o.checklist_data.tech_completed_by);
+  if (techId) {
+    try { await sb.from('notifications').insert({type:'visado_rejected', title:'⚠ OT-'+(o.ot_number||'?')+' rechazada', sub:'Motivo: '+reason.slice(0,200), target_user_id:techId, work_order_id:o.id}); } catch(_){}
+  }
+  btn.innerHTML='Confirmar rechazo'; btn.disabled=false;
+  closeModal('m-visado');
+  showGlobalError('OT devuelta al técnico con observaciones', 3500);
+  await loadVisadoOTs();
+}
+
 // FASE 2.4.D-fix: dispatch de alertas al crear OT.
 // Notifica al gestor comercial asignado + al jefe de taller (Oscar Bueno).
 // Mensaje claro: "OT-X · servicio · vehículo · pendiente de asignar técnico"
@@ -7566,38 +7772,66 @@ async function notifyOTCreated(otId, otNumber, srvLabel, plate, mgrId) {
 }
 
 // FASE 2.4.D: helper para auto-crear scheduled_service vinculado a una OT
+// Resiliente: si falla por la columna work_order_id (SQL no aplicado), reintenta sin ella
+// y avisa explícitamente al usuario que aplique el SQL.
 async function autoCreateScheduledForOT(otId, vehicleId, srvKey, srvSub, mgrId) {
+  if (!sb || !otId) return;
   try {
     var srvDef = SERVICES_INGRESO.find(function(x){return x.key === srvKey;});
     var srvName = srvDef ? srvDef.label : srvKey;
     if (srvSub) srvName += ' · ' + srvSub;
+    // Goal por defecto: cambio aceite=30, express=60, completo=120
+    var goalDefaults = {CAMBIO_ACEITE: 30, MANT_EXPRESS: 60, MANT_COMPLETO: 120};
+    var defaultGoal = goalDefaults[srvKey] || 60;
+
     var plate = '';
     if (vehicleId) {
-      var rv = await sb.from('client_vehicles').select('plate').eq('id', vehicleId).maybeSingle();
-      if (rv && rv.data) plate = rv.data.plate || '';
+      try {
+        var rv = await sb.from('client_vehicles').select('plate').eq('id', vehicleId).maybeSingle();
+        if (rv && rv.data) plate = rv.data.plate || '';
+      } catch(_){}
     }
     var schPayload = {
-      service: srvName.slice(0, 90), // truncar por si excede el campo
+      service: srvName.slice(0, 90),
       plate: plate,
       scheduled_at: new Date().toISOString(),
       technician_id: null,
       technician_name: 'Sin asignar',
       status: 'pendiente',
-      goal_minutes: srvDef && srvDef.goal ? srvDef.goal : null,
-      created_by: CU ? CU.name : null,
-      work_order_id: otId
+      goal_minutes: defaultGoal,
+      created_by: CU ? CU.name : null
     };
+    // PRIMER INTENTO: con work_order_id (requiere SQL fase_2_4_d_migration aplicado)
+    schPayload.work_order_id = otId;
     var rs = await sb.from('scheduled_services').insert(schPayload).select('id').single();
+
     if (rs.error) {
-      logR('AUTO_SCHED_ERR', {msg: rs.error.message}, 'warn');
-      return;
+      // Si falló por columna inexistente, REINTENTAR sin work_order_id (degradado)
+      var msg = (rs.error.message || '').toLowerCase();
+      if (msg.indexOf('work_order_id') !== -1 || msg.indexOf('column') !== -1) {
+        logR('AUTO_SCHED_NO_FK_COL', {msg: rs.error.message}, 'warn');
+        showGlobalError('⚠ El evento se agendó pero sin vincular a la OT. Falta correr el SQL "fase_2_4_d_migration.sql" en Supabase. Cuando lo apliques, se vinculará automáticamente en próximas OTs.', 9000);
+        delete schPayload.work_order_id;
+        rs = await sb.from('scheduled_services').insert(schPayload).select('id').single();
+        if (rs.error) {
+          logR('AUTO_SCHED_FAIL', {msg: rs.error.message}, 'err');
+          showGlobalError('No se pudo agendar evento del calendario: ' + rs.error.message, 7000);
+          return;
+        }
+      } else {
+        logR('AUTO_SCHED_ERR', {msg: rs.error.message}, 'err');
+        showGlobalError('No se pudo crear evento en el calendario: ' + rs.error.message, 7000);
+        return;
+      }
     }
     var schedId = rs.data && rs.data.id;
     if (schedId) {
-      await sb.from('work_orders').update({scheduled_service_id: schedId}).eq('id', otId);
+      try { await sb.from('work_orders').update({scheduled_service_id: schedId}).eq('id', otId); } catch(_){}
+      logR('AUTO_SCHED_OK', {otId: otId, schedId: schedId});
     }
   } catch(e) {
-    logR('AUTO_SCHED_THREW', {msg: e.message}, 'warn');
+    logR('AUTO_SCHED_THREW', {msg: e.message}, 'err');
+    showGlobalError('Error al crear evento agendado: ' + e.message, 6000);
   }
 }
 
