@@ -4576,7 +4576,7 @@ async function renderBossClientes(body, mode) {
   var isIngreso = mode === 'ingreso';
   var titleText = isIngreso ? 'Recepción de vehículos' : 'Base de clientes';
   var subText = isIngreso
-    ? 'Cuando un vehículo llega al taller para servicio, registra aquí los datos del cliente. En la siguiente fase agregarás los datos del vehículo, fotos del estado de entrada y se generará la orden de trabajo para el técnico.'
+    ? 'Recepción de vehículos del día. Cada cliente que ingresas aquí queda guardado automáticamente en la base de Registro Clientes. Mañana esta lista se vacía sola; el cliente sigue disponible en la base.'
     : 'Carga aquí tus clientes principales (empresas, organismos públicos, personas frecuentes). Una vez registrados, al recibir un vehículo en taller los podrás seleccionar rápido sin tipear todos los datos de nuevo.';
   var btnText = isIngreso ? '+ Nuevo ingreso' : '+ Nuevo cliente';
   body.innerHTML = '<div class="card-accent">'
@@ -4624,19 +4624,48 @@ function renderClientsList() {
   var meta = document.getElementById('cli-list-meta');
   if (!list) return;
   var q = _clientsSearch;
-  var filtered = _clientsCache;
+  var isIngreso = _clientsViewMode === 'ingreso';
+
+  // FASE 2.2.A FIX: en modo Ingreso Taller, mostrar SOLO lo del dia para que la lista no
+  // crezca al infinito. La base maestra completa vive en Registro Clientes.
+  var base = _clientsCache;
+  if (isIngreso) {
+    var todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    var tMs = todayStart.getTime();
+    base = _clientsCache.filter(function(c) {
+      var ct = c.created_at ? new Date(c.created_at).getTime() : 0;
+      return ct >= tMs;
+    });
+  }
+
+  var filtered = base;
   if (q) {
-    filtered = _clientsCache.filter(function(c) {
+    filtered = base.filter(function(c) {
       return (c.name || '').toUpperCase().indexOf(q) !== -1
           || (c.rut || '').toUpperCase().indexOf(q) !== -1
           || (c.phone || '').indexOf(q) !== -1;
     });
   }
-  if (meta) meta.textContent = filtered.length + ' de ' + _clientsCache.length + ' cliente(s)';
+  if (meta) {
+    if (isIngreso) {
+      meta.textContent = filtered.length + ' ingreso(s) registrado(s) hoy · ' + _clientsCache.length + ' cliente(s) en la base';
+    } else {
+      meta.textContent = filtered.length + ' de ' + _clientsCache.length + ' cliente(s)';
+    }
+  }
   if (filtered.length === 0) {
-    list.innerHTML = '<div class="empty" style="padding:24px;text-align:center;color:var(--wh4)">'
-      + (_clientsCache.length === 0 ? 'Aun no hay clientes registrados. Toca "+ Nuevo cliente" para crear el primero.' : 'No se encontraron clientes con ese filtro.')
-      + '</div>';
+    var emptyMsg;
+    if (isIngreso) {
+      emptyMsg = q
+        ? 'No se encontraron ingresos de hoy con ese filtro.'
+        : 'Aún no hay ingresos hoy. Toca "+ Nuevo ingreso" cuando llegue un vehículo al taller.';
+    } else {
+      emptyMsg = q
+        ? 'No se encontraron clientes con ese filtro.'
+        : 'Aún no hay clientes registrados. Toca "+ Nuevo cliente" para crear el primero.';
+    }
+    list.innerHTML = '<div class="empty" style="padding:24px;text-align:center;color:var(--wh4);line-height:1.5">' + emptyMsg + '</div>';
     return;
   }
   var typeLabel = {persona:'PERSONA', empresa:'EMPRESA', organismo:'ORGANISMO'};
