@@ -869,7 +869,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // CONFIG & DEBUG
 // ═══════════════════════════════════════════════
 const DEBUG = true;
-const APP_VERSION = 'v2.7.OPS-3changes-fix';
+const APP_VERSION = 'v2.7.OPS-historial-clean';
 const SURL = 'https://jczmupcmeixpwjedfgtk.supabase.co';
 const SKEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impjem11cGNtZWl4cHdqZWRmZ3RrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY5NzMxOTMsImV4cCI6MjA5MjU0OTE5M30.DuICC_pCQGv27lZivieXRRvGz9A1GNkgmhvTvyKo25o';
 var sb = null; // initialized in init()
@@ -5611,7 +5611,7 @@ function buildHistDetailHTML(r) {
   if (r._checklist) {
     var ck = r._checklist;
     html += '<hr style="border:none;border-top:1px solid var(--border);margin:10px 0"/>';
-    html += '<div style="font-weight:700;color:var(--red)">CHECKLIST</div>';
+    html += '<div style="font-weight:700;color:var(--red)">CHECKLIST DEL MECÁNICO</div>';
     if (ck.litros != null) html += '<div>Litros: ' + ck.litros + ' L</div>';
     if (ck.aceite) html += '<div>Aceite: ' + escapeHTML(ck.aceite) + '</div>';
     if (ck.prueba_ruta) {
@@ -5619,9 +5619,11 @@ function buildHistDetailHTML(r) {
       var prTxt = (typeof pr === 'object') ? ((pr.tipo || '') + ' · ' + (pr.resultado || '') + (pr.anomalias ? ' · Anomalías: ' + pr.anomalias : '')) : String(pr);
       html += '<div>Prueba de ruta: ' + escapeHTML(prTxt) + '</div>';
     }
-    if (ck.doble_control) html += '<div>Doble control (auto-tec): ' + escapeHTML(String(ck.doble_control)) + '</div>';
-    if (ck.visado) html += '<div>Visado superior: ' + escapeHTML(String(ck.visado)) + '</div>';
+    if (ck.doble_control) html += '<div><b>Doble control</b> (auto-verificación del mecánico): ' + escapeHTML(String(ck.doble_control)) + '</div>';
     if (ck.observaciones) html += '<div style="margin-top:6px"><b>Observaciones:</b><br/>' + escapeHTML(ck.observaciones) + '</div>';
+    // FASE 2.7: NO mostrar ck.visado del checklist viejo. El visado real lo hace el supervisor
+    // desde la pestaña Visado y queda en work_orders.checklist_data.visado_status.
+    html += '<div style="margin-top:8px;font-size:10px;color:var(--wh4);font-style:italic">El visado oficial lo realiza un superior desde la pestaña Visado.</div>';
   }
   return html;
 }
@@ -5647,10 +5649,12 @@ function buildHistTextBlock(r, num) {
       var prTxt = (typeof pr === 'object') ? ('Ruta ' + (pr.tipo || '') + ' ' + (pr.resultado || '')) : ('Ruta: ' + pr);
       parts.push(prTxt);
     }
-    if (ck.doble_control) parts.push('Doble ctrl: ' + ck.doble_control);
-    if (ck.visado) parts.push('Visado: ' + ck.visado);
+    if (ck.doble_control) parts.push('Doble ctrl mecánico: ' + ck.doble_control);
+    // FASE 2.7: NO incluir ck.visado (campo viejo auto-marcado por el técnico, engañoso).
+    // El visado real lo hace el supervisor desde la pestaña Visado.
     if (parts.length) L.push('   ' + parts.join(' | '));
     if (ck.observaciones) L.push('   Observaciones: ' + ck.observaciones);
+    L.push('   (Visado oficial: ver pestaña Visado)');
   }
   L.push('');
   return L.join('\n');
@@ -5684,6 +5688,7 @@ async function exportSelectedHist(mode) {
     if (!window.XLSX) { showGlobalError('XLSX no disponible (recargá la página)', 5000); return; }
     var dataRows = rows.map(function(r){
       var ck = r._checklist || {};
+      var pr = ck.prueba_ruta || {};
       return {
         Tecnico: r.technician,
         Servicio: r.service,
@@ -5695,8 +5700,10 @@ async function exportSelectedHist(mode) {
         Pausas: (r.pauses || []).map(function(p){return p.reason || '?';}).join(' | '),
         Litros: ck.litros || '',
         Aceite: ck.aceite || '',
-        Doble_control: ck.doble_control || '',
-        Visado: ck.visado || '',
+        PruebaRuta_tipo: (typeof pr === 'object') ? (pr.tipo || '') : '',
+        PruebaRuta_resultado: (typeof pr === 'object') ? (pr.resultado || '') : '',
+        Anomalias_ruta: (typeof pr === 'object') ? (pr.anomalias || '') : '',
+        Doble_control_mecanico: ck.doble_control || '',
         Observaciones: ck.observaciones || ''
       };
     });
