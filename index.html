@@ -849,7 +849,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // CONFIG & DEBUG
 // ═══════════════════════════════════════════════
 const DEBUG = true;
-const APP_VERSION = 'v2.6.OPS-multitec-hotfix';
+const APP_VERSION = 'v2.6.OPS-multitec-hotfix3';
 const SURL = 'https://jczmupcmeixpwjedfgtk.supabase.co';
 const SKEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impjem11cGNtZWl4cHdqZWRmZ3RrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY5NzMxOTMsImV4cCI6MjA5MjU0OTE5M30.DuICC_pCQGv27lZivieXRRvGz9A1GNkgmhvTvyKo25o';
 var sb = null; // initialized in init()
@@ -2571,6 +2571,33 @@ async function pollAll() {
 //   = accumulated_paused_ms (de pausas ya cerradas)
 //   + (si esta pausado ahora): (ahora - paused_at)
 //
+// FASE 2.6 FIX (v3): work_orders NO tiene columna 'plate'. La patente esta en
+// client_vehicles. Helper centralizado: dado un plate, busca el vehicle_id y
+// luego la OT abierta mas reciente. Devuelve {id, ot_number, status} o null.
+async function findOpenOTByPlate(plate) {
+  if (!plate || !sb) return null;
+  try {
+    var rv = await sb.from('client_vehicles')
+      .select('id')
+      .eq('plate', plate)
+      .order('created_at', {ascending: false})
+      .limit(1).maybeSingle();
+    if (!rv || !rv.data) return null;
+    var vehicleId = rv.data.id;
+    var rwo = await sb.from('work_orders')
+      .select('id, ot_number, status, assigned_user_id')
+      .eq('vehicle_id', vehicleId)
+      .in('status', ['open','assigned','in_progress','pending_double_check'])
+      .order('created_at', {ascending: false})
+      .limit(1).maybeSingle();
+    if (rwo && rwo.data) return rwo.data;
+    return null;
+  } catch(e) {
+    logR('FIND_OT_BY_PLATE_ERR', {plate: plate, msg: e.message}, 'warn');
+    return null;
+  }
+}
+
 // FASE 2.6: detector de OT abierta + tiempo acumulado al ingresar patente
 // en "Nuevo registro". Muestra banner "Continuar trabajo de [técnico]".
 var _plateCheckTimer = null;
@@ -2581,14 +2608,8 @@ function onPlateInputCheckOT(plate) {
   if (!plate || plate.length < 4) { banner.style.display = 'none'; return; }
   _plateCheckTimer = setTimeout(async function(){
     try {
-      var rwo = await sb.from('work_orders')
-        .select('id, ot_number, status, assigned_user_id')
-        .eq('plate', plate)
-        .in('status', ['open','assigned','in_progress','pending_double_check'])
-        .order('created_at', {ascending: false})
-        .limit(1).maybeSingle();
-      if (!rwo || !rwo.data) { banner.style.display = 'none'; return; }
-      var wo = rwo.data;
+      var wo = await findOpenOTByPlate(plate);
+      if (!wo) { banner.style.display = 'none'; return; }
       // Buscar último técnico que trabajó la OT
       var rste = await sb.from('service_time_entries')
         .select('technician_name, technician_username, ended_at, type, notes')
@@ -2738,17 +2759,10 @@ async function confirmAsistencia() {
     if (info) info.textContent = 'Patente requerida (mínimo 4 caracteres).';
     return;
   }
-  // Buscar OT abierta para esta patente
+  // FASE 2.6 FIX (v3): buscar OT abierta vía vehicle_id
   var assistedWoId = null;
-  try {
-    var rwo = await sb.from('work_orders')
-      .select('id, ot_number')
-      .eq('plate', plate)
-      .in('status', ['open','assigned','in_progress','pending_double_check'])
-      .order('created_at', {ascending: false})
-      .limit(1).maybeSingle();
-    if (rwo && rwo.data) assistedWoId = rwo.data.id;
-  } catch(_){}
+  var foundAssisted = await findOpenOTByPlate(plate);
+  if (foundAssisted) assistedWoId = foundAssisted.id;
   if (!assistedWoId) {
     if (info) info.textContent = '⚠ No se encontró OT abierta para esta patente. La asistencia no se podrá sumar.';
     return;
@@ -2816,9 +2830,21 @@ async function confirmAsistencia() {
 // Retorna SEGUNDOS enteros.
 function liveSecondsNow(s) {
   if (!s) return 0;
-  // Estados congelados: usa el snapshot guardado
+  // Estados congelados: usa el snapshot guardado, pero CON CLAMP defensivo.
+  // Si el snapshot fue persistido con un valor absurdo (>18h), usar el goal
+  // como referencia razonable o cap a 18h. Marcar como suspect.
   if (s.status === 'completed' || s.status === 'checklist_pending') {
-    return s.seconds || 0;
+    var snap = s.seconds || 0;
+    var MAX_S = 18 * 3600;
+    if (snap > MAX_S) {
+      s.__suspect_drift = true;
+      // Si la sesion tiene goal_minutes, usar 1.5x el goal como aproximacion
+      if (s.goal_minutes && s.goal_minutes * 60 < MAX_S) {
+        return Math.round(s.goal_minutes * 60 * 1.5);
+      }
+      return MAX_S;
+    }
+    return snap;
   }
   // Si no hay started_at (sesion legacy), caer a valor guardado
   if (!s.started_at) return s.seconds || 0;
@@ -3209,22 +3235,12 @@ async function doStartSession() {
   var goal = (srv && srv.subGoals && selSub) ? srv.subGoals[selSub] : (srv ? srv.goal : null);
   var key = CU.username + '_' + Date.now();
 
-  // FASE 2.6: detectar OT abierta para esta patente y vincular la sesion
-  // Permite la sumatoria de tiempo total por OT y el flujo de cambio de tecnico.
+  // FASE 2.6 FIX (v3): detectar OT abierta vía vehicle_id (work_orders no tiene plate)
   var workOrderId = null;
   if (selPlate && selPlate !== 'Logistica de taller') {
-    try {
-      var rwo = await sb.from('work_orders')
-        .select('id, ot_number, assigned_user_id, status')
-        .eq('plate', selPlate)
-        .in('status', ['open','assigned','in_progress','pending_double_check'])
-        .order('created_at', {ascending: false})
-        .limit(1)
-        .maybeSingle();
-      if (rwo && rwo.data) {
-        workOrderId = rwo.data.id;
-      }
-    } catch(_){}
+    var foundOT = await findOpenOTByPlate(selPlate);
+    if (foundOT) workOrderId = foundOT.id;
+    logR('SESSION_OT_LOOKUP', {plate: selPlate, ot_id: workOrderId});
   }
 
   var payload = {
