@@ -205,6 +205,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
   <div class="tab-bar" id="tech-tabbar">
     <div class="tab active" data-tab="t-nuevo" onclick="techTab('t-nuevo')">Nuevo registro</div>
     <div class="tab" data-tab="t-misservicios" onclick="techTab('t-misservicios')">Mis servicios<span class="ndot" id="tech-active-dot"></span></div>
+    <div class="tab" data-tab="t-misot" onclick="techTab('t-misot')">Mis OTs<span class="ndot" id="tech-ot-dot"></span></div>
     <div class="tab" data-tab="t-agenda" onclick="techTab('t-agenda')">Agenda</div>
     <div class="tab" data-tab="t-alertas" onclick="techTab('t-alertas')">Alertas<span class="ndot" id="tech-ndot"></span></div>
     <div class="tab" data-tab="t-historial" onclick="techTab('t-historial')">Historial</div>
@@ -590,6 +591,36 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════
+     FASE 2.4.A: MODAL DETALLE OT (vista del técnico — Mis OTs)
+     ═══════════════════════════════════════════════════════════════ -->
+<div class="overlay" id="m-my-ot" style="display:none">
+  <div class="modal" style="max-height:92vh;overflow-y:auto;max-width:480px">
+    <div id="m-myot-body"></div>
+    <button class="btn btn-out" onclick="closeModal('m-my-ot')" style="margin-top:12px">Cerrar</button>
+  </div>
+</div>
+
+<!-- FASE 2.4.A: MODAL CHECKLIST TÉCNICO -->
+<div class="overlay" id="m-tech-checklist" style="display:none">
+  <div class="modal" style="max-height:92vh;overflow-y:auto;max-width:480px">
+    <div id="m-techchk-body"></div>
+    <div id="m-techchk-err" style="display:none;color:var(--red);font-size:12px;margin:10px 0 8px;font-weight:600;padding:8px;background:var(--red4);border-radius:4px"></div>
+    <button class="btn btn-red" id="m-techchk-btn" onclick="saveTechChecklist()" style="margin-top:14px">Guardar checklist</button>
+    <button class="btn btn-out" onclick="closeModal('m-tech-checklist')" style="margin-top:8px">Cancelar</button>
+  </div>
+</div>
+
+<!-- FASE 2.4.A: MODAL DOBLE CONTROL -->
+<div class="overlay" id="m-double-check" style="display:none">
+  <div class="modal" style="max-height:92vh;overflow-y:auto;max-width:440px">
+    <div id="m-dc-body"></div>
+    <div id="m-dc-err" style="display:none;color:var(--red);font-size:12px;margin:10px 0 8px;font-weight:600;padding:8px;background:var(--red4);border-radius:4px"></div>
+    <button class="btn btn-gold" id="m-dc-btn" onclick="saveDoubleCheck()" style="margin-top:14px;background:var(--gold);color:#fff">Cerrar doble control</button>
+    <button class="btn btn-out" onclick="closeModal('m-double-check')" style="margin-top:8px">Cancelar</button>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════
      FASE 2.2.C: MODAL DETALLE DE VEHICULO (Catastro)
      ═══════════════════════════════════════════════════════════════ -->
 <div class="overlay" id="m-vehicle-detail" style="display:none">
@@ -763,7 +794,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // CONFIG & DEBUG
 // ═══════════════════════════════════════════════
 const DEBUG = true;
-const APP_VERSION = 'v2.6.2-services-final';
+const APP_VERSION = 'v2.7.0-FASE2.4A';
 const SURL = 'https://jczmupcmeixpwjedfgtk.supabase.co';
 const SKEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impjem11cGNtZWl4cHdqZWRmZ3RrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY5NzMxOTMsImV4cCI6MjA5MjU0OTE5M30.DuICC_pCQGv27lZivieXRRvGz9A1GNkgmhvTvyKo25o';
 var sb = null; // initialized in init()
@@ -2210,6 +2241,7 @@ function techTab(t) {
   logR('TECH_TAB', {tab: t});
   if (t === 't-nuevo' || t === 't-inicio') renderTechNuevo(body);
   else if (t === 't-misservicios') renderMisServicios(body);
+  else if (t === 't-misot') renderTechMisOTs(body);
   else if (t === 't-agenda') renderTechAgenda(body);
   else if (t === 't-alertas') { document.getElementById('tech-ndot').classList.remove('show'); renderTechAlertas(body); }
   else if (t === 't-midia') renderTechMiDia(body);
@@ -6393,6 +6425,443 @@ async function openVehicleDetailFromClient(vehicleId) {
     } catch(_){}
   }
   openVehicleDetail(vehicleId);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// FASE 2.4.A: PESTAÑA TÉCNICO "MIS OTs"
+// ═══════════════════════════════════════════════════════════════
+// Lista las OTs asignadas al técnico (assigned_user_id = CU.id) y las
+// que están abiertas sin asignar (status='open' AND assigned_user_id IS NULL).
+// Permite al técnico:
+//   1) Ver datos del cliente + vehículo + servicio
+//   2) Llenar el checklist técnico del servicio (estado pasa a pending_double_check)
+//   3) Hacer doble control (estado pasa a pending_visado)
+// El visado lo hace después un visador (Fase 2.4.C).
+var _myOTsCache = []; // [{ot, vehicle, client}]
+var _activeOT   = null; // OT actualmente abierta en el modal
+
+async function renderTechMisOTs(body) {
+  if (!CU) { body.innerHTML = ''; return; }
+  body.innerHTML = '<div class="card-accent">'
+    + '<div style="font-size:13px;font-weight:700;color:#111;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">Mis Órdenes de Trabajo</div>'
+    + '<div style="font-size:11px;color:var(--wh3);margin-bottom:10px;line-height:1.4">OTs asignadas a ti y OTs abiertas sin técnico que puedes tomar. Toca una para ver los detalles, llenar el checklist técnico y registrar el doble control de cierre.</div>'
+    + '<div id="myot-meta" style="font-size:11px;color:var(--wh3);margin-bottom:8px;font-family:var(--mono)">Cargando...</div>'
+    + '<div id="myot-list"></div>'
+    + '</div>';
+  await loadMyOTs();
+}
+
+async function loadMyOTs() {
+  var meta = document.getElementById('myot-meta');
+  var list = document.getElementById('myot-list');
+  if (!meta || !list || !sb || !CU) return;
+  try {
+    // Trae OTs asignadas a mí O sin asignar, que NO estén cerradas/canceladas
+    var rOT = await sb.from('work_orders')
+      .select('*')
+      .or('assigned_user_id.eq.' + CU.id + ',assigned_user_id.is.null')
+      .in('status', ['open','assigned','in_progress','pending_double_check','pending_visado'])
+      .order('created_at', {ascending: false})
+      .limit(200);
+    if (rOT.error) { meta.textContent = 'Error: ' + rOT.error.message; return; }
+    var ots = rOT.data || [];
+    if (ots.length === 0) {
+      meta.textContent = '0 OTs activas';
+      list.innerHTML = '<div class="empty" style="padding:24px;text-align:center;color:var(--wh4);line-height:1.5">No tienes OTs asignadas ni hay OTs abiertas sin técnico.</div>';
+      return;
+    }
+    // Cargar vehículos y clientes
+    var vehIds = Array.from(new Set(ots.map(function(o){return o.vehicle_id;}).filter(Boolean)));
+    var cliIds = Array.from(new Set(ots.map(function(o){return o.client_id;}).filter(Boolean)));
+    var vehs = {}, clis = {};
+    if (vehIds.length) {
+      var rv = await sb.from('client_vehicles').select('*').in('id', vehIds);
+      (rv.data || []).forEach(function(v){ vehs[v.id] = v; });
+    }
+    if (cliIds.length) {
+      var rc = await sb.from('clients').select('id,name,rut,phone').in('id', cliIds);
+      (rc.data || []).forEach(function(c){ clis[c.id] = c; });
+    }
+    _myOTsCache = ots.map(function(o){
+      return {ot: o, vehicle: vehs[o.vehicle_id] || null, client: clis[o.client_id] || null};
+    });
+    renderMyOTsList();
+  } catch(e) {
+    meta.textContent = 'Error: ' + e.message;
+  }
+}
+
+function renderMyOTsList() {
+  var meta = document.getElementById('myot-meta');
+  var list = document.getElementById('myot-list');
+  if (!meta || !list) return;
+  var rows = _myOTsCache;
+  var assignedToMe = rows.filter(function(r){return r.ot.assigned_user_id === CU.id;});
+  var unassigned   = rows.filter(function(r){return !r.ot.assigned_user_id;});
+  meta.textContent = assignedToMe.length + ' asignadas a ti · ' + unassigned.length + ' sin asignar';
+
+  function statusBadge(s) {
+    var color = s === 'closed' ? 'var(--green)' :
+                s === 'cancelled' ? 'var(--wh4)' :
+                s === 'in_progress' ? 'var(--gold)' :
+                s === 'pending_double_check' ? 'var(--blue)' :
+                s === 'pending_visado' ? 'var(--gold)' : 'var(--blue)';
+    var lbl = ({open:'Sin iniciar', assigned:'Asignada', in_progress:'En proceso', pending_double_check:'Pendiente doble control', pending_visado:'Pendiente visado', closed:'Cerrada', cancelled:'Cancelada'})[s] || s;
+    return '<span style="font-size:9px;color:' + color + ';font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.06em;padding:2px 6px;border:1px solid ' + color + ';border-radius:3px">' + lbl + '</span>';
+  }
+
+  function row(r) {
+    var o = r.ot, v = r.vehicle, c = r.client;
+    var pv = v ? validatePlate(v.plate || '') : {valid:false, formatted:''};
+    var plate = pv.valid ? pv.formatted : (v && v.plate || 'sin patente');
+    var srv = SERVICES_INGRESO.find(function(x){return x.key === o.service_classification;});
+    var srvLabel = srv ? srv.label : (o.service_classification || '?');
+    return '<div style="background:#fff;border:1px solid var(--border);border-left:3px solid var(--red);border-radius:3px;padding:10px;margin-bottom:6px;cursor:pointer" onclick="openMyOTDetail(\'' + o.id + '\')">'
+      + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:4px">'
+      +   '<div style="font-size:13px;font-weight:700;font-family:\'Rajdhani\',sans-serif">OT-' + (o.ot_number || '?') + ' · ' + escapeHtml(srvLabel) + '</div>'
+      +   statusBadge(o.status)
+      + '</div>'
+      + (o.service_subtype ? '<div style="font-size:11px;color:var(--wh2);margin-bottom:2px">' + escapeHtml(o.service_subtype) + '</div>' : '')
+      + '<div style="font-size:11px;color:var(--wh3)">' + (v ? escapeHtml(v.brand) + ' ' + escapeHtml(v.model) + ' · ' + plate : 'vehículo desconocido') + '</div>'
+      + (c ? '<div style="font-size:10px;color:var(--wh4);font-family:var(--mono)">' + escapeHtml(c.name) + ' · ' + escapeHtml(c.phone || '') + '</div>' : '')
+      + '</div>';
+  }
+
+  var html = '';
+  if (assignedToMe.length) {
+    html += '<div style="font-size:11px;font-weight:700;color:var(--red);font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.06em;margin:6px 0 4px">Asignadas a ti (' + assignedToMe.length + ')</div>';
+    html += assignedToMe.map(row).join('');
+  }
+  if (unassigned.length) {
+    html += '<div style="font-size:11px;font-weight:700;color:var(--gold3);font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.06em;margin:14px 0 4px">Sin asignar (' + unassigned.length + ')</div>';
+    html += unassigned.map(row).join('');
+  }
+  list.innerHTML = html;
+}
+
+// ─── Modal detalle de OT (visión técnico) ───
+async function openMyOTDetail(otId) {
+  var row = _myOTsCache.find(function(r){return r.ot.id === otId;});
+  if (!row) { showGlobalError('OT no encontrada en cache, recarga.', 4000); return; }
+  _activeOT = row;
+  var o = row.ot, v = row.vehicle, c = row.client;
+  var content = document.getElementById('m-myot-body');
+  if (!content) return;
+  var srv = SERVICES_INGRESO.find(function(x){return x.key === o.service_classification;});
+  var srvLabel = srv ? srv.label : (o.service_classification || '?');
+  var pv = v ? validatePlate(v.plate || '') : {valid:false};
+  var plate = pv.valid ? pv.formatted : (v && v.plate || '?');
+
+  // Estado del checklist
+  var cd = o.checklist_data || {};
+  var techDone = !!cd.tech_completed_at;
+  var dcDone   = !!cd.double_check_completed_at;
+  var hasChecklist = !!CHECKLISTS_TECH[o.service_classification];
+
+  content.innerHTML =
+      '<div style="margin-bottom:10px">'
+    +   '<div style="font-size:18px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase">OT-' + (o.ot_number || '?') + '</div>'
+    +   '<div style="font-size:13px;color:var(--wh2);margin-top:2px">' + escapeHtml(srvLabel) + (o.service_subtype ? ' · ' + escapeHtml(o.service_subtype) : '') + '</div>'
+    +   (o.service_description ? '<div style="font-size:12px;color:var(--wh3);margin-top:4px;font-style:italic">' + escapeHtml(o.service_description) + '</div>' : '')
+    + '</div>'
+    + '<div style="border-top:1px solid var(--border);padding-top:8px;margin-bottom:8px">'
+    +   '<div class="lbl">Vehículo</div>'
+    +   (v ? '<div style="font-size:13px;font-weight:700;font-family:\'Rajdhani\',sans-serif">' + escapeHtml(v.brand) + ' ' + escapeHtml(v.model) + ' <span style="color:var(--red);font-family:var(--mono)">' + plate + '</span></div>'
+       + '<div style="font-size:11px;color:var(--wh3)">KM entrada: ' + (v.km_entry != null ? v.km_entry.toLocaleString('es-CL') : '?') + '</div>'
+       : '<div style="font-size:12px;color:var(--red)">Vehículo no disponible</div>')
+    + '</div>'
+    + '<div style="margin-bottom:10px">'
+    +   '<div class="lbl">Cliente</div>'
+    +   (c ? '<div style="font-size:12px">' + escapeHtml(c.name) + ' · ' + escapeHtml(c.rut || c.phone || '') + '</div>' : '<div style="font-size:11px;color:var(--wh4)">cliente no disponible</div>')
+    + '</div>'
+    + (o.client_notes ? '<div style="margin-bottom:10px"><div class="lbl">Requerimientos del cliente</div><div style="font-size:12px;color:var(--wh2);background:#f8f8f8;padding:6px 8px;border-radius:3px">' + escapeHtml(o.client_notes) + '</div></div>' : '')
+    // Estado de checklist
+    + '<div style="border-top:2px solid var(--gold);padding-top:10px;margin-top:14px">'
+    +   '<div class="lbl">Progreso de cierre</div>'
+    +   '<div style="display:flex;flex-direction:column;gap:5px;font-size:12px">'
+    +     '<div style="display:flex;align-items:center;gap:8px"><span style="width:18px;text-align:center">' + (techDone ? '✅' : '⬜') + '</span> Checklist técnico ' + (techDone ? '<span style="color:var(--green);font-size:10px">(completado ' + new Date(cd.tech_completed_at).toLocaleString('es-CL') + ')</span>' : '') + '</div>'
+    +     '<div style="display:flex;align-items:center;gap:8px"><span style="width:18px;text-align:center">' + (dcDone ? '✅' : '⬜') + '</span> Doble control ' + (dcDone ? '<span style="color:var(--green);font-size:10px">(completado ' + new Date(cd.double_check_completed_at).toLocaleString('es-CL') + ')</span>' : '') + '</div>'
+    +     '<div style="display:flex;align-items:center;gap:8px"><span style="width:18px;text-align:center">⬜</span> Visado <span style="font-size:10px;color:var(--wh4)">(disponible en próxima fase)</span></div>'
+    +   '</div>'
+    + '</div>'
+    // Botones de acción
+    + '<div style="display:flex;flex-direction:column;gap:6px;margin-top:14px">'
+    +   (hasChecklist
+        ? '<button class="btn btn-red" onclick="openTechChecklist(\'' + o.id + '\')">' + (techDone ? '✏️ Editar checklist técnico' : '📝 Llenar checklist técnico') + '</button>'
+        : '<div style="font-size:11px;color:var(--wh4);text-align:center;padding:8px;background:#f8f8f8;border-radius:3px">Checklist técnico para este tipo de servicio aún no implementado (Fase 2.4.B)</div>')
+    +   (hasChecklist && techDone
+        ? '<button class="btn btn-gold" onclick="openDoubleCheck(\'' + o.id + '\')">' + (dcDone ? '✏️ Editar doble control' : '✅ Doble control de cierre') + '</button>'
+        : '')
+    + '</div>';
+  openModal('m-my-ot');
+}
+
+// ─── Modal CHECKLIST TÉCNICO (dinámico según tipo de servicio) ───
+function openTechChecklist(otId) {
+  var row = _myOTsCache.find(function(r){return r.ot.id === otId;});
+  if (!row) return;
+  _activeOT = row;
+  var o = row.ot;
+  var def = CHECKLISTS_TECH[o.service_classification];
+  if (!def) { showGlobalError('Checklist no disponible para este servicio', 3500); return; }
+  var existing = (o.checklist_data && o.checklist_data.tech_checklist) || {};
+
+  var body = document.getElementById('m-techchk-body');
+  if (!body) return;
+  var srvLabel = def.label;
+  var html = '<div class="modal-t">Checklist: ' + escapeHtml(srvLabel) + '</div>'
+    + '<div class="modal-s">OT-' + (o.ot_number || '?') + ' · ' + escapeHtml((row.vehicle && row.vehicle.brand) || '?') + ' ' + escapeHtml((row.vehicle && row.vehicle.model) || '') + '</div>';
+  def.sections.forEach(function(sec) {
+    html += '<div style="border-top:2px solid var(--red);margin:14px -2px 8px;padding-top:10px">'
+         + '<div style="font-size:12px;font-weight:700;color:#111;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px">' + escapeHtml(sec.title) + '</div>';
+    sec.items.forEach(function(it) {
+      html += renderChecklistItem(it, existing[it.key]);
+    });
+    html += '</div>';
+  });
+  body.innerHTML = html;
+  closeModal('m-my-ot');
+  openModal('m-tech-checklist');
+  // Hook para required_if (mostrar/ocultar campos condicionales)
+  setTimeout(applyChecklistConditionals, 50);
+}
+
+function renderChecklistItem(it, currentValue) {
+  var key = it.key;
+  var lbl = it.label + (it.required ? ' <span style="color:var(--red)">*</span>' : '');
+  var req = it.required ? 'data-required="1"' : '';
+  if (it.required_if) req += ' data-required-if="' + it.required_if + '"';
+  var html = '<div data-chk-item="' + key + '" style="margin-bottom:10px">';
+  if (it.type === 'bool') {
+    var checkedYes = currentValue === true ? 'checked' : '';
+    var checkedNo  = currentValue === false ? 'checked' : '';
+    html += '<div class="lbl" style="margin-bottom:4px">' + lbl + '</div>'
+      + '<div class="g2" style="gap:6px">'
+      +   '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;padding:8px;border:1px solid var(--border);border-radius:3px;background:#fff;font-size:12px"><input type="radio" name="chk_' + key + '" value="true" ' + checkedYes + ' onchange="onChecklistChange()"/> Sí</label>'
+      +   '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;padding:8px;border:1px solid var(--border);border-radius:3px;background:#fff;font-size:12px"><input type="radio" name="chk_' + key + '" value="false" ' + checkedNo + ' onchange="onChecklistChange()"/> No</label>'
+      + '</div>';
+  } else if (it.type === 'na_text') {
+    var isNa = currentValue === 'N/A';
+    html += '<div class="lbl" style="margin-bottom:4px">' + lbl + '</div>'
+      + '<input type="text" class="inp" data-chk-key="' + key + '" placeholder="Código del filtro" value="' + (isNa ? '' : (currentValue || '')) + '" ' + (isNa ? 'disabled' : '') + ' style="margin-bottom:4px"/>'
+      + '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:11px"><input type="checkbox" data-chk-key-na="' + key + '" ' + (isNa ? 'checked' : '') + ' onchange="onNaToggle(this)"/> ' + escapeHtml(it.na_label || 'No aplica') + '</label>';
+  } else if (it.type === 'select') {
+    html += '<div class="lbl" style="margin-bottom:4px">' + lbl + '</div>'
+      + '<select class="inp" data-chk-key="' + key + '">'
+      + (it.options || []).map(function(op){
+          var sel = currentValue === op || (currentValue == null && it.default === op) ? 'selected' : '';
+          return '<option value="' + escapeHtml(op) + '" ' + sel + '>' + escapeHtml(op) + '</option>';
+        }).join('')
+      + '</select>';
+  } else if (it.type === 'number') {
+    html += '<div class="lbl" style="margin-bottom:4px">' + lbl + '</div>'
+      + '<input type="number" class="inp" data-chk-key="' + key + '" value="' + (currentValue != null ? currentValue : '') + '" step="' + (it.step || 1) + '" min="0" data-no-upper/>';
+  } else { // text
+    html += '<div class="lbl" style="margin-bottom:4px">' + lbl + '</div>'
+      + '<input type="text" class="inp" data-chk-key="' + key + '" value="' + escapeHtml(currentValue || '') + '"/>';
+  }
+  html += '</div>';
+  return html;
+}
+
+function onNaToggle(cb) {
+  var key = cb.dataset.chkKeyNa;
+  var input = document.querySelector('#m-techchk-body input[data-chk-key="' + key + '"]');
+  if (!input) return;
+  if (cb.checked) {
+    input.value = '';
+    input.disabled = true;
+  } else {
+    input.disabled = false;
+  }
+}
+
+function onChecklistChange() {
+  applyChecklistConditionals();
+}
+
+function applyChecklistConditionals() {
+  // Ocultar/mostrar items con required_if según el valor actual del campo referenciado
+  document.querySelectorAll('#m-techchk-body [data-chk-item]').forEach(function(div) {
+    var key = div.dataset.chkItem;
+    // Buscar definición del item
+    var def = null;
+    Object.values(CHECKLISTS_TECH).forEach(function(c) {
+      c.sections.forEach(function(s) {
+        s.items.forEach(function(it) { if (it.key === key) def = it; });
+      });
+    });
+    if (def && def.required_if) {
+      var refVal = getChecklistValue(def.required_if);
+      div.style.display = (refVal === true || (refVal && refVal !== '' && refVal !== false)) ? '' : 'none';
+    }
+  });
+}
+
+function getChecklistValue(key) {
+  // Bool (radio)
+  var rad = document.querySelector('#m-techchk-body input[name="chk_' + key + '"]:checked');
+  if (rad) return rad.value === 'true';
+  // Otros tipos
+  var inp = document.querySelector('#m-techchk-body [data-chk-key="' + key + '"]');
+  if (!inp) return null;
+  if (inp.disabled) return 'N/A';
+  return inp.value;
+}
+
+async function saveTechChecklist() {
+  if (!_activeOT) return;
+  var o = _activeOT.ot;
+  var def = CHECKLISTS_TECH[o.service_classification];
+  if (!def) return;
+  var err = document.getElementById('m-techchk-err');
+  err.style.display = 'none';
+  // Validar campos required y required_if visibles
+  var data = {};
+  var allItems = [];
+  def.sections.forEach(function(sec){ sec.items.forEach(function(it){ allItems.push(it); }); });
+  for (var i = 0; i < allItems.length; i++) {
+    var it = allItems[i];
+    var div = document.querySelector('#m-techchk-body [data-chk-item="' + it.key + '"]');
+    if (div && div.style.display === 'none') continue; // condicional oculto, no validar
+    var val = getChecklistValue(it.key);
+    if (it.required && (val == null || val === '' || (it.type === 'bool' && val !== true && val !== false))) {
+      err.textContent = 'Falta llenar: ' + it.label;
+      err.style.display = 'block';
+      return;
+    }
+    data[it.key] = val;
+  }
+  // Auto-uppercase para campos texto/na_text
+  Object.keys(data).forEach(function(k){
+    var def2 = allItems.find(function(x){return x.key===k;});
+    if (def2 && (def2.type === 'text' || def2.type === 'na_text') && typeof data[k] === 'string' && data[k] !== 'N/A') {
+      data[k] = data[k].toUpperCase();
+    }
+  });
+
+  var btn = document.getElementById('m-techchk-btn');
+  btn.innerHTML = '<span class="spin"></span> Guardando...'; btn.disabled = true;
+
+  var newChecklistData = Object.assign({}, o.checklist_data || {}, {
+    tech_checklist: data,
+    tech_completed_at: new Date().toISOString(),
+    tech_completed_by: CU ? CU.id : null,
+    tech_completed_by_name: CU ? CU.name : null
+  });
+  var newStatus = o.status === 'pending_visado' || o.status === 'closed' ? o.status : 'pending_double_check';
+
+  try {
+    var r = await sb.from('work_orders').update({
+      checklist_data: newChecklistData,
+      status: newStatus,
+      updated_by: CU ? CU.id : null
+    }).eq('id', o.id);
+    if (r.error) throw new Error(r.error.message);
+    // Actualizar cache local
+    _activeOT.ot.checklist_data = newChecklistData;
+    _activeOT.ot.status = newStatus;
+  } catch(e) {
+    btn.innerHTML = 'Guardar checklist'; btn.disabled = false;
+    err.textContent = 'Error: ' + e.message; err.style.display = 'block';
+    return;
+  }
+
+  btn.innerHTML = 'Guardar checklist'; btn.disabled = false;
+  closeModal('m-tech-checklist');
+  showGlobalError('Checklist guardado. Ahora puedes hacer el doble control.', 3500);
+  // Refrescar lista
+  if (curTechTab === 't-misot') await loadMyOTs();
+}
+
+// ─── Modal DOBLE CONTROL ───
+function openDoubleCheck(otId) {
+  var row = _myOTsCache.find(function(r){return r.ot.id === otId;});
+  if (!row) return;
+  _activeOT = row;
+  var o = row.ot;
+  var existing = (o.checklist_data && o.checklist_data.double_check) || {};
+  var body = document.getElementById('m-dc-body');
+  if (!body) return;
+  var html = '<div class="modal-t">Doble control de cierre</div>'
+    + '<div class="modal-s">OT-' + (o.ot_number || '?') + ' · marca cada ítem antes de cerrar</div>'
+    + '<div style="margin-top:14px">'
+    + CHECKLIST_DOBLE_CONTROL.map(function(it){ return renderDCItem(it, existing[it.key]); }).join('')
+    + '</div>';
+  body.innerHTML = html;
+  closeModal('m-my-ot');
+  openModal('m-double-check');
+}
+
+function renderDCItem(it, currentValue) {
+  var lbl = it.label + (it.required ? ' <span style="color:var(--red)">*</span>' : '');
+  if (it.type === 'bool') {
+    var checkedYes = currentValue === true ? 'checked' : '';
+    var checkedNo  = currentValue === false ? 'checked' : '';
+    return '<div style="margin-bottom:10px">'
+      + '<div class="lbl" style="margin-bottom:4px">' + lbl + '</div>'
+      + '<div class="g2" style="gap:6px">'
+      +   '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;padding:8px;border:1px solid var(--border);border-radius:3px;background:#fff;font-size:12px"><input type="radio" name="dc_' + it.key + '" value="true" ' + checkedYes + '/> Sí</label>'
+      +   '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;padding:8px;border:1px solid var(--border);border-radius:3px;background:#fff;font-size:12px"><input type="radio" name="dc_' + it.key + '" value="false" ' + checkedNo + '/> No</label>'
+      + '</div></div>';
+  } else if (it.type === 'number') {
+    return '<div style="margin-bottom:10px">'
+      + '<div class="lbl" style="margin-bottom:4px">' + lbl + '</div>'
+      + '<input type="number" class="inp" data-dc-key="' + it.key + '" value="' + (currentValue != null ? currentValue : '') + '" min="0" data-no-upper/></div>';
+  }
+  return '';
+}
+
+async function saveDoubleCheck() {
+  if (!_activeOT) return;
+  var o = _activeOT.ot;
+  var err = document.getElementById('m-dc-err');
+  err.style.display = 'none';
+  var data = {};
+  for (var i = 0; i < CHECKLIST_DOBLE_CONTROL.length; i++) {
+    var it = CHECKLIST_DOBLE_CONTROL[i];
+    var val;
+    if (it.type === 'bool') {
+      var rad = document.querySelector('#m-dc-body input[name="dc_' + it.key + '"]:checked');
+      val = rad ? rad.value === 'true' : null;
+    } else {
+      var inp = document.querySelector('#m-dc-body [data-dc-key="' + it.key + '"]');
+      val = inp ? (inp.value === '' ? null : (it.type === 'number' ? Number(inp.value) : inp.value)) : null;
+    }
+    if (it.required && (val == null || (it.type === 'bool' && val !== true && val !== false))) {
+      err.textContent = 'Falta: ' + it.label;
+      err.style.display = 'block';
+      return;
+    }
+    data[it.key] = val;
+  }
+  var btn = document.getElementById('m-dc-btn');
+  btn.innerHTML = '<span class="spin"></span> Guardando...'; btn.disabled = true;
+
+  var newChecklistData = Object.assign({}, o.checklist_data || {}, {
+    double_check: data,
+    double_check_completed_at: new Date().toISOString(),
+    double_check_completed_by: CU ? CU.id : null,
+    double_check_completed_by_name: CU ? CU.name : null
+  });
+  try {
+    var r = await sb.from('work_orders').update({
+      checklist_data: newChecklistData,
+      status: 'pending_visado',
+      updated_by: CU ? CU.id : null
+    }).eq('id', o.id);
+    if (r.error) throw new Error(r.error.message);
+    _activeOT.ot.checklist_data = newChecklistData;
+    _activeOT.ot.status = 'pending_visado';
+  } catch(e) {
+    btn.innerHTML = 'Cerrar doble control'; btn.disabled = false;
+    err.textContent = 'Error: ' + e.message; err.style.display = 'block';
+    return;
+  }
+  btn.innerHTML = 'Cerrar doble control'; btn.disabled = false;
+  closeModal('m-double-check');
+  showGlobalError('Doble control completado. La OT queda pendiente de visado.', 4000);
+  if (curTechTab === 't-misot') await loadMyOTs();
 }
 
 // ─── Catastro: agregar vehículo histórico (no genera OT) ───
