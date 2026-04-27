@@ -794,7 +794,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // CONFIG & DEBUG
 // ═══════════════════════════════════════════════
 const DEBUG = true;
-const APP_VERSION = 'v2.7.0-FASE2.4A';
+const APP_VERSION = 'v2.8.0-FASE2.4B';
 const SURL = 'https://jczmupcmeixpwjedfgtk.supabase.co';
 const SKEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impjem11cGNtZWl4cHdqZWRmZ3RrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY5NzMxOTMsImV4cCI6MjA5MjU0OTE5M30.DuICC_pCQGv27lZivieXRRvGz9A1GNkgmhvTvyKo25o';
 var sb = null; // initialized in init()
@@ -1185,6 +1185,43 @@ const CHECKLIST_DOBLE_CONTROL = [
   {key:'dc_km_exit',       label:'Kilometraje de salida', type:'number', required:true}
 ];
 
+// FASE 2.4.B: helpers para opciones repetidas
+const DESGASTE_OPTS    = ['Bajo','Medio','Alto','Crítico','N/A'];
+const TIRE_STATE_OPTS  = ['Buen estado','Con daño estructural','Desgaste disparejo','Huevos','Caducados'];
+const BAJOS_STATE_OPTS = ['Sin daños','Con daño'];
+const FLUID_LEVEL_OPTS = ['Óptimo','Aceptable','Bajo','Crítico','N/A'];
+
+// Helper: 12 componentes de suspensión y dirección con select de desgaste
+function suspensionItems() {
+  var components = [
+    {key:'sus_espirales',     label:'Espirales'},
+    {key:'sus_amortiguadores',label:'Amortiguadores'},
+    {key:'sus_cazoletas',     label:'Cazoletas'},
+    {key:'sus_ballestas',     label:'Ballestas'},
+    {key:'sus_barras_estab',  label:'Barras estabilizadoras'},
+    {key:'sus_rotulas',       label:'Rótulas'},
+    {key:'sus_bandejas',      label:'Bandejas'},
+    {key:'sus_brazos',        label:'Brazos de suspensión'},
+    {key:'sus_axiales',       label:'Axiales'},
+    {key:'sus_terminal',      label:'Terminal de dirección'},
+    {key:'sus_bieletas',      label:'Bieletas'},
+    {key:'sus_bujes',         label:'Bujes'}
+  ];
+  return components.map(function(c){
+    return {key: c.key, label: c.label, type: 'select', options: DESGASTE_OPTS, default: 'N/A', required: true};
+  });
+}
+
+// Helper: estado de neumáticos por posición (4 fields)
+function tireItems() {
+  return [
+    {key:'tire_fl', label:'Neumático delantero izquierdo', type:'select', options:TIRE_STATE_OPTS, default:'Buen estado', required:true},
+    {key:'tire_fr', label:'Neumático delantero derecho',   type:'select', options:TIRE_STATE_OPTS, default:'Buen estado', required:true},
+    {key:'tire_rl', label:'Neumático trasero izquierdo',   type:'select', options:TIRE_STATE_OPTS, default:'Buen estado', required:true},
+    {key:'tire_rr', label:'Neumático trasero derecho',     type:'select', options:TIRE_STATE_OPTS, default:'Buen estado', required:true}
+  ];
+}
+
 // Definición por tipo de servicio (key === SERVICES_INGRESO[].key)
 const CHECKLISTS_TECH = {
   CAMBIO_ACEITE: {
@@ -1223,8 +1260,202 @@ const CHECKLISTS_TECH = {
       ]},
       {title: 'Prueba de ruta', items: CHECKLIST_PRUEBA_RUTA}
     ]
+  },
+
+  // ═══ FASE 2.4.B ═══
+  MANT_COMPLETO: {
+    label: 'Mantenimiento completo',
+    sections: [
+      {title: 'Repuestos utilizados', items: [
+        {key:'oil_filter_code',    label:'Código filtro de aceite', type:'text', required:true},
+        {key:'air_filter_code',    label:'Código filtro de aire', type:'text', required:true},
+        {key:'pollen_filter_code', label:'Código filtro de polen', type:'text', required:true},
+        {key:'fuel_filter_code',   label:'Código filtro de petróleo', type:'na_text', required:true, na_label:'No aplica este servicio'},
+        {key:'oil_liters',         label:'Litros de aceite cargados', type:'number', required:true, step:0.1, unit:'litros'},
+        {key:'oil_brand',          label:'Marca de aceite', type:'text', required:true}
+      ]},
+      {title: 'Estado de frenos — medidas', items: [
+        {key:'br_disc_front_mm',     label:'Discos delanteros (mm)', type:'number', required:true, step:0.1, unit:'mm'},
+        {key:'br_pads_front_mm',     label:'Pastillas delanteras (mm)', type:'number', required:true, step:0.1, unit:'mm'},
+        {key:'br_pads_rear_mm',      label:'Pastillas o balatas traseras (mm)', type:'number', required:true, step:0.1, unit:'mm'},
+        {key:'br_disc_rear_mm',      label:'Discos o tambores traseros (mm)', type:'number', required:true, step:0.1, unit:'mm'},
+        {key:'br_fluid',             label:'Estado líquido de frenos', type:'select', options:FLUID_LEVEL_OPTS, default:'Óptimo', required:true}
+      ]},
+      {title: 'Estado de frenos — desgaste por tren', items: [
+        {key:'br_wear_front', label:'Tren delantero', type:'select', options:DESGASTE_OPTS, default:'Bajo', required:true},
+        {key:'br_wear_rear',  label:'Tren trasero',   type:'select', options:DESGASTE_OPTS, default:'Bajo', required:true}
+      ]},
+      {title: 'Suspensión y dirección', items: suspensionItems()},
+      {title: 'Estado de los bajos', items: [
+        {key:'underbody_state', label:'Estado bajos del vehículo', type:'select', options:BAJOS_STATE_OPTS, default:'Sin daños', required:true},
+        {key:'underbody_desc',  label:'Detalle del daño', type:'text', required_if:'underbody_state', placeholder:'Solo si marcaste "Con daño"'}
+      ]},
+      {title: 'Estado de neumáticos', items: tireItems()},
+      {title: 'Relleno de niveles', items: [
+        {key:'wiper_fluid', label:'Líquido limpiaparabrisas', type:'bool', required:true},
+        {key:'coolant',     label:'Refrigerante', type:'bool', required:true},
+        {key:'brake_fluid_refill', label:'Líquido de frenos', type:'bool', required:true}
+      ]},
+      {title: 'Diagnóstico y reset', items: [
+        {key:'scanner_read',  label:'Lectura de escáner realizada', type:'bool', required:true},
+        {key:'service_reset', label:'Reinicio de intervalo de mantenimiento', type:'bool', required:true}
+      ]},
+      {title: 'Prueba de ruta', items: CHECKLIST_PRUEBA_RUTA},
+      {title: 'Diagnóstico técnico', items: [
+        {key:'diag_falla',           label:'Falla a buscar / motivo de revisión', type:'textarea', rows:2, placeholder:'Síntomas reportados por el cliente'},
+        {key:'diag_codigos',         label:'Lectura de códigos (DTC)', type:'textarea', rows:2, placeholder:'Códigos encontrados, ej: P0420, U0100'},
+        {key:'diag_realizado',       label:'Diagnóstico realizado', type:'textarea', rows:2, placeholder:'Pruebas y verificaciones ejecutadas'},
+        {key:'diag_resultado',       label:'Resultado / hallazgo', type:'textarea', rows:2, placeholder:'Qué se determinó'},
+        {key:'diag_recomendaciones', label:'Recomendaciones de servicio', type:'textarea', rows:2, placeholder:'Servicios sugeridos a futuro'}
+      ]}
+    ]
+  },
+
+  // — DPF (4 packs) —
+  DPF_PACK_ESENCIAL: {
+    label: 'Recuperación de DPF — Pack Esencial',
+    sections: [
+      {title: 'Procedimiento ejecutado', items: [
+        {key:'dpf_proc_realizado',   label:'Procedimiento de limpieza realizado', type:'bool', required:true},
+        {key:'dpf_lectura_pre',      label:'Lectura escáner ANTES del servicio', type:'textarea', rows:2, required:true, placeholder:'Códigos / hollín / suciedad %'},
+        {key:'dpf_lectura_post',     label:'Lectura escáner DESPUÉS del servicio', type:'textarea', rows:2, required:true, placeholder:'Códigos / hollín / suciedad %'},
+        {key:'dpf_observaciones',    label:'Observaciones del estado del DPF', type:'textarea', rows:2}
+      ]},
+      {title: 'Prueba de ruta', items: CHECKLIST_PRUEBA_RUTA}
+    ]
+  },
+  DPF_PACK_AVANZADO: {
+    label: 'Recuperación de DPF — Pack Avanzado',
+    sections: [
+      {title: 'Procedimiento ejecutado', items: [
+        {key:'dpf_proc_realizado',   label:'Procedimiento Avanzado realizado (limpieza profunda)', type:'bool', required:true},
+        {key:'dpf_lectura_pre',      label:'Lectura escáner ANTES', type:'textarea', rows:2, required:true},
+        {key:'dpf_lectura_post',     label:'Lectura escáner DESPUÉS', type:'textarea', rows:2, required:true},
+        {key:'dpf_regen_forzada',    label:'¿Se realizó regeneración forzada post-servicio?', type:'bool', required:true},
+        {key:'dpf_observaciones',    label:'Observaciones', type:'textarea', rows:2}
+      ]},
+      {title: 'Prueba de ruta', items: CHECKLIST_PRUEBA_RUTA}
+    ]
+  },
+  DPF_PACK_PREMIUM: {
+    label: 'Recuperación de DPF — Pack Premium',
+    sections: [
+      {title: 'Procedimiento ejecutado', items: [
+        {key:'dpf_proc_realizado',   label:'Procedimiento Premium realizado (limpieza profunda + admisión)', type:'bool', required:true},
+        {key:'dpf_limpieza_admision',label:'Limpieza de admisión realizada', type:'bool', required:true},
+        {key:'dpf_lectura_pre',      label:'Lectura escáner ANTES', type:'textarea', rows:2, required:true},
+        {key:'dpf_lectura_post',     label:'Lectura escáner DESPUÉS', type:'textarea', rows:2, required:true},
+        {key:'dpf_regen_forzada',    label:'¿Se realizó regeneración forzada post-servicio?', type:'bool', required:true},
+        {key:'dpf_observaciones',    label:'Observaciones', type:'textarea', rows:2}
+      ]},
+      {title: 'Prueba de ruta', items: CHECKLIST_PRUEBA_RUTA}
+    ]
+  },
+  DPF_EXTRAIDO: {
+    label: 'DPF extraído para recuperación',
+    sections: [
+      {title: 'Datos del DPF retirado', items: [
+        {key:'dpf_id',               label:'Identificación / N° de DPF', type:'text', required:true, placeholder:'Número de pieza o ID interno'},
+        {key:'dpf_extracted_date',   label:'Fecha de extracción', type:'text', required:true, placeholder:'DD/MM/AAAA'},
+        {key:'dpf_estado_inicial',   label:'Estado inicial del DPF', type:'textarea', rows:2, required:true, placeholder:'Foto + descripción visible'},
+        {key:'dpf_proceso_externo',  label:'Proceso externo seleccionado', type:'text', required:true, placeholder:'Lab / proveedor de recuperación'}
+      ]},
+      {title: 'Reinstalación', items: [
+        {key:'dpf_reinstalado',      label:'¿DPF reinstalado en este servicio?', type:'bool', required:true},
+        {key:'dpf_codigos_reset',    label:'Códigos / contadores reseteados', type:'bool', required:true},
+        {key:'dpf_observaciones_final', label:'Observaciones finales', type:'textarea', rows:2}
+      ]}
+    ]
+  },
+
+  // — Diagnóstico —
+  DIAGNOSTICO: {
+    label: 'Diagnóstico',
+    sections: [
+      {title: 'Motivo de la consulta', items: [
+        {key:'diag_motivo', label:'Síntoma o falla reportada por el cliente', type:'textarea', rows:2, required:true}
+      ]},
+      {title: 'Diagnóstico ejecutado', items: [
+        {key:'diag_codigos',         label:'Códigos DTC leídos del scanner', type:'textarea', rows:2, required:true, placeholder:'Ej: P0420 cat. eficiencia bajo'},
+        {key:'diag_pruebas',         label:'Pruebas / mediciones realizadas', type:'textarea', rows:3, required:true},
+        {key:'diag_resultado',       label:'Hallazgo / causa raíz determinada', type:'textarea', rows:2, required:true},
+        {key:'diag_recomendaciones', label:'Recomendaciones / próximos pasos', type:'textarea', rows:2, required:true}
+      ]}
+    ]
+  },
+
+  // — Reprogramación ECU —
+  REPROG_ECU: {
+    label: 'Reprogramación ECU',
+    sections: [
+      {title: 'Lectura previa', items: [
+        {key:'ecu_module',           label:'Módulo intervenido (ECU/TCU/etc.)', type:'text', required:true},
+        {key:'ecu_software_pre',     label:'Versión de software previa', type:'text', required:true},
+        {key:'ecu_dtc_pre',          label:'DTC previos (si hubo)', type:'textarea', rows:2}
+      ]},
+      {title: 'Reprogramación', items: [
+        {key:'ecu_archivo',          label:'Archivo / mapa cargado', type:'text', required:true, placeholder:'Identificación del archivo'},
+        {key:'ecu_resultado',        label:'¿Reprogramación exitosa?', type:'bool', required:true},
+        {key:'ecu_software_post',    label:'Versión de software posterior', type:'text', required:true}
+      ]},
+      {title: 'Verificación', items: [
+        {key:'ecu_dtc_post',         label:'Lectura DTC después (debe estar limpio)', type:'textarea', rows:2, required:true},
+        {key:'ecu_observaciones',    label:'Observaciones técnicas', type:'textarea', rows:2}
+      ]},
+      {title: 'Prueba de ruta', items: CHECKLIST_PRUEBA_RUTA}
+    ]
+  },
+
+  // — Servicio de frenos (referencia: el sub-tipo del ingreso indica qué se cambió) —
+  FRENOS: {
+    label: 'Servicio de frenos',
+    sections: [
+      {title: 'Trabajos realizados', items: [
+        {key:'fr_trabajos',          label:'Confirma los trabajos ejecutados', type:'textarea', rows:3, required:true, placeholder:'Detalla qué se hizo según lo agendado'},
+        {key:'fr_repuestos_codigos', label:'Códigos de repuestos utilizados', type:'textarea', rows:2, required:true, placeholder:'Marca + código + cantidad'}
+      ]},
+      {title: 'Mediciones finales', items: [
+        {key:'fr_disc_front_mm',     label:'Espesor disco delantero post-servicio (mm)', type:'number', step:0.1, unit:'mm'},
+        {key:'fr_disc_rear_mm',      label:'Espesor disco/tambor trasero post-servicio (mm)', type:'number', step:0.1, unit:'mm'},
+        {key:'fr_fluid_changed',     label:'¿Se cambió líquido de frenos?', type:'bool', required:true}
+      ]},
+      {title: 'Prueba de ruta', items: CHECKLIST_PRUEBA_RUTA}
+    ]
+  },
+
+  // — Reparaciones generales (descripción libre amplia) —
+  REPAR_GENERALES: {
+    label: 'Reparaciones generales',
+    sections: [
+      {title: 'Trabajo realizado', items: [
+        {key:'rg_trabajo_descrito',  label:'Descripción del trabajo realizado', type:'textarea', rows:4, required:true},
+        {key:'rg_repuestos',         label:'Repuestos utilizados (códigos + cantidades)', type:'textarea', rows:3, required:true},
+        {key:'rg_horas_trabajo',     label:'Horas de trabajo invertidas', type:'number', step:0.5, required:true, unit:'horas'},
+        {key:'rg_observaciones',     label:'Observaciones / recomendaciones', type:'textarea', rows:2}
+      ]},
+      {title: 'Prueba de ruta (si aplica)', items: [
+        {key:'rg_test_realizada',    label:'¿Se realizó prueba de ruta?', type:'bool', required:true},
+        {key:'rg_test_anomalies',    label:'Anomalías encontradas en prueba', type:'textarea', rows:2, required_if:'rg_test_realizada'}
+      ]}
+    ]
+  },
+
+  // — Garantía de servicio —
+  GARANTIA: {
+    label: 'Garantía de servicio',
+    sections: [
+      {title: 'Reclamo del cliente', items: [
+        {key:'gar_reclamo',          label:'Reclamo o falla reportada por el cliente', type:'textarea', rows:3, required:true},
+        {key:'gar_servicio_origen',  label:'¿OT original (si conoce)?', type:'text', placeholder:'Ej: OT-123 o fecha aproximada'}
+      ]},
+      {title: 'Diagnóstico', items: [
+        {key:'gar_es_garantia',      label:'¿La falla aplica a garantía?', type:'bool', required:true},
+        {key:'gar_diagnostico',      label:'Diagnóstico técnico', type:'textarea', rows:3, required:true},
+        {key:'gar_solucion',         label:'Solución aplicada', type:'textarea', rows:2, required:true},
+        {key:'gar_repuestos',        label:'Repuestos usados (cubiertos por garantía)', type:'textarea', rows:2}
+      ]}
+    ]
   }
-  // Otros tipos (MANT_COMPLETO, FRENOS, DIAGNOSTICO, etc.) en Fase 2.4.B
 };
 
 // ═══════════════════════════════════════════════════════════════
@@ -6655,10 +6886,14 @@ function renderChecklistItem(it, currentValue) {
       + '</select>';
   } else if (it.type === 'number') {
     html += '<div class="lbl" style="margin-bottom:4px">' + lbl + '</div>'
-      + '<input type="number" class="inp" data-chk-key="' + key + '" value="' + (currentValue != null ? currentValue : '') + '" step="' + (it.step || 1) + '" min="0" data-no-upper/>';
+      + '<input type="number" class="inp" data-chk-key="' + key + '" value="' + (currentValue != null ? currentValue : '') + '" step="' + (it.step || 1) + '" min="0" data-no-upper/>'
+      + (it.unit ? '<div style="font-size:10px;color:var(--wh4);margin-top:-4px;font-family:var(--mono)">Unidad: ' + escapeHtml(it.unit) + '</div>' : '');
+  } else if (it.type === 'textarea') {
+    html += '<div class="lbl" style="margin-bottom:4px">' + lbl + '</div>'
+      + '<textarea class="inp" data-chk-key="' + key + '" rows="' + (it.rows || 3) + '" placeholder="' + escapeHtml(it.placeholder || '') + '">' + escapeHtml(currentValue || '') + '</textarea>';
   } else { // text
     html += '<div class="lbl" style="margin-bottom:4px">' + lbl + '</div>'
-      + '<input type="text" class="inp" data-chk-key="' + key + '" value="' + escapeHtml(currentValue || '') + '"/>';
+      + '<input type="text" class="inp" data-chk-key="' + key + '" value="' + escapeHtml(currentValue || '') + '" placeholder="' + escapeHtml(it.placeholder || '') + '"/>';
   }
   html += '</div>';
   return html;
@@ -7107,6 +7342,59 @@ async function generateOTPdf(otId) {
     field('Gestor comercial', o.commercial_manager_name);
     if (o.scheduled_service_id) field('Servicio agendado', 'Sí (vinculado a planificación)');
     y += 2;
+
+    // ─── FASE 2.4 PDF FIX: Pauta a realizar (checklist del servicio) ───
+    var techDef = CHECKLISTS_TECH[o.service_classification];
+    if (techDef) {
+      sectionTitle('Pauta de servicio a realizar');
+      doc.setFont('helvetica','italic');
+      doc.setFontSize(8);
+      doc.setTextColor(100, 100, 100);
+      doc.text('El técnico debe completar cada ítem en la app antes de cerrar la OT.', marginX, y, {maxWidth: pageW - marginX*2});
+      doc.setTextColor(0, 0, 0);
+      y += 4;
+      doc.setFont('helvetica','normal');
+      doc.setFontSize(9);
+      techDef.sections.forEach(function(sec) {
+        if (y > 265) { doc.addPage(); y = 15; }
+        doc.setFont('helvetica','bold');
+        doc.text(sec.title.toUpperCase(), marginX, y);
+        y += 4;
+        doc.setFont('helvetica','normal');
+        sec.items.forEach(function(it) {
+          if (y > 270) { doc.addPage(); y = 15; }
+          var typeHint = '';
+          if (it.type === 'bool')        typeHint = '  (Sí / No)';
+          else if (it.type === 'number') typeHint = '  (___________)';
+          else if (it.type === 'select') typeHint = '  (' + (it.options || []).join(' / ') + ')';
+          else if (it.type === 'na_text') typeHint = '  (código o N/A)';
+          else                            typeHint = '  (___________________)';
+          var line = '☐ ' + it.label + typeHint;
+          var wrapped = doc.splitTextToSize(line, pageW - marginX*2 - 4);
+          wrapped.forEach(function(ln, idx) {
+            if (y > 270) { doc.addPage(); y = 15; }
+            doc.text(idx === 0 ? ln : '   ' + ln, marginX + 2, y);
+            y += 4;
+          });
+        });
+        y += 2;
+      });
+
+      // Doble control
+      if (y > 250) { doc.addPage(); y = 15; }
+      doc.setFont('helvetica','bold');
+      doc.setFontSize(9);
+      doc.text('DOBLE CONTROL DE CIERRE (técnico designado)', marginX, y);
+      y += 4;
+      doc.setFont('helvetica','normal');
+      CHECKLIST_DOBLE_CONTROL.forEach(function(it) {
+        if (y > 270) { doc.addPage(); y = 15; }
+        var typeHint = it.type === 'bool' ? '  (Sí / No)' : '  (___________)';
+        doc.text('☐ ' + it.label + typeHint, marginX + 2, y);
+        y += 4;
+      });
+      y += 3;
+    }
 
     // ─── Comprobaciones ───
     sectionTitle('Comprobaciones de ingreso');
