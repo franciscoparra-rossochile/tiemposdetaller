@@ -677,7 +677,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     <div class="modal-s">Planifica el servicio</div>
     <input type="hidden" id="m-ev-id"/>
     <div class="lbl">Servicio</div>
-    <select class="inp" id="m-ev-service">
+    <select class="inp" id="m-ev-service" onchange="onEventServiceChange()">
       <option value="">Selecciona...</option>
       <option>Cambio de aceite</option><option>Mantenimiento express</option>
       <option>Mantenimiento completo</option><option>Mantenimiento de caja automatica o manual</option>
@@ -693,8 +693,9 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     <input class="inp" type="datetime-local" id="m-ev-dt"/>
     <div class="lbl">Técnico designado</div>
     <select class="inp" id="m-ev-tech"><option value="">Sin asignar</option></select>
-    <div class="lbl">Tiempo objetivo (min)</div>
+    <div class="lbl">Tiempo objetivo (min) <span style="color:var(--red)">*</span></div>
     <input class="inp" type="number" id="m-ev-goal" placeholder="Ej: 60" min="1" max="480"/>
+    <div id="m-ev-goal-hint" style="font-size:10px;color:var(--wh4);margin-top:-4px;margin-bottom:8px;font-family:var(--mono);line-height:1.4">Si el técnico supera este tiempo, se enviará alerta automática.</div>
     <div class="lbl">Notas</div>
     <textarea class="inp" id="m-ev-notes" style="height:52px" placeholder="Observaciones..."></textarea>
     <div id="m-ev-status-row" style="display:none">
@@ -796,7 +797,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // CONFIG & DEBUG
 // ═══════════════════════════════════════════════
 const DEBUG = true;
-const APP_VERSION = 'v2.9.0-FASE2.4D';
+const APP_VERSION = 'v2.9.1-alerts+goals+cascade';
 const SURL = 'https://jczmupcmeixpwjedfgtk.supabase.co';
 const SKEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impjem11cGNtZWl4cHdqZWRmZ3RrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY5NzMxOTMsImV4cCI6MjA5MjU0OTE5M30.DuICC_pCQGv27lZivieXRRvGz9A1GNkgmhvTvyKo25o';
 var sb = null; // initialized in init()
@@ -6096,6 +6097,17 @@ async function saveClient() {
             // Si hubo match, vincular bidireccionalmente
             try { await sb.from('scheduled_services').update({work_order_id: newOTId}).eq('id', schedHidden.value); } catch(_){}
           }
+          // FASE 2.4.D-fix: notificar al gestor + jefe de taller que la OT necesita técnico
+          if (newOTId) {
+            // Recuperar el ot_number recién generado para el mensaje
+            try {
+              var rOTNum = await sb.from('work_orders').select('ot_number').eq('id', newOTId).maybeSingle();
+              var otNumber = rOTNum && rOTNum.data ? rOTNum.data.ot_number : null;
+              var srvDef = SERVICES_INGRESO.find(function(x){return x.key === srvKey;});
+              var srvLbl = (srvDef ? srvDef.label : srvKey) + (srvSub ? ' · ' + srvSub : '');
+              await notifyOTCreated(newOTId, otNumber, srvLbl, vehPlate, mgrId);
+            } catch(_){}
+          }
         }
       }
     } catch(e) {
@@ -7492,11 +7504,21 @@ async function saveNewOT() {
         status: 'open',
         created_by: CU ? CU.id : null
       });
-      var r = await sb.from('work_orders').insert(insertPayload).select('id').single();
+      var r = await sb.from('work_orders').insert(insertPayload).select('id, ot_number').single();
       if (r.error) throw new Error(r.error.message);
       // FASE 2.4.D: auto-crear scheduled_service vinculado al crear nueva OT desde catastro
       var newOTId = r.data && r.data.id;
+      var newOTNum = r.data && r.data.ot_number;
       if (newOTId) await autoCreateScheduledForOT(newOTId, vehId, srvKey, srvSub, mgrId);
+      // FASE 2.4.D-fix: notificar al gestor + jefe de taller
+      if (newOTId) {
+        var srvDef2 = SERVICES_INGRESO.find(function(x){return x.key === srvKey;});
+        var srvLbl2 = (srvDef2 ? srvDef2.label : srvKey) + (srvSub ? ' · ' + srvSub : '');
+        // Buscar la patente del vehículo
+        var plate = '';
+        try { var rv = await sb.from('client_vehicles').select('plate').eq('id', vehId).maybeSingle(); if (rv && rv.data) plate = rv.data.plate || ''; } catch(_){}
+        await notifyOTCreated(newOTId, newOTNum, srvLbl2, plate, mgrId);
+      }
     }
   } catch(e) {
     btn.innerHTML = isEdit ? 'Guardar cambios' : 'Crear OT'; btn.disabled = false;
@@ -7510,6 +7532,37 @@ async function saveNewOT() {
   // Refrescar listas relevantes
   if (curBossTab === 'b-catastro') await loadCatastro();
   if (curBossTab === 'b-ingreso')  await loadUnassignedToday();
+}
+
+// FASE 2.4.D-fix: dispatch de alertas al crear OT.
+// Notifica al gestor comercial asignado + al jefe de taller (Oscar Bueno).
+// Mensaje claro: "OT-X · servicio · vehículo · pendiente de asignar técnico"
+async function notifyOTCreated(otId, otNumber, srvLabel, plate, mgrId) {
+  if (!sb) return;
+  try {
+    var title = '⚙ OT-' + (otNumber || '?') + ' pendiente de asignar técnico';
+    var sub = (srvLabel || 'Servicio') + (plate ? ' · ' + plate : '') + ' · Asigna técnico desde Calendario / Planificación';
+    var targets = [];
+    if (mgrId) targets.push(mgrId);
+    // Buscar al jefe de taller (Oscar Bueno) por username
+    try {
+      var rJefe = await sb.from('users').select('id').eq('username', 'oscar.bueno').maybeSingle();
+      if (rJefe && rJefe.data && rJefe.data.id && rJefe.data.id !== mgrId) targets.push(rJefe.data.id);
+    } catch(_){}
+    // Insertar 1 notif por target (vinculadas a la OT)
+    for (var i = 0; i < targets.length; i++) {
+      try {
+        await sb.from('notifications').insert({
+          type: 'ot_pending_assign',
+          title: title,
+          sub: sub,
+          target_user_id: targets[i],
+          work_order_id: otId
+        });
+      } catch(e) { logR('NOTIFY_OT_INSERT_ERR', {msg: e.message, target: targets[i]}, 'warn'); }
+    }
+    logR('NOTIFY_OT_CREATED', {otId: otId, targets: targets.length});
+  } catch(e) { logR('NOTIFY_OT_ERR', {msg: e.message}, 'warn'); }
 }
 
 // FASE 2.4.D: helper para auto-crear scheduled_service vinculado a una OT
@@ -7760,18 +7813,46 @@ async function generateOTPdf(otId) {
 
 async function deleteClient() {
   if (!_editClientId) return;
-  if (!confirm('Eliminar este cliente? Tambien se eliminaran sus vehiculos asociados. Esta accion no se puede deshacer.')) return;
+  // FASE 2.4.D-fix: contar dependencias antes de mostrar confirm para que el usuario sepa el alcance
+  var vehCount = 0, otCount = 0;
+  try {
+    var rv = await sb.from('client_vehicles').select('id', {count:'exact', head:true}).eq('client_id', _editClientId);
+    vehCount = rv.count || 0;
+  } catch(_){}
+  try {
+    var ro = await sb.from('work_orders').select('id', {count:'exact', head:true}).eq('client_id', _editClientId);
+    otCount = ro.count || 0;
+  } catch(_){}
+  var msg = 'ELIMINAR CLIENTE\n\n';
+  if (vehCount > 0 || otCount > 0) {
+    msg += 'ATENCION: este cliente tiene asociados:\n';
+    if (vehCount > 0) msg += '  • ' + vehCount + ' vehiculo(s) registrado(s) (se eliminaran TODAS sus fotos del bucket)\n';
+    if (otCount > 0)  msg += '  • ' + otCount  + ' orden(es) de trabajo (con sus checklists y eventos agendados)\n';
+    msg += '\nTODO se borrara en cascada. Esta accion no se puede deshacer.\n\n¿Continuar?';
+  } else {
+    msg += 'Este cliente no tiene vehiculos ni OTs asociadas.\n\n¿Confirmas la eliminacion?';
+  }
+  if (!confirm(msg)) return;
   var btn = document.getElementById('m-cli-del');
   if (btn) { btn.disabled = true; btn.textContent = 'Eliminando...'; }
+  // Limpieza explícita previa: scheduled_services vinculados a las OTs del cliente
+  try {
+    var rOTs = await sb.from('work_orders').select('id').eq('client_id', _editClientId);
+    var otIds = (rOTs && rOTs.data || []).map(function(o){return o.id;});
+    if (otIds.length) {
+      try { await sb.from('scheduled_services').delete().in('work_order_id', otIds); } catch(_){}
+    }
+  } catch(_){}
   var r = await sb.from('clients').delete().eq('id', _editClientId);
   if (r.error) {
-    showGlobalError('No se pudo eliminar: ' + r.error.message, 5000);
+    showGlobalError('No se pudo eliminar: ' + r.error.message + '\n\nVerifica que el SQL HOTFIX_cascade_work_orders.sql se haya aplicado en Supabase.', 8000);
     if (btn) { btn.disabled = false; btn.textContent = 'Eliminar cliente'; }
     return;
   }
   closeModal('m-client');
-  if (curBossTab === 'b-clientes') await loadClients();
-  showGlobalError('Cliente eliminado', 2500);
+  if (curBossTab === 'b-clientes' || curBossTab === 'b-ingreso') await loadClients();
+  if (curBossTab === 'b-catastro') await loadCatastro();
+  showGlobalError('Cliente eliminado correctamente', 2500);
 }
 
 // ═══════════════════════════════════════════════
@@ -7820,6 +7901,32 @@ async function openEditEvent(id) {
   await loadEvTechs(data.technician_id);
   applyEvAssignPermLock();
   openModal('m-event');
+}
+
+// FASE 2.4.D-fix: cuando se elige un servicio en el modal m-event,
+// si matchea un mantenimiento predefinido del catálogo SRVS (que ya tiene
+// goal por regla), pre-llenar el campo Tiempo objetivo con su goal.
+// Para los demás, dejar editable y obligatorio (será validado en saveEvent).
+function onEventServiceChange() {
+  var srv = document.getElementById('m-ev-service').value;
+  var goalEl = document.getElementById('m-ev-goal');
+  var hintEl = document.getElementById('m-ev-goal-hint');
+  if (!srv || !goalEl) return;
+  // Buscar match case-insensitive en SRVS por name (los SRVS tienen goal predefinido)
+  var match = (typeof SRVS !== 'undefined') ? SRVS.find(function(s){ return s.name && s.name.toLowerCase() === srv.toLowerCase(); }) : null;
+  if (match && match.goal) {
+    // Solo prellenar si el campo está vacío (no sobreescribir si el usuario ya escribió)
+    if (!goalEl.value) goalEl.value = match.goal;
+    if (hintEl) {
+      hintEl.textContent = '✓ Tiempo predefinido por regla del taller: ' + match.goal + ' min. Puedes ajustarlo si el caso lo amerita.';
+      hintEl.style.color = 'var(--green)';
+    }
+  } else {
+    if (hintEl) {
+      hintEl.textContent = 'Obligatorio: define el tiempo esperado para que el sistema avise si se excede.';
+      hintEl.style.color = 'var(--gold3)';
+    }
+  }
 }
 
 async function loadEvTechs(selectedId) {
@@ -7880,6 +7987,8 @@ async function saveEvent() {
   err.style.display = 'none';
   if (!service) { err.textContent = 'Selecciona un servicio'; err.style.display='block'; return; }
   if (!dt) { err.textContent = 'Ingresa fecha y hora'; err.style.display='block'; return; }
+  // FASE 2.4.D-fix: tiempo objetivo obligatorio (para que el sistema pueda medir y alertar)
+  if (!goal || goal < 1) { err.textContent = 'Indica un tiempo objetivo en minutos. Es obligatorio para que el sistema mida y alerte si el técnico se excede.'; err.style.display='block'; return; }
   btn.innerHTML = '<span class="spin"></span>'; btn.disabled = true;
   var payload = {service, plate, scheduled_at:new Date(dt).toISOString(), technician_id:techId, technician_name:techName, goal_minutes:goal, notes, status, created_by:CU.name};
   logR('SAVE_EVENT_PAYLOAD', payload);
