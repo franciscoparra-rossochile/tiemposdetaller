@@ -231,6 +231,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
   <div class="tab-bar" id="boss-tabbar">
     <div class="tab" data-tab="b-ingreso" onclick="bossTab('b-ingreso')" id="tab-ingreso" style="display:none">Ingreso Taller</div>
     <div class="tab" data-tab="b-catastro" onclick="bossTab('b-catastro')" id="tab-catastro" style="display:none">Catastro Vehículos</div>
+    <div class="tab" data-tab="b-entregados" onclick="bossTab('b-entregados')" id="tab-entregados" style="display:none">Entregados</div>
     <div class="tab active" data-tab="b-online" onclick="bossTab('b-online')">En curso</div>
     <div class="tab" data-tab="b-alertas" onclick="bossTab('b-alertas')">Alertas<span class="ndot" id="boss-ndot"></span></div>
     <div class="tab" data-tab="b-calendario" onclick="bossTab('b-calendario')">Calendario</div>
@@ -3159,6 +3160,7 @@ function bossTab(t) {
   else if (t === 'b-clientes') renderBossClientes(body, 'registro');
   else if (t === 'b-ingreso')  renderBossClientes(body, 'ingreso');
   else if (t === 'b-catastro') renderBossCatastro(body);
+  else if (t === 'b-entregados') renderBossEntregados(body);
   else if (t === 'b-visado')   renderVisadoPanel(body);
 }
 
@@ -3170,6 +3172,8 @@ function refreshBossTabsVisibility() {
   if (elIngreso) elIngreso.style.display = hasPerm(CU, 'can_ingresar_clientes') ? '' : 'none';
   var elCatastro = document.getElementById('tab-catastro');
   if (elCatastro) elCatastro.style.display = hasPerm(CU, 'can_ingresar_clientes') ? '' : 'none';
+  var elEntregados = document.getElementById('tab-entregados');
+  if (elEntregados) elEntregados.style.display = hasPerm(CU, 'can_ingresar_clientes') ? '' : 'none';
   var elClientes = document.getElementById('tab-clientes');
   if (elClientes) elClientes.style.display = hasPerm(CU, 'can_ingresar_clientes') ? '' : 'none';
   // FASE 2.4.C-fix: pestaña Visado SOLO para visadores explícitos (no para admins por inheritance).
@@ -6998,6 +7002,11 @@ async function saveClient() {
           var oldPhotos = (resOld.data && resOld.data.photos) || {};
           vehPayload.photos = Object.assign({}, oldPhotos, photoUrls);
         }
+        // FASE 2.7-fix abr 2026: si el vehiculo estaba marcado como entregado y ahora se
+        // esta editando, asumimos que volvio al taller y lo reactivamos.
+        vehPayload.archived = false;
+        vehPayload.archived_at = null;
+        vehPayload.archived_by = null;
         var rv = await sb.from('client_vehicles').update(vehPayload).eq('id', _editVehicleId);
         if (rv.error) throw new Error(rv.error.message);
       } else {
@@ -7627,7 +7636,7 @@ function renderCatastroList() {
       +   '<button class="btn-sm" onclick="' + stop + 'openVehicleDetail(\'' + v.id + '\')">👁 Ver</button>'
       +   '<button class="btn-sm" style="border-color:var(--blue);color:var(--blue)" onclick="' + stop + 'editLatestOTForVehicle(\'' + v.id + '\')">✏️ Editar OT</button>'
       +   '<button class="btn-sm" style="border-color:var(--gold3);color:var(--gold3)" onclick="' + stop + 'editIngresoForVehicle(\'' + v.id + '\')">📋 Editar ingreso</button>'
-      +   '<button class="btn-sm" style="border-color:#888;color:#888" onclick="' + stop + 'deleteVehicleFromCatastro(\'' + v.id + '\')">📦 Archivar</button>'
+      +   '<button class="btn-sm" style="border-color:#888;color:#888" onclick="' + stop + 'deleteVehicleFromCatastro(\'' + v.id + '\')">📦 Entregado</button>'
       + '</div>'
       + '</div>';
   }).join('');
@@ -7673,20 +7682,22 @@ async function editIngresoForVehicle(vehicleId) {
 async function deleteVehicleFromCatastro(vehicleId) {
   if (!vehicleId || !sb) return;
   if (!hasPerm(CU, 'can_ingresar_clientes')) { showGlobalError('Sin permiso', 3000); return; }
-  // FASE 2.7: archivado en lugar de borrado destructivo
+  // FASE 2.7: marcar como entregado (archivado en BD) en lugar de borrado destructivo.
+  // Renombrado en abr 2026: el termino "archivar" confundia al equipo; ahora se llama
+  // "Entregado" porque representa que el vehiculo salio del taller / se entrego al cliente.
   var otCount = 0;
   try {
     var ro = await sb.from('work_orders').select('id', {count:'exact', head:true}).eq('vehicle_id', vehicleId);
     otCount = ro.count || 0;
   } catch(_){}
-  var msg = '<b>Vas a archivar este vehículo del catastro</b>';
-  msg += '<br/><br/>Quedará oculto de la lista pero <b>NO se eliminan</b>:';
+  var msg = '<b>Marcar este vehículo como ENTREGADO</b>';
+  msg += '<br/><br/>El vehículo salió del taller y vuelve con el cliente. Quedará oculto del catastro activo pero <b>NO se elimina nada</b>:';
   msg += '<br/>• Las fotos del bucket';
   msg += '<br/>• Las OTs históricas';
   msg += '<br/>• Los checklists ni el visado';
   if (otCount > 0) msg += '<br/><br/>Este vehículo tiene <b>' + otCount + '</b> OT(s) que se conservarán intactas.';
-  msg += '<br/><br/><span style="color:var(--green2)">Reversible: un admin puede des-archivarlo desde Supabase.</span>';
-  confirmHard(msg, function(){ _doArchiveVehicle(vehicleId); }, {keyword: 'ARCHIVAR'});
+  msg += '<br/><br/><span style="color:var(--green2)">Lo podés ver y reactivar desde la pestaña <b>Entregados</b>.</span>';
+  confirmHard(msg, function(){ _doArchiveVehicle(vehicleId); }, {keyword: 'ENTREGADO'});
 }
 
 async function _doArchiveVehicle(vehicleId) {
@@ -7699,17 +7710,164 @@ async function _doArchiveVehicle(vehicleId) {
     if (rd && rd.error) {
       // Fallback: si la columna 'archived' no existe (no se corrió la migración), avisar
       if (/archived/.test(rd.error.message)) {
-        showGlobalError('Falta correr la migración fase_2_7_archived.sql en Supabase. El vehículo NO se eliminó.', 9000);
+        showGlobalError('Falta correr la migración fase_2_7_archived.sql en Supabase. El vehículo NO cambió de estado.', 9000);
         return;
       }
-      showGlobalError('Error al archivar: ' + rd.error.message, 6000);
+      showGlobalError('Error al marcar como entregado: ' + rd.error.message, 6000);
       return;
     }
-    showGlobalError('✓ Vehículo archivado. Las fotos y OTs históricas se conservan.', 4000);
+    showGlobalError('✓ Vehículo marcado como entregado. Se conservan fotos, OTs y checklists.', 4000);
     _catVehiclesCache = _catVehiclesCache.filter(function(r){ return r.vehicle.id !== vehicleId; });
     renderCatastroList();
   } catch(e) {
     showGlobalError('Error inesperado: ' + e.message, 5000);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PESTAÑA ENTREGADOS (vehiculos archivados)
+// Lista vehiculos con archived=true para que admin pueda verlos y reactivarlos
+// si vuelven al taller. La logica de "archivado" en BD se mantiene igual,
+// solo cambia la representacion al usuario: "archivado" -> "entregado".
+// ═══════════════════════════════════════════════════════════════
+
+var _entregadosCache = []; // [{vehicle, client}]
+var _entregadosSearch = '';
+
+async function renderBossEntregados(body) {
+  if (!hasPerm(CU, 'can_ingresar_clientes')) {
+    body.innerHTML = '<div class="card"><div style="text-align:center;color:var(--wh3);padding:18px">No tienes permiso para acceder a entregados.</div></div>';
+    return;
+  }
+  body.innerHTML = '<div class="card-accent">'
+    + '<div style="font-size:13px;font-weight:700;color:#111;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">Vehículos entregados</div>'
+    + '<div style="font-size:11px;color:var(--wh3);margin-bottom:10px;line-height:1.4">Vehículos que ya salieron del taller. El cliente sigue en la base de clientes; solo el vehículo está fuera del catastro activo. Al volver al taller, usá <b>Reactivar</b> para que vuelva al catastro.</div>'
+    + '<div style="display:flex;gap:8px;margin-bottom:10px;align-items:center;flex-wrap:wrap">'
+    + '<input type="text" class="inp" id="ent-search" placeholder="Buscar por patente, marca, modelo, cliente o RUT..." style="flex:1;margin-bottom:0;min-width:180px" autocomplete="off" data-no-upper oninput="onEntregadosSearch(this.value)"/>'
+    + '</div>'
+    + '<div id="ent-meta" style="font-size:11px;color:var(--wh3);margin-bottom:8px;font-family:var(--mono)">Cargando...</div>'
+    + '<div id="ent-list"></div>'
+    + '</div>';
+  document.getElementById('ent-search').value = _entregadosSearch;
+  await loadEntregados();
+}
+
+async function loadEntregados() {
+  if (!sb) return;
+  var meta = document.getElementById('ent-meta');
+  if (meta) meta.textContent = 'Cargando...';
+  try {
+    // Solo vehiculos con archived = true
+    var rv = await sb.from('client_vehicles').select('*').eq('archived', true).order('archived_at', {ascending: false}).limit(1000);
+    if (rv && rv.error && /archived/.test(rv.error.message || '')) {
+      // Si la columna no existe, no hay entregados
+      logR('ENTREGADOS_NO_ARCHIVED_COL', {msg: rv.error.message}, 'warn');
+      _entregadosCache = [];
+      renderEntregadosList();
+      if (meta) meta.textContent = 'La columna "archived" no existe aún. Falta correr la migración fase_2_7_archived.sql.';
+      return;
+    }
+    if (rv.error) { if (meta) meta.textContent = 'Error: ' + rv.error.message; return; }
+    // Reusar cache de clientes
+    if (_clientsCache.length === 0) {
+      var rc = await sb.from('clients').select('*').limit(2000);
+      if (rc.error) { if (meta) meta.textContent = 'Error: ' + rc.error.message; return; }
+      _clientsCache = rc.data || [];
+    }
+    var byId = {};
+    _clientsCache.forEach(function(c){ byId[c.id] = c; });
+    _entregadosCache = (rv.data || []).map(function(v){
+      return {vehicle: v, client: byId[v.client_id] || null};
+    });
+    renderEntregadosList();
+  } catch(e) {
+    if (meta) meta.textContent = 'Error de conexion: ' + e.message;
+  }
+}
+
+function onEntregadosSearch(v) {
+  _entregadosSearch = (v || '').trim().toUpperCase();
+  renderEntregadosList();
+}
+
+function renderEntregadosList() {
+  var list = document.getElementById('ent-list');
+  var meta = document.getElementById('ent-meta');
+  if (!list) return;
+  var q = _entregadosSearch;
+  var filtered = _entregadosCache;
+  if (q) {
+    filtered = _entregadosCache.filter(function(row) {
+      var v = row.vehicle, c = row.client || {};
+      return (v.plate || '').toUpperCase().indexOf(q) !== -1
+          || (v.brand || '').toUpperCase().indexOf(q) !== -1
+          || (v.model || '').toUpperCase().indexOf(q) !== -1
+          || (c.name  || '').toUpperCase().indexOf(q) !== -1
+          || (c.rut   || '').toUpperCase().indexOf(q) !== -1
+          || (c.phone || '').indexOf(q) !== -1;
+    });
+  }
+  if (meta) meta.textContent = filtered.length + ' de ' + _entregadosCache.length + ' vehículo(s) entregado(s)';
+  if (filtered.length === 0) {
+    list.innerHTML = '<div class="empty" style="padding:24px;text-align:center;color:var(--wh4);line-height:1.5">'
+      + (_entregadosCache.length === 0
+         ? 'No hay vehículos entregados todavía. Cuando marques uno como "Entregado" desde el Catastro, aparecerá aquí.'
+         : 'No se encontraron vehículos con ese filtro.')
+      + '</div>';
+    return;
+  }
+  list.innerHTML = filtered.map(function(row) {
+    var v = row.vehicle, c = row.client;
+    var pv = validatePlate(v.plate || '');
+    var plateFmt = pv.valid ? pv.formatted : (v.plate || 'sin patente');
+    var thumb = (v.photos && v.photos.frente) ? v.photos.frente : null;
+    var clientLine = c ? escapeHtml(c.name) + ' · ' + escapeHtml(c.rut || c.phone || '') : '<span style="color:var(--red)">cliente eliminado</span>';
+    // Mostrar fecha de entrega y quien lo entrego
+    var entregadoLine = '';
+    if (v.archived_at) {
+      entregadoLine = 'Entregado ' + new Date(v.archived_at).toLocaleDateString('es-CL');
+      if (v.archived_by) entregadoLine += ' · por ' + escapeHtml(v.archived_by);
+    }
+    var stop = "event.stopPropagation();";
+    return '<div class="row" style="align-items:center;gap:10px;padding:10px 4px;cursor:pointer;flex-wrap:wrap;opacity:.85" onclick="openVehicleDetail(\'' + v.id + '\')">'
+      + (thumb
+         ? '<img src="' + thumb + '" style="width:44px;height:44px;border-radius:4px;object-fit:cover;flex-shrink:0;border:1px solid var(--border);filter:grayscale(.3)" alt=""/>'
+         : '<div style="width:44px;height:44px;border-radius:4px;background:var(--bg3);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:20px">📦</div>')
+      + '<div style="flex:1;min-width:180px">'
+      +   '<div style="font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.02em">' + escapeHtml(v.brand) + ' ' + escapeHtml(v.model) + ' <span style="color:var(--red);font-family:var(--mono);font-weight:700">' + plateFmt + '</span></div>'
+      +   '<div style="font-size:11px;color:var(--wh3);margin-top:2px">' + clientLine + '</div>'
+      +   (entregadoLine ? '<div style="font-size:10px;color:var(--wh4);margin-top:2px;font-family:var(--mono)">' + entregadoLine + '</div>' : '')
+      + '</div>'
+      + '<div style="display:flex;gap:4px;flex-wrap:wrap">'
+      +   '<button class="btn-sm" onclick="' + stop + 'openVehicleDetail(\'' + v.id + '\')">👁 Ver</button>'
+      +   '<button class="btn-sm" style="border-color:var(--green2);color:var(--green2)" onclick="' + stop + 'reactivateVehicle(\'' + v.id + '\')">♻️ Reactivar</button>'
+      + '</div>'
+      + '</div>';
+  }).join('');
+}
+
+// Reactivar: vuelve el vehiculo al catastro activo (archived = false).
+async function reactivateVehicle(vehicleId) {
+  if (!vehicleId || !sb) return;
+  if (!hasPerm(CU, 'can_ingresar_clientes')) { showGlobalError('Sin permiso', 3000); return; }
+  try {
+    var rd = await sb.from('client_vehicles').update({
+      archived: false,
+      archived_at: null,
+      archived_by: null
+    }).eq('id', vehicleId);
+    if (rd && rd.error) {
+      showGlobalError('Error al reactivar: ' + rd.error.message, 6000);
+      return false;
+    }
+    showGlobalError('✓ Vehículo reactivado, vuelve al catastro activo.', 3500);
+    _entregadosCache = _entregadosCache.filter(function(r){ return r.vehicle.id !== vehicleId; });
+    if (document.getElementById('ent-list')) renderEntregadosList();
+    _catVehiclesCache = [];
+    return true;
+  } catch(e) {
+    showGlobalError('Error inesperado: ' + e.message, 5000);
+    return false;
   }
 }
 
