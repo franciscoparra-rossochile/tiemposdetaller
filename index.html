@@ -495,6 +495,13 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     <div class="lbl">Notas internas <span style="color:var(--wh4);font-weight:400;text-transform:none;letter-spacing:0">(opcional)</span></div>
     <textarea class="inp" id="m-cli-notes" rows="2" placeholder="Datos relevantes, contacto secundario, etc."></textarea>
 
+    <!-- ═══ FASE 2.2.C-fix: HISTORIAL DEL CLIENTE (solo visible en Registro Clientes al editar) ═══ -->
+    <div id="m-cli-history-wrap" style="display:none;border-top:2px solid var(--blue);margin:18px -2px 12px;padding-top:14px">
+      <div style="font-size:14px;font-weight:700;color:#111;font-family:'Rajdhani',sans-serif;text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px">📋 Historial del cliente</div>
+      <div style="font-size:11px;color:var(--wh3);margin-bottom:8px;line-height:1.4">Vehículos registrados a este cliente. Toca cualquiera para ver fotos, comprobaciones y órdenes de trabajo asociadas.</div>
+      <div id="m-cli-history-list" style="display:flex;flex-direction:column;gap:6px"></div>
+    </div>
+
     <!-- ═══ FASE 2.2.B: SECCIONES SOLO VISIBLES EN MODO INGRESO ═══ -->
     <div id="m-cli-ingreso-block" style="display:none">
 
@@ -536,6 +543,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
           <select class="inp" id="m-srv-sub">
             <option value="">Selecciona...</option>
           </select>
+          <div id="m-srv-sub-multi" style="display:none;margin-bottom:8px"></div>
         </div>
 
         <div id="m-srv-desc-wrap" style="display:none">
@@ -609,6 +617,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     <div id="m-newot-sub-wrap" style="display:none">
       <div class="lbl">Especificación</div>
       <select class="inp" id="m-newot-sub"><option value="">Selecciona...</option></select>
+      <div id="m-newot-sub-multi" style="display:none;margin-bottom:8px"></div>
     </div>
 
     <div id="m-newot-desc-wrap" style="display:none">
@@ -754,7 +763,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // CONFIG & DEBUG
 // ═══════════════════════════════════════════════
 const DEBUG = true;
-const APP_VERSION = 'v2.6.1-FASE2.2C-fix';
+const APP_VERSION = 'v2.6.2-services-final';
 const SURL = 'https://jczmupcmeixpwjedfgtk.supabase.co';
 const SKEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impjem11cGNtZWl4cHdqZWRmZ3RrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY5NzMxOTMsImV4cCI6MjA5MjU0OTE5M30.DuICC_pCQGv27lZivieXRRvGz9A1GNkgmhvTvyKo25o';
 var sb = null; // initialized in init()
@@ -1082,34 +1091,110 @@ const VEHICLE_PHOTOS = [
 // Lista de tipos de servicio que se ofrecen al recibir un vehículo.
 // Algunos tienen sub-categorías (frenos, diagnósticos, ECU, DPF) y
 // otros requieren descripción libre (reparaciones generales).
+// Lista definitiva (12 servicios) agrupados por tipo. Cada uno opcionalmente
+// con "subs" (sub-categorías) y "multiSelect" (selección múltiple en checkboxes).
 const SERVICES_INGRESO = [
-  {key:'CAMBIO_ACEITE',         label:'Cambio de aceite + filtro de aceite'},
-  {key:'MANT_EXPRESS',          label:'Mantenimiento express'},
-  {key:'MANT_PAUTA',            label:'Mantenimiento con pauta de inspección'},
-  {key:'MANT_COMPLETO',         label:'Mantenimiento completo'},
-  {key:'MANT_CAJA',             label:'Mantenimiento de caja de cambios'},
-  {key:'PAUTA_INSPECCION',      label:'Pauta de inspección'},
-  {key:'DPF_RECUP',             label:'Recuperación de DPF', subs:[
-      'Pack Esencial','Pack Avanzado','Pack Premium',
-      'Pack Integral (DPF + Limpieza Admisión)','Sin Mantenimiento']},
-  {key:'DPF_EXTRAIDO',          label:'DPF extraído para recuperación'},
-  {key:'REGEN_FORZADA',         label:'Regeneración forzada'},
-  {key:'REPAR_GENERALES',       label:'Reparaciones generales (describir)', needsDesc: true},
-  {key:'FRENOS',                label:'Servicio de frenos', subs:[
-      'Diagnóstico','Pastillas delanteras + rectificado',
-      'Pastillas + discos delanteros',
-      'Pastillas o balatas traseras + rectificado',
-      'Pastillas + discos / tambor traseros',
-      'Cambio líquido de frenos','Ajuste de frenos']},
-  {key:'DIAGNOSTICO',           label:'Diagnóstico', subs:[
-      'Escáner','Pauta de inspección','Diagnóstico básico',
-      'Diagnóstico medio','Diagnóstico avanzado']},
-  {key:'REPROG_ECU',            label:'Reprogramación ECU', subs:[
-      'Stage 1','Stage 2','Eliminación de módulo']},
-  {key:'GARANTIA',              label:'Garantía de servicio', needsDesc: true},
-  {key:'LICITACION',            label:'Licitación pública'},
-  {key:'CONVENIO',              label:'Convenio empresas'}
+  // — Mantenimientos —
+  {key:'CAMBIO_ACEITE',         label:'Cambio de aceite',                 group:'Mantenimientos'},
+  {key:'MANT_EXPRESS',          label:'Mantenimiento express',            group:'Mantenimientos'},
+  {key:'MANT_COMPLETO',         label:'Mantenimiento completo',           group:'Mantenimientos'},
+  // — DPF (4 ítems separados como pidió el usuario) —
+  {key:'DPF_PACK_ESENCIAL',     label:'Recuperación de DPF — Pack Esencial', group:'DPF'},
+  {key:'DPF_PACK_AVANZADO',     label:'Recuperación de DPF — Pack Avanzado', group:'DPF'},
+  {key:'DPF_PACK_PREMIUM',      label:'Recuperación de DPF — Pack Premium',  group:'DPF'},
+  {key:'DPF_EXTRAIDO',          label:'DPF extraído para recuperación',      group:'DPF'},
+  // — Reparaciones —
+  {key:'REPAR_GENERALES',       label:'Reparaciones generales (indicar)',
+                                group:'Reparaciones', needsDesc: true},
+  {key:'FRENOS',                label:'Servicio de frenos (selección múltiple)',
+                                group:'Reparaciones',
+                                multiSelect: true,
+                                subs:[
+                                  'Diagnóstico de frenos',
+                                  'Pastillas delanteras + rectificado de discos',
+                                  'Discos + pastillas delanteras',
+                                  'Pastillas/balatas traseras + rectificado de discos/tambores',
+                                  'Discos/tambores + pastillas/balatas traseras'
+                                ]},
+  // — Diagnóstico y software —
+  {key:'DIAGNOSTICO',           label:'Diagnósticos',
+                                group:'Diagnóstico y software',
+                                subs:[
+                                  'Escáner','Pauta de inspección',
+                                  'Diagnóstico básico','Diagnóstico medio','Diagnóstico avanzado'
+                                ]},
+  {key:'REPROG_ECU',            label:'Reprogramación ECU',
+                                group:'Diagnóstico y software',
+                                subs:['Stage 1','Stage 2','Eliminación de módulo']},
+  // — Otros —
+  {key:'GARANTIA',              label:'Garantía de servicio',
+                                group:'Otros', needsDesc: true}
 ];
+
+// ═══════════════════════════════════════════════════════════════
+// FASE 2.4.A: CHECKLISTS TÉCNICOS POR TIPO DE SERVICIO
+// ═══════════════════════════════════════════════════════════════
+// Tipos de campo: 'text' (string libre, auto-uppercase), 'na_text' (text con check
+// N/A para servicios donde el campo no aplica), 'number' (numérico),
+// 'bool' (sí/no), 'select' (dropdown).
+// required_if: el campo solo es obligatorio si la key referenciada es true (o no-vacía).
+const CHECKLIST_PRUEBA_RUTA = [
+  {key:'rt_km_arrival', label:'Kilometraje de llegada (post prueba)', type:'number', required:true},
+  {key:'rt_type',       label:'Tipo de prueba de ruta', type:'select', options:['A (corta — obligatoria para este servicio)'], default:'A (corta — obligatoria para este servicio)', required:true},
+  {key:'rt_anomalies',  label:'¿Encontró ruidos o anomalías?', type:'bool', required:true},
+  {key:'rt_anomalies_desc', label:'Detalle de anomalías encontradas', type:'text', required_if:'rt_anomalies'}
+];
+
+// Doble control común a Cambio de Aceite + Mantenimiento Express
+const CHECKLIST_DOBLE_CONTROL = [
+  {key:'dc_torque_filter', label:'Marcaje torque filtro de aceite', type:'bool', required:true},
+  {key:'dc_apriete_filter',label:'Marcaje apriete filtro de aceite', type:'bool', required:true},
+  {key:'dc_label',         label:'Etiqueta de cambio de aceite pegada', type:'bool', required:true},
+  {key:'dc_clean',         label:'Limpieza zonas de trabajo', type:'bool', required:true},
+  {key:'dc_km_exit',       label:'Kilometraje de salida', type:'number', required:true}
+];
+
+// Definición por tipo de servicio (key === SERVICES_INGRESO[].key)
+const CHECKLISTS_TECH = {
+  CAMBIO_ACEITE: {
+    label: 'Cambio de aceite',
+    sections: [
+      {title: 'Repuestos utilizados', items: [
+        {key:'oil_filter_code', label:'Código del filtro de aceite utilizado', type:'text', required:true},
+        {key:'oil_liters',      label:'Litros de aceite cargados', type:'number', required:true, step:0.1},
+        {key:'oil_brand',       label:'Marca de aceite', type:'text', required:true}
+      ]},
+      {title: 'Niveles', items: [
+        {key:'wiper_fluid', label:'Relleno de líquido limpiaparabrisas', type:'bool', required:true}
+      ]},
+      {title: 'Prueba de ruta', items: CHECKLIST_PRUEBA_RUTA}
+    ]
+  },
+  MANT_EXPRESS: {
+    label: 'Mantenimiento express',
+    sections: [
+      {title: 'Repuestos utilizados', items: [
+        {key:'oil_filter_code',    label:'Código filtro de aceite', type:'text', required:true},
+        {key:'air_filter_code',    label:'Código filtro de aire', type:'text', required:true},
+        {key:'pollen_filter_code', label:'Código filtro de polen', type:'text', required:true},
+        {key:'fuel_filter_code',   label:'Código filtro de petróleo', type:'na_text', required:true, na_label:'No aplica este servicio'},
+        {key:'oil_liters',         label:'Litros de aceite', type:'number', required:true, step:0.1},
+        {key:'oil_brand',          label:'Marca de aceite', type:'text', required:true}
+      ]},
+      {title: 'Relleno de niveles', items: [
+        {key:'wiper_fluid',     label:'Líquido limpiaparabrisas', type:'bool', required:true},
+        {key:'coolant',         label:'Refrigerante', type:'bool', required:true},
+        {key:'brake_fluid',     label:'Líquido de frenos', type:'bool', required:true}
+      ]},
+      {title: 'Diagnóstico y reset', items: [
+        {key:'scanner_read',    label:'Lectura de escáner realizada', type:'bool', required:true},
+        {key:'service_reset',   label:'Reinicio de intervalo de mantenimiento', type:'bool', required:true}
+      ]},
+      {title: 'Prueba de ruta', items: CHECKLIST_PRUEBA_RUTA}
+    ]
+  }
+  // Otros tipos (MANT_COMPLETO, FRENOS, DIAGNOSTICO, etc.) en Fase 2.4.B
+};
 
 // ═══════════════════════════════════════════════════════════════
 // FASE 2.2.B: VALIDACION PATENTE CHILENA
@@ -5304,6 +5389,13 @@ async function openClientModal(cid) {
   var srvBlock = document.getElementById('m-srv-block');
   if (srvBlock) srvBlock.style.display = isIngreso ? '' : 'none';
 
+  // FASE 2.2.C-fix: Historial del cliente solo en modo Registro Clientes al EDITAR
+  var hwrap = document.getElementById('m-cli-history-wrap');
+  if (hwrap) hwrap.style.display = 'none';
+  if (_clientsViewMode === 'registro' && cid) {
+    loadClientHistory(cid);
+  }
+
   openModal('m-client');
 }
 
@@ -5407,7 +5499,6 @@ async function saveClient() {
     // SERVICIO + GESTOR solo en INGRESO
     if (savesOT) {
       srvKey  = document.getElementById('m-srv-type').value;
-      srvSub  = document.getElementById('m-srv-sub').value || '';
       srvDesc = document.getElementById('m-srv-desc').value.trim();
       var mgrSel = document.getElementById('m-srv-manager');
       mgrId   = mgrSel.value || null;
@@ -5415,8 +5506,18 @@ async function saveClient() {
 
       if (!srvKey) { err.textContent = 'Selecciona el tipo de servicio que viene a hacer el cliente'; err.style.display='block'; return; }
       var srvDef = SERVICES_INGRESO.find(function(x){ return x.key === srvKey; });
-      if (srvDef && srvDef.subs && srvDef.subs.length && !srvSub) {
-        err.textContent = 'Falta la especificación del servicio'; err.style.display='block'; return;
+      // Especificación: single (select) o multi (checkboxes)
+      if (srvDef && srvDef.subs && srvDef.subs.length) {
+        if (srvDef.multiSelect) {
+          var multis = Array.from(document.querySelectorAll('#m-srv-sub-multi input[type=checkbox]:checked')).map(function(cb){return cb.dataset.srvSub;});
+          if (multis.length === 0) { err.textContent = 'Marca al menos una especificación del servicio'; err.style.display='block'; return; }
+          srvSub = multis.join(' + ');
+        } else {
+          srvSub = document.getElementById('m-srv-sub').value || '';
+          if (!srvSub) { err.textContent = 'Falta la especificación del servicio'; err.style.display='block'; return; }
+        }
+      } else {
+        srvSub = '';
       }
       if (srvDef && srvDef.needsDesc && !srvDesc) {
         err.textContent = 'Indica una breve descripción del trabajo solicitado'; err.style.display='block'; return;
@@ -5664,44 +5765,73 @@ function onCheckChanged(cb) {
   }
 }
 
-// Llenar el dropdown de servicios (una vez)
+// Llenar el dropdown de servicios (una vez) con grupos por tipo
 function buildServicesDropdown() {
   var sel = document.getElementById('m-srv-type');
   if (!sel || sel.options.length > 1) return;
+  // Agrupar por .group
+  var groups = {};
+  var groupOrder = [];
   SERVICES_INGRESO.forEach(function(s) {
-    var o = document.createElement('option');
-    o.value = s.key; o.textContent = s.label;
-    sel.appendChild(o);
+    var g = s.group || 'Otros';
+    if (!groups[g]) { groups[g] = []; groupOrder.push(g); }
+    groups[g].push(s);
+  });
+  groupOrder.forEach(function(gname) {
+    var og = document.createElement('optgroup');
+    og.label = gname.toUpperCase();
+    groups[gname].forEach(function(s) {
+      var o = document.createElement('option');
+      o.value = s.key; o.textContent = s.label;
+      og.appendChild(o);
+    });
+    sel.appendChild(og);
   });
 }
 
-// Cuando cambia el servicio: mostrar sub-categoria o descripcion segun corresponda
+// Cuando cambia el servicio: mostrar sub-categoria (single o multi) o descripcion
 function onServiceChange() {
   var key = document.getElementById('m-srv-type').value;
   var subWrap = document.getElementById('m-srv-sub-wrap');
   var descWrap = document.getElementById('m-srv-desc-wrap');
   var subSel = document.getElementById('m-srv-sub');
+  var subMulti = document.getElementById('m-srv-sub-multi');
   if (!key) {
     subWrap.style.display = 'none';
     descWrap.style.display = 'none';
+    if (subMulti) subMulti.innerHTML = '';
     return;
   }
   var s = SERVICES_INGRESO.find(function(x){ return x.key === key; });
   if (!s) return;
-  // Sub-categoria
   if (s.subs && s.subs.length) {
-    subSel.innerHTML = '<option value="">Selecciona...</option>';
-    s.subs.forEach(function(sub) {
-      var o = document.createElement('option');
-      o.value = sub; o.textContent = sub;
-      subSel.appendChild(o);
-    });
+    if (s.multiSelect) {
+      // Render como checkboxes (multi)
+      subSel.style.display = 'none';
+      subMulti.style.display = '';
+      subMulti.innerHTML = '<div style="font-size:10px;color:var(--wh4);margin-bottom:6px">Marca todas las que apliquen</div>'
+        + s.subs.map(function(sub){
+            return '<label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;user-select:none;padding:6px 8px;border:1px solid #eee;border-radius:3px;margin-bottom:4px;background:#fff;font-size:12px;line-height:1.3">'
+              + '<input type="checkbox" data-srv-sub="' + escapeHtml(sub) + '" style="margin-top:2px;flex-shrink:0"/>'
+              + '<span>' + escapeHtml(sub) + '</span></label>';
+          }).join('');
+      subSel.value = '';
+    } else {
+      // Render como dropdown single
+      subSel.style.display = '';
+      if (subMulti) { subMulti.style.display = 'none'; subMulti.innerHTML = ''; }
+      subSel.innerHTML = '<option value="">Selecciona...</option>';
+      s.subs.forEach(function(sub) {
+        var o = document.createElement('option');
+        o.value = sub; o.textContent = sub;
+        subSel.appendChild(o);
+      });
+    }
     subWrap.style.display = '';
   } else {
-    subSel.value = '';
+    subSel.value = ''; if (subMulti) subMulti.innerHTML = '';
     subWrap.style.display = 'none';
   }
-  // Descripcion libre
   descWrap.style.display = s.needsDesc ? '' : 'none';
 }
 
@@ -6190,6 +6320,81 @@ async function openVehicleDetail(vehicleId) {
   openModal('m-vehicle-detail');
 }
 
+// ─── Cargar historial del cliente (vehículos + OTs) en el modal Registro Clientes ───
+async function loadClientHistory(clientId) {
+  var wrap = document.getElementById('m-cli-history-wrap');
+  var list = document.getElementById('m-cli-history-list');
+  if (!wrap || !list || !clientId || !sb) return;
+  wrap.style.display = '';
+  list.innerHTML = '<div style="font-size:11px;color:var(--wh4);font-style:italic">Cargando vehículos...</div>';
+  try {
+    var rv = await sb.from('client_vehicles').select('*').eq('client_id', clientId).order('created_at', {ascending:false});
+    if (rv.error) {
+      list.innerHTML = '<div style="font-size:11px;color:var(--red)">Error: ' + rv.error.message + '</div>';
+      return;
+    }
+    var vehicles = rv.data || [];
+    if (vehicles.length === 0) {
+      list.innerHTML = '<div style="font-size:11px;color:var(--wh4);font-style:italic;padding:12px;text-align:center">Este cliente aún no tiene vehículos registrados. Crea un ingreso o agrega uno desde Catastro Vehículos.</div>';
+      return;
+    }
+    // Cargar conteo de OTs por vehículo
+    var vehIds = vehicles.map(function(v){return v.id;});
+    var otCounts = {};
+    var otStatuses = {};
+    try {
+      var ro = await sb.from('work_orders').select('vehicle_id, status').in('vehicle_id', vehIds);
+      (ro.data || []).forEach(function(o){
+        if (!o.vehicle_id) return;
+        otCounts[o.vehicle_id] = (otCounts[o.vehicle_id] || 0) + 1;
+        if (!otStatuses[o.vehicle_id]) otStatuses[o.vehicle_id] = {};
+        otStatuses[o.vehicle_id][o.status] = (otStatuses[o.vehicle_id][o.status] || 0) + 1;
+      });
+    } catch(_){}
+
+    list.innerHTML = vehicles.map(function(v) {
+      var pv = validatePlate(v.plate || '');
+      var plateFmt = pv.valid ? pv.formatted : (v.plate || 'sin patente');
+      var thumb = (v.photos && v.photos.frente) ? v.photos.frente : null;
+      var otTotal = otCounts[v.id] || 0;
+      var statusBreakdown = otStatuses[v.id] || {};
+      var statusText = otTotal > 0
+        ? otTotal + ' OT' + (otTotal===1?'':'s') + ' (' + Object.keys(statusBreakdown).map(function(k){ return statusBreakdown[k] + ' ' + k; }).join(', ') + ')'
+        : 'Sin OTs';
+      var d = v.created_at ? new Date(v.created_at).toLocaleDateString('es-CL') : '';
+      return '<div style="display:flex;align-items:center;gap:10px;padding:8px;background:#fff;border:1px solid var(--border);border-radius:4px;cursor:pointer" onclick="openVehicleDetailFromClient(\'' + v.id + '\')">'
+        + (thumb
+           ? '<img src="' + thumb + '" style="width:44px;height:44px;border-radius:4px;object-fit:cover;flex-shrink:0;border:1px solid var(--border)" alt=""/>'
+           : '<div style="width:44px;height:44px;border-radius:4px;background:var(--bg3);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:20px">🚗</div>')
+        + '<div style="flex:1;min-width:0">'
+        +   '<div style="font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.02em;font-size:13px">' + escapeHtml(v.brand) + ' ' + escapeHtml(v.model) + ' <span style="color:var(--red);font-family:var(--mono)">' + plateFmt + '</span></div>'
+        +   '<div style="font-size:10px;color:var(--wh3);margin-top:2px">' + escapeHtml(statusText) + (d ? ' · ' + d : '') + '</div>'
+        + '</div>'
+        + '<div style="flex-shrink:0;font-size:18px;color:var(--wh4)">›</div>'
+        + '</div>';
+    }).join('');
+  } catch(e) {
+    list.innerHTML = '<div style="font-size:11px;color:var(--red)">Error de conexión: ' + e.message + '</div>';
+  }
+}
+
+// Helper: abrir el detalle del vehículo desde el modal cliente.
+// Necesitamos cerrar el modal cliente primero y popular _catVehiclesCache para que openVehicleDetail lo encuentre.
+async function openVehicleDetailFromClient(vehicleId) {
+  closeModal('m-client');
+  // Asegurar que el cache del catastro esté cargado (al menos para este vehículo)
+  if (!_catVehiclesCache.find(function(r){return r.vehicle && r.vehicle.id === vehicleId;})) {
+    try {
+      var rv = await sb.from('client_vehicles').select('*').eq('id', vehicleId).maybeSingle();
+      if (rv && rv.data) {
+        var rc = await sb.from('clients').select('*').eq('id', rv.data.client_id).maybeSingle();
+        _catVehiclesCache.push({vehicle: rv.data, client: rc && rc.data || null});
+      }
+    } catch(_){}
+  }
+  openVehicleDetail(vehicleId);
+}
+
 // ─── Catastro: agregar vehículo histórico (no genera OT) ───
 function openCatastroNewVehicle() {
   if (!hasPerm(CU, 'can_ingresar_clientes')) { showGlobalError('Sin permiso', 3000); return; }
@@ -6205,18 +6410,31 @@ async function openNewOTForVehicle(vehicleId, clientId) {
   document.getElementById('m-newot-vehid').value = vehicleId;
   document.getElementById('m-newot-cliid').value = clientId;
   document.getElementById('m-newot-err').style.display = 'none';
-  // Llenar dropdowns servicio + gestor (reuso de los del modal de ingreso)
+  // Llenar dropdowns servicio + gestor (reuso de los del modal de ingreso) con grupos
   var srvSel = document.getElementById('m-newot-srv');
-  if (srvSel.options.length <= 1) {
-    SERVICES_INGRESO.forEach(function(s){
-      var o = document.createElement('option');
-      o.value = s.key; o.textContent = s.label;
-      srvSel.appendChild(o);
+  if (srvSel.options.length <= 1 && srvSel.children.length <= 1) {
+    var groups = {}; var groupOrder = [];
+    SERVICES_INGRESO.forEach(function(s) {
+      var g = s.group || 'Otros';
+      if (!groups[g]) { groups[g] = []; groupOrder.push(g); }
+      groups[g].push(s);
+    });
+    groupOrder.forEach(function(gname) {
+      var og = document.createElement('optgroup');
+      og.label = gname.toUpperCase();
+      groups[gname].forEach(function(s) {
+        var o = document.createElement('option');
+        o.value = s.key; o.textContent = s.label;
+        og.appendChild(o);
+      });
+      srvSel.appendChild(og);
     });
   }
   srvSel.value = '';
   var subSel = document.getElementById('m-newot-sub');
   subSel.innerHTML = '<option value="">Selecciona...</option>';
+  var subMulti = document.getElementById('m-newot-sub-multi');
+  if (subMulti) { subMulti.innerHTML = ''; subMulti.style.display = 'none'; }
   document.getElementById('m-newot-sub-wrap').style.display = 'none';
   document.getElementById('m-newot-desc-wrap').style.display = 'none';
   document.getElementById('m-newot-desc').value = '';
@@ -6241,15 +6459,29 @@ function onNewOTServiceChange() {
   var subWrap = document.getElementById('m-newot-sub-wrap');
   var descWrap = document.getElementById('m-newot-desc-wrap');
   var subSel = document.getElementById('m-newot-sub');
-  if (!key) { subWrap.style.display='none'; descWrap.style.display='none'; return; }
+  var subMulti = document.getElementById('m-newot-sub-multi');
+  if (!key) { subWrap.style.display='none'; descWrap.style.display='none'; if(subMulti)subMulti.innerHTML=''; return; }
   var s = SERVICES_INGRESO.find(function(x){ return x.key === key; });
   if (!s) return;
   if (s.subs && s.subs.length) {
-    subSel.innerHTML = '<option value="">Selecciona...</option>';
-    s.subs.forEach(function(sub){ var o=document.createElement('option'); o.value=sub; o.textContent=sub; subSel.appendChild(o); });
+    if (s.multiSelect) {
+      subSel.style.display = 'none';
+      subMulti.style.display = '';
+      subMulti.innerHTML = '<div style="font-size:10px;color:var(--wh4);margin-bottom:6px">Marca todas las que apliquen</div>'
+        + s.subs.map(function(sub){
+            return '<label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;user-select:none;padding:6px 8px;border:1px solid #eee;border-radius:3px;margin-bottom:4px;background:#fff;font-size:12px;line-height:1.3">'
+              + '<input type="checkbox" data-newot-sub="' + escapeHtml(sub) + '" style="margin-top:2px;flex-shrink:0"/>'
+              + '<span>' + escapeHtml(sub) + '</span></label>';
+          }).join('');
+    } else {
+      subSel.style.display = '';
+      if (subMulti) { subMulti.style.display = 'none'; subMulti.innerHTML = ''; }
+      subSel.innerHTML = '<option value="">Selecciona...</option>';
+      s.subs.forEach(function(sub){ var o=document.createElement('option'); o.value=sub; o.textContent=sub; subSel.appendChild(o); });
+    }
     subWrap.style.display = '';
   } else {
-    subSel.value = ''; subWrap.style.display = 'none';
+    subSel.value = ''; if(subMulti)subMulti.innerHTML=''; subWrap.style.display = 'none';
   }
   descWrap.style.display = s.needsDesc ? '' : 'none';
 }
@@ -6258,7 +6490,6 @@ async function saveNewOT() {
   var vehId = document.getElementById('m-newot-vehid').value;
   var cliId = document.getElementById('m-newot-cliid').value;
   var srvKey = document.getElementById('m-newot-srv').value;
-  var srvSub = document.getElementById('m-newot-sub').value || '';
   var srvDesc = document.getElementById('m-newot-desc').value.trim();
   var mgrSel = document.getElementById('m-newot-mgr');
   var mgrId = mgrSel.value || null;
@@ -6269,7 +6500,17 @@ async function saveNewOT() {
 
   if (!srvKey) { err.textContent = 'Selecciona el servicio'; err.style.display='block'; return; }
   var s = SERVICES_INGRESO.find(function(x){ return x.key === srvKey; });
-  if (s && s.subs && s.subs.length && !srvSub) { err.textContent = 'Falta especificación'; err.style.display='block'; return; }
+  var srvSub = '';
+  if (s && s.subs && s.subs.length) {
+    if (s.multiSelect) {
+      var multis = Array.from(document.querySelectorAll('#m-newot-sub-multi input[type=checkbox]:checked')).map(function(cb){return cb.dataset.newotSub;});
+      if (multis.length === 0) { err.textContent = 'Marca al menos una especificación'; err.style.display='block'; return; }
+      srvSub = multis.join(' + ');
+    } else {
+      srvSub = document.getElementById('m-newot-sub').value || '';
+      if (!srvSub) { err.textContent = 'Falta especificación'; err.style.display='block'; return; }
+    }
+  }
   if (s && s.needsDesc && !srvDesc) { err.textContent = 'Indica la descripción del trabajo'; err.style.display='block'; return; }
   if (!mgrId) { err.textContent = 'Asigna un gestor comercial'; err.style.display='block'; return; }
 
