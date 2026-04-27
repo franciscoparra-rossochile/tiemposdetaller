@@ -513,14 +513,17 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 
         <div class="lbl">Patente</div>
         <input class="inp" id="m-veh-plate" placeholder="BJKR-18 o AB-1234" autocomplete="off" maxlength="9"/>
-        <div id="m-veh-plate-hint" style="font-size:10px;color:var(--wh4);margin-top:-4px;margin-bottom:8px;font-family:var(--mono);min-height:12px"></div>
+        <div id="m-veh-plate-hint" style="font-size:10px;color:var(--wh4);margin-top:-4px;margin-bottom:6px;font-family:var(--mono);min-height:12px"></div>
+        <!-- FASE 2.2.C-fix: Banner de match con planificación del día -->
+        <div id="m-veh-plan-banner" style="display:none;margin:-2px 0 10px;padding:8px 10px;border-radius:4px;font-size:11px;line-height:1.4"></div>
+        <input type="hidden" id="m-veh-plan-sched-id"/>
 
         <div class="lbl">Kilometraje de entrada</div>
         <input class="inp" id="m-veh-km" type="number" min="0" max="9999999" placeholder="Ej: 45000" data-no-upper/>
       </div>
 
       <!-- SERVICIO Y GESTOR (FASE 2.2.C) -->
-      <div style="border-top:2px solid var(--gold);margin:18px -2px 12px;padding-top:14px">
+      <div id="m-srv-block" style="border-top:2px solid var(--gold);margin:18px -2px 12px;padding-top:14px">
         <div style="font-size:14px;font-weight:700;color:#111;font-family:'Rajdhani',sans-serif;text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px">🔧 Servicio a realizar</div>
 
         <div class="lbl">Tipo de servicio</div>
@@ -751,7 +754,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // CONFIG & DEBUG
 // ═══════════════════════════════════════════════
 const DEBUG = true;
-const APP_VERSION = 'v2.6.0-FASE2.2C';
+const APP_VERSION = 'v2.6.1-FASE2.2C-fix';
 const SURL = 'https://jczmupcmeixpwjedfgtk.supabase.co';
 const SKEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impjem11cGNtZWl4cHdqZWRmZ3RrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY5NzMxOTMsImV4cCI6MjA5MjU0OTE5M30.DuICC_pCQGv27lZivieXRRvGz9A1GNkgmhvTvyKo25o';
 var sb = null; // initialized in init()
@@ -4944,6 +4947,8 @@ async function deleteUser() {
 var _clientsCache = [];        // cache de la ultima consulta
 var _clientsSearch = '';       // texto de busqueda actual
 var _editClientId = null;      // id del cliente en edicion (null = nuevo)
+var _editVehicleId = null;     // FASE 2.2.C-fix: id del vehiculo en edicion (modo ingreso edit)
+var _editWorkOrderId = null;   // FASE 2.2.C-fix: id de la OT en edicion (modo ingreso edit)
 var _selClientType = null;     // tipo seleccionado en el modal: persona/empresa/organismo
 var _clientsViewMode = 'registro'; // 'ingreso' (vehiculo llega al taller) | 'registro' (alta cliente)
 
@@ -5001,9 +5006,57 @@ async function renderBossClientes(body, mode) {
     + '</div>'
     + '<div id="cli-list-meta" style="font-size:11px;color:var(--wh3);margin-bottom:8px;font-family:var(--mono)">Cargando...</div>'
     + '<div id="cli-list"></div>'
+    + (isIngreso ? '<div id="cli-unassigned" style="margin-top:14px"></div>' : '')
     + '</div>';
   document.getElementById('cli-search').value = _clientsSearch;
   await loadClients();
+  if (isIngreso) loadUnassignedToday();
+}
+
+// FASE 2.2.C-fix: muestra OTs creadas hoy SIN scheduled_service_id (no estaban planificadas)
+async function loadUnassignedToday() {
+  var box = document.getElementById('cli-unassigned');
+  if (!box || !sb) return;
+  try {
+    var d0 = new Date(); d0.setHours(0,0,0,0);
+    var r = await sb.from('work_orders')
+      .select('id, ot_number, service_classification, service_subtype, commercial_manager_name, vehicle_id, client_id, created_at')
+      .is('scheduled_service_id', null)
+      .gte('created_at', d0.toISOString())
+      .order('created_at', {ascending:false});
+    if (r.error || !r.data || r.data.length === 0) { box.innerHTML = ''; return; }
+    var ots = r.data;
+    // Cargar vehiculos y clientes para mostrar info legible
+    var vehIds = ots.map(function(o){return o.vehicle_id;}).filter(Boolean);
+    var cliIds = ots.map(function(o){return o.client_id;}).filter(Boolean);
+    var vehs = {}, clis = {};
+    if (vehIds.length) {
+      var rv = await sb.from('client_vehicles').select('id,brand,model,plate').in('id', vehIds);
+      (rv.data || []).forEach(function(v){ vehs[v.id] = v; });
+    }
+    if (cliIds.length) {
+      var rc = await sb.from('clients').select('id,name').in('id', cliIds);
+      (rc.data || []).forEach(function(c){ clis[c.id] = c; });
+    }
+    box.innerHTML = '<div class="card-gold" style="padding:12px">'
+      + '<div style="font-size:12px;font-weight:700;color:var(--gold3);font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">⚠ OTs sin servicio agendado (' + ots.length + ')</div>'
+      + '<div style="font-size:10px;color:var(--wh3);margin-bottom:8px;line-height:1.4">Estos vehículos llegaron hoy sin estar planificados. Agéndales un servicio o asígnales un técnico desde el calendario.</div>'
+      + ots.map(function(o) {
+          var v = vehs[o.vehicle_id], c = clis[o.client_id];
+          var srv = SERVICES_INGRESO.find(function(x){return x.key===o.service_classification;});
+          var srvLabel = srv ? srv.label : (o.service_classification || '?');
+          return '<div style="background:#fff;border:1px solid #e5d49a;border-radius:3px;padding:8px;margin-bottom:5px;cursor:pointer" onclick="openVehicleDetail(\'' + (o.vehicle_id || '') + '\')">'
+            + '<div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif">OT-' + (o.ot_number || '?') + ' · ' + escapeHtml(srvLabel) + (o.service_subtype ? ' · ' + escapeHtml(o.service_subtype) : '') + '</div>'
+            + '<div style="font-size:11px;color:var(--wh3);margin-top:2px">'
+            + (v ? escapeHtml(v.brand) + ' ' + escapeHtml(v.model) + ' · ' + escapeHtml(v.plate) : 'vehículo desconocido')
+            + (c ? ' · ' + escapeHtml(c.name) : '')
+            + (o.commercial_manager_name ? ' · gestor: ' + escapeHtml(o.commercial_manager_name) : '')
+            + '</div></div>';
+        }).join('')
+      + '</div>';
+  } catch(e) {
+    logR('LOAD_UNASSIGNED_ERR', {msg: e.message}, 'warn');
+  }
 }
 
 async function loadClients() {
@@ -5113,16 +5166,27 @@ async function openClientModal(cid) {
     showGlobalError('No tienes permiso para crear/editar clientes', 4000);
     return;
   }
-  var isIngreso = _clientsViewMode === 'ingreso';
+  var isIngreso  = _clientsViewMode === 'ingreso';
+  var isCatastro = _clientsViewMode === 'catastro';
+  var showsVehicle = isIngreso || isCatastro; // ambos modos muestran el bloque vehículo
+  var isIngresoEdit = isIngreso && cid; // FASE 2.2.C-fix: editar el ingreso COMPLETO
   _editClientId = cid;
+  _editVehicleId = null;
+  _editWorkOrderId = null;
   document.getElementById('m-cli-err').style.display = 'none';
-  document.getElementById('m-cli-btn').textContent = isIngreso ? 'Registrar ingreso' : 'Guardar cliente';
+  var btnTxt = isIngreso ? (cid ? 'Guardar cambios' : 'Registrar ingreso')
+             : isCatastro ? 'Guardar vehículo'
+             : 'Guardar cliente';
+  document.getElementById('m-cli-btn').textContent = btnTxt;
   document.getElementById('m-cli-btn').disabled = false;
   document.getElementById('m-cli-meta').textContent = '';
 
+  // SETUP del bloque ingreso ANTES para que los inputs existan al pre-llenar
+  setupIngresoBlock();
+
   if (cid) {
-    document.getElementById('m-cli-title').textContent = isIngreso ? 'Editar ingreso' : 'Editar cliente';
-    document.getElementById('m-cli-sub').textContent = isIngreso ? 'Modifica los datos del ingreso' : 'Modifica los datos del cliente';
+    document.getElementById('m-cli-title').textContent = isIngreso ? 'Editar ingreso a taller' : 'Editar cliente';
+    document.getElementById('m-cli-sub').textContent = isIngreso ? 'Modifica todos los datos del ingreso' : 'Modifica los datos del cliente';
     document.getElementById('m-cli-del').style.display = 'block';
     var res = await sb.from('clients').select('*').eq('id', cid).maybeSingle();
     if (res.error || !res.data) {
@@ -5139,11 +5203,75 @@ async function openClientModal(cid) {
     document.getElementById('m-cli-notes').value  = c.notes || '';
     selectClientType(c.client_type || 'persona');
     document.getElementById('m-cli-meta').textContent = 'Creado: ' + fmtD(c.created_at) + (c.updated_at && c.updated_at !== c.created_at ? ' · Actualizado: ' + fmtD(c.updated_at) : '');
+
+    // FASE 2.2.C-fix: en modo INGRESO EDIT, cargar también vehículo + OT más recientes
+    if (isIngresoEdit) {
+      try {
+        var resV = await sb.from('client_vehicles').select('*').eq('client_id', cid).order('created_at', {ascending:false}).limit(1).maybeSingle();
+        if (resV.data) {
+          var v = resV.data;
+          _editVehicleId = v.id;
+          document.getElementById('m-veh-brand').value = v.brand || '';
+          onVehBrandChange();
+          document.getElementById('m-veh-model').value = v.model || '';
+          var pv = validatePlate(v.plate || '');
+          document.getElementById('m-veh-plate').value = pv.valid ? pv.formatted : (v.plate || '');
+          document.getElementById('m-veh-plate-hint').textContent = pv.valid ? '✓ Patente ' + pv.type + ' válida' : '';
+          if (pv.valid) document.getElementById('m-veh-plate-hint').style.color = 'var(--green)';
+          document.getElementById('m-veh-km').value = v.km_entry || '';
+          document.getElementById('m-veh-comments').value = v.comments || '';
+          // Pre-llenar checks
+          var checks = v.comprobaciones || {};
+          Object.keys(checks).forEach(function(k){
+            var cb = document.querySelector('#m-veh-checks input[data-check-key="' + k + '"]');
+            if (cb) cb.checked = checks[k] === true;
+          });
+          // Detalle objetos de valor
+          if (checks['per_otros_valor_desc']) {
+            document.getElementById('m-veh-belongings-wrap').style.display = '';
+            document.getElementById('m-veh-belongings-desc').value = checks['per_otros_valor_desc'];
+          }
+          // Pre-llenar fotos (read-only: muestra las actuales, no se reemplazan en este flujo)
+          if (v.photos) {
+            VEHICLE_PHOTOS.forEach(function(p){
+              if (v.photos[p.key]) {
+                var prevEl = document.getElementById('m-veh-photo-prev-' + p.key);
+                if (prevEl) prevEl.innerHTML = '<img src="' + v.photos[p.key] + '" style="max-width:100%;max-height:80px;border-radius:3px;object-fit:cover" alt=""/>';
+                var statusEl = document.getElementById('m-veh-photo-status-' + p.key);
+                if (statusEl) { statusEl.textContent = '✓ guardada'; statusEl.style.color = 'var(--green)'; }
+              }
+            });
+          }
+          // Cargar OT más reciente
+          var resWO = await sb.from('work_orders').select('*').eq('vehicle_id', v.id).order('created_at', {ascending:false}).limit(1).maybeSingle();
+          if (resWO.data) {
+            var w = resWO.data;
+            _editWorkOrderId = w.id;
+            document.getElementById('m-srv-type').value = w.service_classification || '';
+            onServiceChange();
+            if (w.service_subtype) document.getElementById('m-srv-sub').value = w.service_subtype;
+            if (w.service_description) document.getElementById('m-srv-desc').value = w.service_description;
+            // El gestor: esperar a que buildManagersDropdown haya terminado
+            // Como buildManagersDropdown es async y se llamó en setupIngresoBlock, esperamos un tick
+            setTimeout(function(){
+              var mgrSel = document.getElementById('m-srv-manager');
+              if (mgrSel && w.commercial_manager_id) mgrSel.value = w.commercial_manager_id;
+            }, 600);
+          }
+        }
+      } catch(e) {
+        logR('LOAD_INGRESO_EDIT_ERR', {msg: e.message}, 'warn');
+      }
+    }
   } else {
-    document.getElementById('m-cli-title').textContent = isIngreso ? 'Nuevo ingreso a taller' : 'Nuevo cliente';
-    document.getElementById('m-cli-sub').textContent = isIngreso
-      ? 'Recepción de vehículo - ' + new Date().toLocaleDateString('es-CL')
-      : 'Registro en la base de clientes';
+    var titleNew = isIngreso ? 'Nuevo ingreso a taller'
+                 : isCatastro ? 'Agregar vehículo al catastro'
+                 : 'Nuevo cliente';
+    var subNew = isIngreso  ? 'Recepción de vehículo - ' + new Date().toLocaleDateString('es-CL')
+               : isCatastro ? 'Carga histórica - sin generar OT'
+               : 'Registro en la base de clientes';
+    document.getElementById('m-cli-title').textContent = titleNew;
+    document.getElementById('m-cli-sub').textContent = subNew;
     document.getElementById('m-cli-del').style.display = 'none';
     ['m-cli-id','m-cli-name','m-cli-rut','m-cli-birth','m-cli-email','m-cli-phone','m-cli-notes'].forEach(function(id){
       var el = document.getElementById(id); if (el) el.value = '';
@@ -5152,9 +5280,11 @@ async function openClientModal(cid) {
   }
   document.getElementById('m-cli-rut-hint').textContent = '';
 
-  // FASE 2.2.B: preparar bloque ingreso (vehiculo + checks + fotos) si corresponde
-  setupIngresoBlock();
-  toggleIngresoBlock(isIngreso && !cid); // solo en modo ingreso y al CREAR (editar cliente no muestra vehiculo)
+  // Mostrar bloque vehículo en modo ingreso o catastro. En catastro ocultamos servicio + gestor.
+  toggleIngresoBlock(showsVehicle);
+  // Servicio y gestor solo en modo ingreso (catastro no genera OT)
+  var srvBlock = document.getElementById('m-srv-block');
+  if (srvBlock) srvBlock.style.display = isIngreso ? '' : 'none';
 
   openModal('m-client');
 }
@@ -5206,7 +5336,12 @@ async function saveClient() {
   var err = document.getElementById('m-cli-err');
   var btn = document.getElementById('m-cli-btn');
   err.style.display = 'none';
-  var isIngreso = _clientsViewMode === 'ingreso' && !_editClientId; // solo modo ingreso al CREAR
+  // FASE 2.2.C-fix: bloque ingreso aplica en modo ingreso (crear/editar) o catastro (crear vehículo histórico)
+  var isIngreso  = _clientsViewMode === 'ingreso';
+  var isCatastro = _clientsViewMode === 'catastro';
+  var savesVehicle = isIngreso || isCatastro; // ambos guardan vehículo
+  var savesOT = isIngreso; // solo ingreso genera OT
+  var isIngresoEdit = isIngreso && _editClientId; // editando un ingreso existente
 
   var type   = _selClientType;
   var name   = document.getElementById('m-cli-name').value.trim();
@@ -5230,11 +5365,11 @@ async function saveClient() {
     if (email && email.indexOf('@') === -1) { err.textContent = 'Correo inválido'; err.style.display='block'; return; }
   }
 
-  // ─── Validación vehículo + servicio (solo en modo ingreso) ───
+  // ─── Validación vehículo + servicio (modo ingreso o catastro) ───
   var vehBrand = '', vehModel = '', vehPlate = '', vehKm = null, vehComments = '';
   var vehChecks = {};
   var srvKey = '', srvSub = '', srvDesc = '', mgrId = null, mgrName = '';
-  if (isIngreso) {
+  if (savesVehicle) {
     vehBrand = document.getElementById('m-veh-brand').value;
     vehModel = document.getElementById('m-veh-model').value.trim().toUpperCase();
     vehPlate = document.getElementById('m-veh-plate').value;
@@ -5246,37 +5381,44 @@ async function saveClient() {
     var pv = validatePlate(vehPlate);
     if (!pv.valid) { err.textContent = 'Patente inválida: ' + pv.error; err.style.display='block'; return; }
     vehPlate = pv.clean;
-    if (vehKm == null || isNaN(vehKm) || vehKm < 0) { err.textContent = 'Indica el kilometraje de entrada'; err.style.display='block'; return; }
-
-    // SERVICIO + GESTOR (FASE 2.2.C)
-    srvKey  = document.getElementById('m-srv-type').value;
-    srvSub  = document.getElementById('m-srv-sub').value || '';
-    srvDesc = document.getElementById('m-srv-desc').value.trim();
-    var mgrSel = document.getElementById('m-srv-manager');
-    mgrId   = mgrSel.value || null;
-    mgrName = mgrId ? (mgrSel.options[mgrSel.selectedIndex].dataset.name || mgrSel.options[mgrSel.selectedIndex].text) : '';
-
-    if (!srvKey) { err.textContent = 'Selecciona el tipo de servicio que viene a hacer el cliente'; err.style.display='block'; return; }
-    var srvDef = SERVICES_INGRESO.find(function(x){ return x.key === srvKey; });
-    if (srvDef && srvDef.subs && srvDef.subs.length && !srvSub) {
-      err.textContent = 'Falta la especificación del servicio'; err.style.display='block'; return;
+    // Kilometraje: obligatorio en ingreso, opcional en catastro (puede no saberse para vehículos históricos)
+    if (isIngreso && (vehKm == null || isNaN(vehKm) || vehKm < 0)) {
+      err.textContent = 'Indica el kilometraje de entrada'; err.style.display='block'; return;
     }
-    if (srvDef && srvDef.needsDesc && !srvDesc) {
-      err.textContent = 'Indica una breve descripción del trabajo solicitado'; err.style.display='block'; return;
+
+    // SERVICIO + GESTOR solo en INGRESO
+    if (savesOT) {
+      srvKey  = document.getElementById('m-srv-type').value;
+      srvSub  = document.getElementById('m-srv-sub').value || '';
+      srvDesc = document.getElementById('m-srv-desc').value.trim();
+      var mgrSel = document.getElementById('m-srv-manager');
+      mgrId   = mgrSel.value || null;
+      mgrName = mgrId ? (mgrSel.options[mgrSel.selectedIndex].dataset.name || mgrSel.options[mgrSel.selectedIndex].text) : '';
+
+      if (!srvKey) { err.textContent = 'Selecciona el tipo de servicio que viene a hacer el cliente'; err.style.display='block'; return; }
+      var srvDef = SERVICES_INGRESO.find(function(x){ return x.key === srvKey; });
+      if (srvDef && srvDef.subs && srvDef.subs.length && !srvSub) {
+        err.textContent = 'Falta la especificación del servicio'; err.style.display='block'; return;
+      }
+      if (srvDef && srvDef.needsDesc && !srvDesc) {
+        err.textContent = 'Indica una breve descripción del trabajo solicitado'; err.style.display='block'; return;
+      }
+      if (!mgrId) { err.textContent = 'Asigna un gestor comercial responsable'; err.style.display='block'; return; }
     }
-    if (!mgrId) { err.textContent = 'Asigna un gestor comercial responsable'; err.style.display='block'; return; }
 
     // COMPROBACIONES (todos los checkboxes del bloque, agrupados por categoría)
     document.querySelectorAll('#m-veh-checks input[type=checkbox]').forEach(function(cb) {
       vehChecks[cb.dataset.checkKey] = cb.checked;
     });
-    // Si marcó "Otros objetos de valor", capturar la descripción
     var belDescEl = document.getElementById('m-veh-belongings-desc');
     if (belDescEl && vehChecks['per_otros_valor']) {
       vehChecks['per_otros_valor_desc'] = belDescEl.value.trim();
     }
 
-    if (!_ingPhotosBlobs.frente) { err.textContent = 'Falta la foto del frente del vehículo'; err.style.display='block'; return; }
+    // Foto frente solo obligatoria al CREAR ingreso (no en edit, no en catastro histórico)
+    if (isIngreso && !isIngresoEdit && !_ingPhotosBlobs.frente) {
+      err.textContent = 'Falta la foto del frente del vehículo'; err.style.display='block'; return;
+    }
   }
 
   btn.innerHTML = '<span class="spin"></span> Guardando...'; btn.disabled = true;
@@ -5317,97 +5459,128 @@ async function saveClient() {
     return;
   }
 
-  // ─── 2) Si es ingreso, subir fotos y crear vehículo ───
-  if (isIngreso && clientId) {
-    btn.innerHTML = '<span class="spin"></span> Subiendo fotos...';
+  // ─── 2) Si guarda vehículo (ingreso o catastro), subir fotos y crear/actualizar ───
+  if (savesVehicle && clientId) {
     var photoUrls = {};
-    try {
-      var ts = Date.now();
-      for (var i = 0; i < VEHICLE_PHOTOS.length; i++) {
-        var pkey = VEHICLE_PHOTOS[i].key;
-        var blob = _ingPhotosBlobs[pkey];
-        if (!blob) continue;
-        var path = clientId + '/' + ts + '_' + pkey + '.jpg';
-        var up = await sb.storage.from('vehicle-photos').upload(path, blob, {
-          upsert: true, contentType: 'image/jpeg'
-        });
-        if (up.error) {
-          throw new Error('Foto ' + pkey + ': ' + up.error.message);
+    var hasNewPhotos = Object.keys(_ingPhotosBlobs).length > 0;
+    if (hasNewPhotos) {
+      btn.innerHTML = '<span class="spin"></span> Subiendo fotos...';
+      try {
+        var ts = Date.now();
+        for (var i = 0; i < VEHICLE_PHOTOS.length; i++) {
+          var pkey = VEHICLE_PHOTOS[i].key;
+          var blob = _ingPhotosBlobs[pkey];
+          if (!blob) continue;
+          var path = clientId + '/' + ts + '_' + pkey + '.jpg';
+          var up = await sb.storage.from('vehicle-photos').upload(path, blob, {
+            upsert: true, contentType: 'image/jpeg'
+          });
+          if (up.error) {
+            throw new Error('Foto ' + pkey + ': ' + up.error.message);
+          }
+          var pub = sb.storage.from('vehicle-photos').getPublicUrl(path);
+          photoUrls[pkey] = pub.data.publicUrl;
         }
-        var pub = sb.storage.from('vehicle-photos').getPublicUrl(path);
-        photoUrls[pkey] = pub.data.publicUrl;
+      } catch(e) {
+        btn.innerHTML = isIngresoEdit ? 'Guardar cambios' : 'Registrar ingreso'; btn.disabled = false;
+        err.textContent = 'Error subiendo fotos: ' + e.message;
+        err.style.display = 'block';
+        return;
       }
-    } catch(e) {
-      btn.innerHTML = 'Registrar ingreso'; btn.disabled = false;
-      err.textContent = 'Error subiendo fotos: ' + e.message + '\n\nVerifica que el bucket "vehicle-photos" tenga policies de upload (script SQL incluido en la entrega).';
-      err.style.display = 'block';
-      return;
     }
 
     btn.innerHTML = '<span class="spin"></span> Guardando vehículo...';
-    var vehicleId = null;
+    var vehicleId = _editVehicleId;
     try {
-      var vehPayload = {
-        client_id: clientId,
-        brand: vehBrand,
-        model: vehModel,
-        plate: vehPlate,
-        km_entry: vehKm,
-        comprobaciones: vehChecks,
-        photos: photoUrls,
-        comments: vehComments || null,
-        created_by: CU ? CU.id : null
-      };
-      var rv = await sb.from('client_vehicles').insert(vehPayload).select('id').single();
-      if (rv.error) throw new Error(rv.error.message);
-      vehicleId = rv.data && rv.data.id;
+      if (isIngresoEdit && _editVehicleId) {
+        // UPDATE vehículo existente. Las fotos solo se actualizan si subieron nuevas;
+        // si no, se mantienen las existentes (no las leemos para no perderlas).
+        var vehPayload = {
+          brand: vehBrand,
+          model: vehModel,
+          plate: vehPlate,
+          km_entry: vehKm,
+          comprobaciones: vehChecks,
+          comments: vehComments || null
+        };
+        if (hasNewPhotos) {
+          // Si subieron nuevas fotos, mergear con las existentes
+          var resOld = await sb.from('client_vehicles').select('photos').eq('id', _editVehicleId).maybeSingle();
+          var oldPhotos = (resOld.data && resOld.data.photos) || {};
+          vehPayload.photos = Object.assign({}, oldPhotos, photoUrls);
+        }
+        var rv = await sb.from('client_vehicles').update(vehPayload).eq('id', _editVehicleId);
+        if (rv.error) throw new Error(rv.error.message);
+      } else {
+        // INSERT vehículo nuevo
+        var vehPayloadIns = {
+          client_id: clientId, brand: vehBrand, model: vehModel, plate: vehPlate,
+          km_entry: vehKm, comprobaciones: vehChecks, photos: photoUrls,
+          comments: vehComments || null,
+          created_by: CU ? CU.id : null
+        };
+        var rvi = await sb.from('client_vehicles').insert(vehPayloadIns).select('id').single();
+        if (rvi.error) throw new Error(rvi.error.message);
+        vehicleId = rvi.data && rvi.data.id;
+      }
     } catch(e) {
-      btn.innerHTML = 'Registrar ingreso'; btn.disabled = false;
+      btn.innerHTML = isIngresoEdit ? 'Guardar cambios' : 'Registrar ingreso'; btn.disabled = false;
       err.textContent = 'Error al guardar vehículo: ' + e.message;
       err.style.display = 'block';
       return;
     }
 
-    // FASE 2.2.C: Crear work_order asociada al vehículo recién ingresado
-    btn.innerHTML = '<span class="spin"></span> Generando orden de trabajo...';
-    try {
+    // FASE 2.2.C: Crear o actualizar work_order — SOLO en modo ingreso (catastro no genera OT)
+    if (savesOT) try {
       var woPayload = {
-        client_id: clientId,
-        vehicle_id: vehicleId,
         service_classification: srvKey,
         service_subtype: srvSub || null,
         service_description: srvDesc || null,
         commercial_manager_id: mgrId,
         commercial_manager_name: mgrName || null,
         client_notes: vehComments || null,
-        status: 'open',
-        created_by: CU ? CU.id : null,
         updated_by: CU ? CU.id : null
       };
-      var rwo = await sb.from('work_orders').insert(woPayload);
-      if (rwo.error) {
-        // No hacemos rollback automático del vehículo (no transacciones aquí),
-        // pero advertimos: el ingreso quedó pero sin OT. El admin puede crearla
-        // luego desde el catastro.
-        logR('SAVE_WO_ERR', {msg: rwo.error.message}, 'err');
-        showGlobalError('Vehículo guardado pero la OT falló: ' + rwo.error.message + '. Créala manualmente desde Catastro.', 7000);
+      if (isIngresoEdit && _editWorkOrderId) {
+        var rwoU = await sb.from('work_orders').update(woPayload).eq('id', _editWorkOrderId);
+        if (rwoU.error) throw new Error(rwoU.error.message);
+      } else if (vehicleId) {
+        woPayload.client_id = clientId;
+        woPayload.vehicle_id = vehicleId;
+        woPayload.status = 'open';
+        woPayload.created_by = CU ? CU.id : null;
+        // FASE 2.2.C-fix: vincular la OT al scheduled_service del día si hubo match por patente
+        var schedHidden = document.getElementById('m-veh-plan-sched-id');
+        if (schedHidden && schedHidden.value) {
+          woPayload.scheduled_service_id = schedHidden.value;
+        }
+        var rwoI = await sb.from('work_orders').insert(woPayload);
+        if (rwoI.error) {
+          logR('SAVE_WO_ERR', {msg: rwoI.error.message}, 'err');
+          showGlobalError('Vehículo guardado pero la OT falló: ' + rwoI.error.message + '. Créala manualmente desde Catastro.', 7000);
+        }
       }
     } catch(e) {
       logR('SAVE_WO_THREW', {msg: e.message}, 'err');
-      showGlobalError('Vehículo guardado pero la OT falló: ' + e.message, 6000);
+      showGlobalError('Error en OT: ' + e.message, 6000);
     }
   }
 
-  logR('SAVE_INGRESO_OK', {clientId: clientId, isIngreso: isIngreso, edited: !!_editClientId, reused: !!_ingExistingSelectedId});
+  logR('SAVE_INGRESO_OK', {clientId: clientId, mode: _clientsViewMode, edited: !!_editClientId, reused: !!_ingExistingSelectedId});
 
-  btn.innerHTML = isIngreso ? 'Registrar ingreso' : 'Guardar cliente'; btn.disabled = false;
+  var btnTxtFinal = isIngreso ? (isIngresoEdit ? 'Guardar cambios' : 'Registrar ingreso')
+                  : isCatastro ? 'Guardar vehículo'
+                  : 'Guardar cliente';
+  btn.innerHTML = btnTxtFinal; btn.disabled = false;
   closeModal('m-client');
-  if (curBossTab === 'b-clientes' || curBossTab === 'b-ingreso') {
-    await loadClients();
-  }
-  var msg = isIngreso ? 'Ingreso registrado correctamente' :
-            _editClientId ? 'Cliente actualizado' : 'Cliente creado correctamente';
+  if (curBossTab === 'b-clientes' || curBossTab === 'b-ingreso') await loadClients();
+  if (curBossTab === 'b-catastro') await loadCatastro();
+  var msg = isIngreso  ? (isIngresoEdit ? 'Ingreso actualizado' : 'Ingreso registrado correctamente')
+          : isCatastro ? 'Vehículo agregado al catastro'
+          : (_editClientId ? 'Cliente actualizado' : 'Cliente creado correctamente');
   showGlobalError(msg, 2500);
+  // Restaurar modo registro al cerrar (no contaminar la siguiente apertura)
+  if (isCatastro) _clientsViewMode = 'registro';
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -5598,6 +5771,7 @@ function resetIngresoBlock() {
   document.getElementById('m-veh-model').value = '';
   document.getElementById('m-veh-plate').value = '';
   document.getElementById('m-veh-plate-hint').textContent = '';
+  clearPlanBanner();
   document.getElementById('m-veh-km').value = '';
   document.getElementById('m-veh-comments').value = '';
   // Reset servicio + gestor + descripcion
@@ -5693,25 +5867,94 @@ function toggleClientFieldsLock(locked) {
   document.querySelectorAll('#m-client [data-cli-type]').forEach(function(b){ b.disabled = locked; b.style.opacity = locked ? '0.5' : ''; });
 }
 
-// Live check de patente
+// Live check de patente + match con planificación del día (FASE 2.2.C-fix)
 function plateLiveCheck(el) {
   var raw = el.value;
   var hint = document.getElementById('m-veh-plate-hint');
   if (!hint) return;
-  if (!raw) { hint.textContent = ''; return; }
+  if (!raw) { hint.textContent = ''; clearPlanBanner(); return; }
   var v = validatePlate(raw);
   if (v.valid) {
     el.value = v.formatted;
     hint.textContent = '✓ Patente ' + v.type + ' válida';
     hint.style.color = 'var(--green)';
+    // Solo en modo ingreso (no catastro) buscar match con planificación
+    if (_clientsViewMode === 'ingreso') checkPlanningForPlate(v.clean);
   } else {
     hint.textContent = '✗ ' + v.error;
     hint.style.color = 'var(--red)';
+    clearPlanBanner();
   }
 }
 document.addEventListener('blur', function(ev){
   if (ev.target && ev.target.id === 'm-veh-plate') plateLiveCheck(ev.target);
 }, true);
+
+function clearPlanBanner() {
+  var banner = document.getElementById('m-veh-plan-banner');
+  var hidden = document.getElementById('m-veh-plan-sched-id');
+  if (banner) banner.style.display = 'none';
+  if (hidden) hidden.value = '';
+}
+
+// Busca en scheduled_services del día por patente. Si match, muestra banner verde
+// y autocompleta servicio + técnico cuando es posible. Si no, banner amarillo.
+async function checkPlanningForPlate(cleanPlate) {
+  var banner = document.getElementById('m-veh-plan-banner');
+  var hidden = document.getElementById('m-veh-plan-sched-id');
+  if (!banner || !hidden) return;
+  if (!sb || !cleanPlate) { clearPlanBanner(); return; }
+
+  banner.style.display = 'block';
+  banner.style.background = '#f0f0f0';
+  banner.style.color = 'var(--wh3)';
+  banner.style.borderLeft = '3px solid var(--wh4)';
+  banner.textContent = 'Buscando en planificación del día...';
+
+  try {
+    // Rango: hoy 00:00 - mañana 00:00
+    var d0 = new Date(); d0.setHours(0,0,0,0);
+    var d1 = new Date(d0); d1.setDate(d1.getDate() + 1);
+    // El campo plate de scheduled_services puede estar con guión o sin. Buscamos varias variantes.
+    var tries = [cleanPlate, cleanPlate.slice(0,4)+'-'+cleanPlate.slice(4), cleanPlate.slice(0,2)+'-'+cleanPlate.slice(2)];
+    var matches = [];
+    for (var i = 0; i < tries.length; i++) {
+      var r = await sb.from('scheduled_services')
+        .select('*')
+        .ilike('plate', tries[i])
+        .gte('scheduled_at', d0.toISOString())
+        .lt('scheduled_at',  d1.toISOString())
+        .neq('status', 'cancelado');
+      if (!r.error && r.data && r.data.length > 0) { matches = r.data; break; }
+    }
+    if (matches.length === 0) {
+      banner.style.background = 'var(--gold2)';
+      banner.style.color = 'var(--gold3)';
+      banner.style.borderLeft = '3px solid var(--gold)';
+      banner.innerHTML = '⚠ <b>Vehículo NO está en la planificación de hoy.</b> El ingreso quedará registrado y la OT en lista <i>"sin asignar a servicio agendado"</i>.';
+      hidden.value = '';
+      return;
+    }
+    // Si hay match, tomar el primero (el más temprano del día)
+    matches.sort(function(a,b){ return new Date(a.scheduled_at) - new Date(b.scheduled_at); });
+    var m = matches[0];
+    var hh = new Date(m.scheduled_at).toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'});
+    banner.style.background = 'var(--green3)';
+    banner.style.color = 'var(--green)';
+    banner.style.borderLeft = '3px solid var(--green)';
+    banner.innerHTML = '✓ <b>Vehículo agendado para hoy a las ' + hh + '</b>'
+      + (m.technician_name ? ' · técnico: <b>' + escapeHtml(m.technician_name) + '</b>' : ' (sin técnico asignado)')
+      + '<br/><span style="font-size:10px;color:var(--wh3)">Servicio: ' + escapeHtml(m.service || '?') + ' · La OT se vinculará automáticamente.</span>';
+    hidden.value = m.id;
+
+    // Sugerencia: pre-llenar el servicio y notas del scheduled_service en el dropdown si está mapeable
+    // (el dropdown usa keys distintas, así que solo lo dejamos como referencia visual sin pre-llenar)
+  } catch(e) {
+    logR('PLAN_MATCH_ERR', {msg: e.message}, 'warn');
+    banner.style.display = 'none';
+    hidden.value = '';
+  }
+}
 
 // ═══════════════════════════════════════════════════════════════
 // FASE 2.2.C: PESTAÑA CATASTRO DE VEHICULOS
@@ -5729,9 +5972,10 @@ async function renderBossCatastro(body) {
   }
   body.innerHTML = '<div class="card-accent">'
     + '<div style="font-size:13px;font-weight:700;color:#111;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">Catastro de Vehículos</div>'
-    + '<div style="font-size:11px;color:var(--wh3);margin-bottom:10px;line-height:1.4">Base completa de vehículos que han ingresado al taller. Toca cualquier vehículo para ver sus fotos, comprobaciones, órdenes de trabajo asociadas y crear nuevas órdenes.</div>'
+    + '<div style="font-size:11px;color:var(--wh3);margin-bottom:10px;line-height:1.4">Base completa de vehículos del taller. Toca cualquier vehículo para ver fotos, comprobaciones y OTs. Usa "+ Nuevo vehículo" para cargar vehículos históricos sin generar OT.</div>'
     + '<div style="display:flex;gap:8px;margin-bottom:10px;align-items:center;flex-wrap:wrap">'
     + '<input type="text" class="inp" id="cat-search" placeholder="Buscar por patente, marca, modelo, cliente o RUT..." style="flex:1;margin-bottom:0;min-width:180px" autocomplete="off" data-no-upper oninput="onCatastroSearch(this.value)"/>'
+    + '<button class="btn btn-red" style="width:auto;flex-shrink:0;padding:10px 16px" onclick="openCatastroNewVehicle()">+ Nuevo vehículo</button>'
     + '</div>'
     + '<div id="cat-meta" style="font-size:11px;color:var(--wh3);margin-bottom:8px;font-family:var(--mono)">Cargando catastro...</div>'
     + '<div id="cat-list"></div>'
@@ -5913,6 +6157,9 @@ async function openVehicleDetail(vehicleId) {
           +   (o.commercial_manager_name ? 'Gestor: ' + escapeHtml(o.commercial_manager_name) + ' · ' : '')
           +   (o.created_at ? 'Creada: ' + new Date(o.created_at).toLocaleDateString('es-CL') : '')
           + '</div>'
+          + '<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">'
+          +   '<button class="btn-sm" onclick="generateOTPdf(\'' + o.id + '\')">📄 Descargar PDF</button>'
+          + '</div>'
           + '</div>';
       }).join('')
       + '</div>';
@@ -5923,6 +6170,14 @@ async function openVehicleDetail(vehicleId) {
 
   content.innerHTML = header + photosHtml + checksHtml + commentsHtml + otsHtml + newOtHtml;
   openModal('m-vehicle-detail');
+}
+
+// ─── Catastro: agregar vehículo histórico (no genera OT) ───
+function openCatastroNewVehicle() {
+  if (!hasPerm(CU, 'can_ingresar_clientes')) { showGlobalError('Sin permiso', 3000); return; }
+  // Setear modo "catastro" (no requiere servicio + gestor, no crea OT)
+  _clientsViewMode = 'catastro';
+  openClientModal(null);
 }
 
 // ─── Crear nueva OT desde el catastro (vehículo ya existe) ───
@@ -6023,6 +6278,177 @@ async function saveNewOT() {
   btn.innerHTML = 'Crear OT'; btn.disabled = false;
   closeModal('m-new-ot');
   showGlobalError('Orden de trabajo creada', 2500);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// FASE 2.2.C-fix: GENERADOR DE PDF DE ORDEN DE TRABAJO
+// ═══════════════════════════════════════════════════════════════
+async function generateOTPdf(otId) {
+  if (!sb) { showGlobalError('Sin conexión a BD', 4000); return; }
+  // Verificar que jspdf esté cargado
+  var jsPDFCtor = (window.jspdf && window.jspdf.jsPDF) || (window.jsPDF);
+  if (!jsPDFCtor) {
+    showGlobalError('PDF no disponible: librería jsPDF no cargada. Recarga la página.', 6000);
+    return;
+  }
+  showGlobalError('Generando PDF...', 1500);
+  try {
+    // 1) Cargar OT + cliente + vehículo
+    var rOT = await sb.from('work_orders').select('*').eq('id', otId).maybeSingle();
+    if (rOT.error || !rOT.data) throw new Error('OT no encontrada');
+    var o = rOT.data;
+    var rC = await sb.from('clients').select('*').eq('id', o.client_id).maybeSingle();
+    var c = (rC && rC.data) || {};
+    var rV = o.vehicle_id ? await sb.from('client_vehicles').select('*').eq('id', o.vehicle_id).maybeSingle() : {data: null};
+    var v = (rV && rV.data) || {};
+
+    var doc = new jsPDFCtor({unit:'mm', format:'a4'});
+    var pageW = doc.internal.pageSize.getWidth();
+    var marginX = 15;
+    var y = 15;
+
+    // Header con franja roja superior
+    doc.setFillColor(204, 26, 26);
+    doc.rect(0, 0, pageW, 18, 'F');
+    doc.setTextColor(255, 255, 255);
+    doc.setFont('helvetica','bold');
+    doc.setFontSize(20);
+    doc.text('ROSSO', marginX, 12);
+    doc.setFontSize(9);
+    doc.setFont('helvetica','normal');
+    doc.text('CENTRO DE OPERACIONES', marginX + 28, 12);
+    doc.setFontSize(11);
+    doc.setFont('helvetica','bold');
+    doc.text('ORDEN DE TRABAJO  N°  OT-' + (o.ot_number || '?'), pageW - marginX, 12, {align: 'right'});
+    y = 25;
+
+    // Fecha + status
+    doc.setTextColor(0, 0, 0);
+    doc.setFontSize(9);
+    doc.setFont('helvetica','normal');
+    var dCreated = o.created_at ? new Date(o.created_at).toLocaleString('es-CL') : '-';
+    doc.text('Fecha emisión: ' + dCreated, marginX, y);
+    doc.text('Estado: ' + (o.status || 'open').toUpperCase(), pageW - marginX, y, {align:'right'});
+    y += 6;
+
+    // ─── Datos del cliente ───
+    function sectionTitle(t) {
+      doc.setFillColor(245, 245, 245);
+      doc.rect(marginX, y - 4, pageW - 2*marginX, 6, 'F');
+      doc.setFont('helvetica','bold');
+      doc.setFontSize(10);
+      doc.setTextColor(204, 26, 26);
+      doc.text(t.toUpperCase(), marginX + 2, y);
+      doc.setTextColor(0, 0, 0);
+      doc.setFont('helvetica','normal');
+      doc.setFontSize(9);
+      y += 5;
+    }
+    function field(label, value) {
+      doc.setFont('helvetica','bold');
+      doc.text(label + ':', marginX, y);
+      doc.setFont('helvetica','normal');
+      var val = value == null || value === '' ? '—' : String(value);
+      doc.text(val, marginX + 35, y, {maxWidth: pageW - marginX*2 - 35});
+      y += 5;
+    }
+
+    sectionTitle('Cliente');
+    field('Nombre', c.name);
+    field('RUT', c.rut);
+    field('Teléfono', c.phone);
+    field('Correo', c.email);
+    field('Tipo', (c.client_type || '').toUpperCase());
+    y += 2;
+
+    // ─── Datos del vehículo ───
+    sectionTitle('Vehículo');
+    var pv = validatePlate(v.plate || '');
+    var plateFmt = pv.valid ? pv.formatted : (v.plate || '—');
+    field('Marca / Modelo', (v.brand || '?') + ' ' + (v.model || ''));
+    field('Patente', plateFmt);
+    field('Kilometraje entrada', v.km_entry != null ? (v.km_entry.toLocaleString('es-CL') + ' km') : '—');
+    y += 2;
+
+    // ─── Servicio ───
+    sectionTitle('Servicio solicitado');
+    var srvDef = SERVICES_INGRESO.find(function(x){ return x.key === o.service_classification; });
+    field('Tipo', srvDef ? srvDef.label : (o.service_classification || '—'));
+    if (o.service_subtype) field('Especificación', o.service_subtype);
+    if (o.service_description) field('Descripción', o.service_description);
+    field('Gestor comercial', o.commercial_manager_name);
+    if (o.scheduled_service_id) field('Servicio agendado', 'Sí (vinculado a planificación)');
+    y += 2;
+
+    // ─── Comprobaciones ───
+    sectionTitle('Comprobaciones de ingreso');
+    var ck = v.comprobaciones || {};
+    var anyChk = false;
+    VEHICLE_CHECK_GROUPS.forEach(function(g) {
+      var marked = g.items.filter(function(it){ return ck[it.key] === true; });
+      if (marked.length === 0) return;
+      anyChk = true;
+      doc.setFont('helvetica','bold');
+      doc.setFontSize(9);
+      doc.text(g.title.toUpperCase(), marginX, y);
+      y += 4;
+      doc.setFont('helvetica','normal');
+      marked.forEach(function(it) {
+        if (y > 270) { doc.addPage(); y = 15; }
+        doc.text('• ' + it.label, marginX + 3, y, {maxWidth: pageW - marginX*2 - 3});
+        y += 4;
+      });
+      y += 1;
+    });
+    if (ck['per_otros_valor_desc']) {
+      doc.setFont('helvetica','bold');
+      doc.text('Objetos de valor declarados:', marginX, y); y += 4;
+      doc.setFont('helvetica','normal');
+      doc.text(String(ck['per_otros_valor_desc']), marginX + 3, y, {maxWidth: pageW - marginX*2 - 3}); y += 5;
+    }
+    if (!anyChk && !ck['per_otros_valor_desc']) {
+      doc.setFont('helvetica','italic');
+      doc.text('Sin observaciones registradas al ingreso.', marginX, y);
+      doc.setFont('helvetica','normal');
+      y += 5;
+    }
+    y += 2;
+
+    // ─── Comentarios ───
+    if (v.comments || o.client_notes) {
+      sectionTitle('Comentarios / requerimientos del cliente');
+      var notes = v.comments || o.client_notes;
+      var lines = doc.splitTextToSize(String(notes), pageW - marginX*2);
+      lines.forEach(function(ln){
+        if (y > 270) { doc.addPage(); y = 15; }
+        doc.text(ln, marginX, y); y += 4;
+      });
+      y += 3;
+    }
+
+    // ─── Firmas ───
+    if (y > 240) { doc.addPage(); y = 15; }
+    y = Math.max(y, 240);
+    doc.setDrawColor(150, 150, 150);
+    doc.line(marginX,         y, marginX + 70, y);
+    doc.line(pageW - marginX - 70, y, pageW - marginX, y);
+    y += 4;
+    doc.setFontSize(8);
+    doc.text('Firma cliente', marginX, y);
+    doc.text('Firma técnico responsable', pageW - marginX, y, {align:'right'});
+
+    // Footer
+    doc.setFontSize(7);
+    doc.setTextColor(120, 120, 120);
+    doc.text('Documento generado por Rosso Centro de Operaciones · ' + new Date().toLocaleString('es-CL'), pageW/2, 290, {align:'center'});
+
+    // Guardar
+    var fileName = 'OT-' + (o.ot_number || otId.slice(0,8)) + '_' + (v.plate || 'sinpatente') + '.pdf';
+    doc.save(fileName);
+  } catch(e) {
+    logR('PDF_GEN_ERR', {msg: e.message}, 'err');
+    showGlobalError('Error generando PDF: ' + e.message, 6000);
+  }
 }
 
 async function deleteClient() {
