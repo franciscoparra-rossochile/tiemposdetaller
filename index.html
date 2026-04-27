@@ -233,6 +233,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     <div class="tab" data-tab="b-plan" onclick="bossTab('b-plan')">Planificacion</div>
     <div class="tab" data-tab="b-hist" onclick="bossTab('b-hist')">Historial</div>
     <div class="tab" data-tab="b-reportes" onclick="bossTab('b-reportes')">Reportes</div>
+    <div class="tab" data-tab="b-clientes" onclick="bossTab('b-clientes')" id="tab-clientes" style="display:none">Clientes</div>
     <div class="tab" data-tab="b-users" onclick="bossTab('b-users')" id="tab-users" style="display:none">Usuarios</div>
     <div class="tab" data-tab="b-cfg" onclick="bossTab('b-cfg')" id="tab-cfg" style="display:none">Config</div>
   </div>
@@ -436,6 +437,58 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
   </div>
 </div>
 
+<!-- ═══════════════════════════════════════════════════════════════
+     FASE 2.2.A: MODAL DE CLIENTE (crear/editar)
+     Tipo: persona / empresa / organismo
+     Datos persona: RUT, fecha nacimiento, correo
+     Datos empresa/organismo: solo nombre + telefono + RUT opcional
+     Vehiculos se agregan en Fase 2.2.B desde la ficha del cliente.
+     ═══════════════════════════════════════════════════════════════ -->
+<div class="overlay" id="m-client" style="display:none">
+  <div class="modal" style="max-height:92vh;overflow-y:auto;max-width:480px">
+    <div class="modal-t" id="m-cli-title">Nuevo cliente</div>
+    <div class="modal-s" id="m-cli-sub">Completa los datos del cliente</div>
+    <input type="hidden" id="m-cli-id"/>
+    <div id="m-cli-meta" style="font-size:10px;color:var(--wh4);margin-bottom:10px;font-family:var(--mono)"></div>
+
+    <div class="lbl">Tipo de cliente</div>
+    <div class="g3" style="margin-bottom:10px">
+      <button type="button" class="sel-btn" data-cli-type="persona"   onclick="selectClientType('persona')">PERSONA</button>
+      <button type="button" class="sel-btn" data-cli-type="empresa"   onclick="selectClientType('empresa')">EMPRESA</button>
+      <button type="button" class="sel-btn" data-cli-type="organismo" onclick="selectClientType('organismo')">ORGANISMO PUBLICO</button>
+    </div>
+
+    <div class="lbl" id="m-cli-name-lbl">Nombre completo</div>
+    <input class="inp" id="m-cli-name" placeholder="Nombre Apellido" autocomplete="off"/>
+
+    <div class="lbl">RUT <span id="m-cli-rut-opt" style="color:var(--wh4);font-weight:400;text-transform:none;letter-spacing:0">(opcional)</span></div>
+    <input class="inp" id="m-cli-rut" placeholder="12.345.678-9" autocomplete="off" data-no-upper/>
+    <div id="m-cli-rut-hint" style="font-size:10px;color:var(--wh4);margin-top:-4px;margin-bottom:8px;font-family:var(--mono)"></div>
+
+    <div id="m-cli-birth-wrap">
+      <div class="lbl">Fecha de nacimiento <span style="color:var(--wh4);font-weight:400;text-transform:none;letter-spacing:0">(opcional)</span></div>
+      <input class="inp" id="m-cli-birth" type="date" autocomplete="off"/>
+    </div>
+
+    <div id="m-cli-email-wrap">
+      <div class="lbl">Correo electronico <span style="color:var(--wh4);font-weight:400;text-transform:none;letter-spacing:0">(opcional)</span></div>
+      <input class="inp" id="m-cli-email" type="email" placeholder="cliente@correo.cl" autocomplete="off" data-no-upper/>
+    </div>
+
+    <div class="lbl">Telefono</div>
+    <input class="inp" id="m-cli-phone" type="tel" placeholder="+56 9 XXXX XXXX" autocomplete="off" data-no-upper/>
+
+    <div class="lbl">Notas internas <span style="color:var(--wh4);font-weight:400;text-transform:none;letter-spacing:0">(opcional)</span></div>
+    <textarea class="inp" id="m-cli-notes" rows="2" placeholder="Datos relevantes, contacto secundario, etc."></textarea>
+
+    <div id="m-cli-err" style="display:none;color:var(--red);font-size:12px;margin:6px 0 8px;font-weight:600;padding:8px;background:var(--red4);border-radius:4px"></div>
+
+    <button class="btn btn-red" id="m-cli-btn" onclick="saveClient()">Guardar cliente</button>
+    <button class="btn btn-sm danger" id="m-cli-del" onclick="deleteClient()" style="margin-top:8px;width:100%;display:none">Eliminar cliente</button>
+    <button class="btn btn-out" onclick="closeModal('m-client')" style="margin-top:8px">Cancelar</button>
+  </div>
+</div>
+
 <div class="overlay" id="m-event" style="display:none">
   <div class="modal" style="max-width:360px;max-height:92vh;overflow-y:auto">
     <div class="modal-t" id="m-ev-title">Agendar servicio</div>
@@ -561,7 +614,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // CONFIG & DEBUG
 // ═══════════════════════════════════════════════
 const DEBUG = true;
-const APP_VERSION = 'v2.3.0-FASE2.1';
+const APP_VERSION = 'v2.4.0-FASE2.2A';
 const SURL = 'https://jczmupcmeixpwjedfgtk.supabase.co';
 const SKEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impjem11cGNtZWl4cHdqZWRmZ3RrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY5NzMxOTMsImV4cCI6MjA5MjU0OTE5M30.DuICC_pCQGv27lZivieXRRvGz9A1GNkgmhvTvyKo25o';
 var sb = null; // initialized in init()
@@ -1166,10 +1219,7 @@ async function tryRestoreSession() {
   } else {
     document.getElementById('boss-name').textContent = CU.name;
     document.getElementById('boss-role').textContent = CU.role === 'admin' ? 'Administrador' : 'Jefatura';
-    if (CU.role === 'admin') {
-      document.getElementById('tab-users').style.display = '';
-      document.getElementById('tab-cfg').style.display = '';
-    }
+    refreshBossTabsVisibility();
     document.getElementById('btn-to-tech').style.display = CU.can_tech === true ? '' : 'none';
     showScreen('s-boss');
     bossTab('b-online');
@@ -1431,10 +1481,7 @@ async function saveForcedPassword() {
   } else {
     document.getElementById('boss-name').textContent = CU.name;
     document.getElementById('boss-role').textContent = CU.role === 'admin' ? 'Administrador' : 'Jefatura';
-    if (CU.role === 'admin') {
-      document.getElementById('tab-users').style.display = '';
-      document.getElementById('tab-cfg').style.display = '';
-    }
+    refreshBossTabsVisibility();
     document.getElementById('btn-to-tech').style.display = CU.can_tech === true ? '' : 'none';
     showScreen('s-boss');
     bossTab('b-online');
@@ -1650,6 +1697,19 @@ function bossTab(t) {
   else if (t === 'b-reportes') renderBossReportes(body);
   else if (t === 'b-users') renderBossUsers(body);
   else if (t === 'b-cfg') renderBossCfg(body);
+  else if (t === 'b-clientes') renderBossClientes(body);
+}
+
+// Helper centralizado: refresca la visibilidad de las pestañas de jefe segun el usuario actual.
+// Se llama desde tryRestoreSession, doLogin y enterTechMode/exitTechMode.
+function refreshBossTabsVisibility() {
+  if (!CU) return;
+  var elClientes = document.getElementById('tab-clientes');
+  if (elClientes) elClientes.style.display = hasPerm(CU, 'can_ingresar_clientes') ? '' : 'none';
+  var elUsers = document.getElementById('tab-users');
+  if (elUsers) elUsers.style.display = (CU.role === 'admin') ? '' : 'none';
+  var elCfg = document.getElementById('tab-cfg');
+  if (elCfg) elCfg.style.display = (CU.role === 'admin') ? '' : 'none';
 }
 
 // ═══════════════════════════════════════════════
@@ -4427,6 +4487,305 @@ async function deleteUser() {
   await refreshAvatarsCache();
   closeModal('m-create-user');
   if (curBossTab === 'b-users') renderBossUsers(document.getElementById('boss-body'));
+}
+
+// ═══════════════════════════════════════════════════════════════
+// FASE 2.2.A: MODULO CLIENTES — listado + ABM
+// ═══════════════════════════════════════════════════════════════
+// Estado del modulo
+var _clientsCache = [];        // cache de la ultima consulta
+var _clientsSearch = '';       // texto de busqueda actual
+var _editClientId = null;      // id del cliente en edicion (null = nuevo)
+var _selClientType = null;     // tipo seleccionado en el modal: persona/empresa/organismo
+
+// Validacion + formato de RUT chileno (modulo 11).
+// Acepta '12.345.678-9', '12345678-9', '123456789'. Devuelve {valid, formatted, dv}.
+function validateRut(raw) {
+  if (!raw) return {valid: false, formatted: '', error: 'vacio'};
+  var clean = String(raw).replace(/[^0-9kK]/g, '').toUpperCase();
+  if (clean.length < 2) return {valid: false, formatted: clean, error: 'muy corto'};
+  var body = clean.slice(0, -1);
+  var dv   = clean.slice(-1);
+  if (!/^\d+$/.test(body)) return {valid: false, formatted: clean, error: 'cuerpo no numerico'};
+  // Modulo 11
+  var sum = 0, mul = 2;
+  for (var i = body.length - 1; i >= 0; i--) {
+    sum += parseInt(body[i], 10) * mul;
+    mul = mul === 7 ? 2 : mul + 1;
+  }
+  var rest = 11 - (sum % 11);
+  var expected = rest === 11 ? '0' : rest === 10 ? 'K' : String(rest);
+  if (expected !== dv) return {valid: false, formatted: formatRut(body, dv), error: 'DV incorrecto'};
+  return {valid: true, formatted: formatRut(body, dv), dv: dv};
+}
+function formatRut(body, dv) {
+  // Insertar puntos cada 3 desde la derecha
+  var rev = body.split('').reverse();
+  var grouped = [];
+  for (var i = 0; i < rev.length; i++) {
+    if (i > 0 && i % 3 === 0) grouped.push('.');
+    grouped.push(rev[i]);
+  }
+  return grouped.reverse().join('') + '-' + dv;
+}
+
+async function renderBossClientes(body) {
+  if (!hasPerm(CU, 'can_ingresar_clientes')) {
+    body.innerHTML = '<div class="card"><div style="text-align:center;color:var(--wh3);padding:18px">No tienes permiso para ver/ingresar clientes.</div></div>';
+    return;
+  }
+  body.innerHTML = '<div class="card-accent">'
+    + '<div style="display:flex;gap:8px;margin-bottom:10px;align-items:center;flex-wrap:wrap">'
+    + '<input type="text" class="inp" id="cli-search" placeholder="Buscar por nombre, RUT o telefono..." style="flex:1;margin-bottom:0;min-width:180px" autocomplete="off" data-no-upper oninput="onClientsSearchInput(this.value)"/>'
+    + '<button class="btn btn-red" style="width:auto;flex-shrink:0;padding:10px 16px" onclick="openClientModal(null)">+ Nuevo cliente</button>'
+    + '</div>'
+    + '<div id="cli-list-meta" style="font-size:11px;color:var(--wh3);margin-bottom:8px;font-family:var(--mono)">Cargando...</div>'
+    + '<div id="cli-list"></div>'
+    + '</div>';
+  document.getElementById('cli-search').value = _clientsSearch;
+  await loadClients();
+}
+
+async function loadClients() {
+  if (!sb) return;
+  var meta = document.getElementById('cli-list-meta');
+  if (meta) meta.textContent = 'Cargando clientes...';
+  try {
+    var res = await sb.from('clients').select('*').order('created_at', {ascending: false}).limit(500);
+    if (res.error) {
+      logR('CLIENTS_LOAD_ERR', {msg: res.error.message}, 'err');
+      var listEl = document.getElementById('cli-list');
+      if (listEl) listEl.innerHTML = '<div class="card-err">Error al cargar clientes: ' + res.error.message + '</div>';
+      if (meta) meta.textContent = 'Error';
+      return;
+    }
+    _clientsCache = res.data || [];
+    renderClientsList();
+  } catch(e) {
+    logR('CLIENTS_LOAD_THREW', {msg: e.message}, 'err');
+    if (meta) meta.textContent = 'Error de conexion';
+  }
+}
+
+function onClientsSearchInput(v) {
+  _clientsSearch = (v || '').trim().toUpperCase();
+  renderClientsList();
+}
+
+function renderClientsList() {
+  var list = document.getElementById('cli-list');
+  var meta = document.getElementById('cli-list-meta');
+  if (!list) return;
+  var q = _clientsSearch;
+  var filtered = _clientsCache;
+  if (q) {
+    filtered = _clientsCache.filter(function(c) {
+      return (c.name || '').toUpperCase().indexOf(q) !== -1
+          || (c.rut || '').toUpperCase().indexOf(q) !== -1
+          || (c.phone || '').indexOf(q) !== -1;
+    });
+  }
+  if (meta) meta.textContent = filtered.length + ' de ' + _clientsCache.length + ' cliente(s)';
+  if (filtered.length === 0) {
+    list.innerHTML = '<div class="empty" style="padding:24px;text-align:center;color:var(--wh4)">'
+      + (_clientsCache.length === 0 ? 'Aun no hay clientes registrados. Toca "+ Nuevo cliente" para crear el primero.' : 'No se encontraron clientes con ese filtro.')
+      + '</div>';
+    return;
+  }
+  var typeLabel = {persona:'PERSONA', empresa:'EMPRESA', organismo:'ORGANISMO'};
+  var typeColor = {persona:'var(--blue)', empresa:'var(--gold)', organismo:'var(--green)'};
+  list.innerHTML = filtered.map(function(c) {
+    var tag = typeLabel[c.client_type] || '?';
+    var color = typeColor[c.client_type] || 'var(--wh3)';
+    return '<div class="row" style="align-items:center;gap:10px;padding:10px 4px;cursor:pointer" onclick="openClientModal(\'' + c.id + '\')">'
+      + '<div style="flex:1;min-width:0">'
+      +   '<div style="font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.02em">' + escapeHtml(c.name) + '</div>'
+      +   '<div style="font-size:11px;color:var(--wh3);margin-top:2px">'
+      +     '<span style="color:' + color + ';font-weight:700;font-family:\'Rajdhani\',sans-serif;letter-spacing:.05em">' + tag + '</span>'
+      +     (c.rut   ? ' · ' + escapeHtml(c.rut)   : '')
+      +     (c.phone ? ' · ' + escapeHtml(c.phone) : '')
+      +   '</div>'
+      + '</div>'
+      + '<button class="btn-sm" style="flex-shrink:0" onclick="event.stopPropagation();openClientModal(\'' + c.id + '\')">Editar</button>'
+      + '</div>';
+  }).join('');
+}
+
+// Helper minimo de escape HTML
+function escapeHtml(s) {
+  if (s == null) return '';
+  return String(s).replace(/[&<>"']/g, function(c) {
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+  });
+}
+
+async function openClientModal(cid) {
+  if (!hasPerm(CU, 'can_ingresar_clientes')) {
+    showGlobalError('No tienes permiso para crear/editar clientes', 4000);
+    return;
+  }
+  _editClientId = cid;
+  document.getElementById('m-cli-err').style.display = 'none';
+  document.getElementById('m-cli-btn').textContent = 'Guardar cliente';
+  document.getElementById('m-cli-btn').disabled = false;
+  document.getElementById('m-cli-meta').textContent = '';
+
+  if (cid) {
+    document.getElementById('m-cli-title').textContent = 'Editar cliente';
+    document.getElementById('m-cli-sub').textContent = 'Modifica los datos del cliente';
+    document.getElementById('m-cli-del').style.display = 'block';
+    var res = await sb.from('clients').select('*').eq('id', cid).maybeSingle();
+    if (res.error || !res.data) {
+      showGlobalError('No se pudo cargar el cliente: ' + (res.error ? res.error.message : 'no encontrado'), 5000);
+      return;
+    }
+    var c = res.data;
+    document.getElementById('m-cli-id').value     = c.id;
+    document.getElementById('m-cli-name').value   = c.name || '';
+    document.getElementById('m-cli-rut').value    = c.rut || '';
+    document.getElementById('m-cli-birth').value  = c.birth_date || '';
+    document.getElementById('m-cli-email').value  = c.email || '';
+    document.getElementById('m-cli-phone').value  = c.phone || '';
+    document.getElementById('m-cli-notes').value  = c.notes || '';
+    selectClientType(c.client_type || 'persona');
+    document.getElementById('m-cli-meta').textContent = 'Creado: ' + fmtDate(c.created_at) + (c.updated_at && c.updated_at !== c.created_at ? ' · Actualizado: ' + fmtDate(c.updated_at) : '');
+  } else {
+    document.getElementById('m-cli-title').textContent = 'Nuevo cliente';
+    document.getElementById('m-cli-sub').textContent = 'Fecha de ingreso: ' + new Date().toLocaleDateString('es-CL');
+    document.getElementById('m-cli-del').style.display = 'none';
+    ['m-cli-id','m-cli-name','m-cli-rut','m-cli-birth','m-cli-email','m-cli-phone','m-cli-notes'].forEach(function(id){
+      var el = document.getElementById(id); if (el) el.value = '';
+    });
+    selectClientType('persona');
+  }
+  document.getElementById('m-cli-rut-hint').textContent = '';
+  openModal('m-client');
+}
+
+function selectClientType(t) {
+  _selClientType = t;
+  document.querySelectorAll('#m-client [data-cli-type]').forEach(function(b) {
+    b.classList.toggle('on', b.dataset.cliType === t);
+  });
+  // Mostrar/ocultar campos segun tipo
+  var birthWrap = document.getElementById('m-cli-birth-wrap');
+  var rutOpt    = document.getElementById('m-cli-rut-opt');
+  var nameLbl   = document.getElementById('m-cli-name-lbl');
+  if (t === 'persona') {
+    if (birthWrap) birthWrap.style.display = '';
+    if (rutOpt)    rutOpt.textContent = '(obligatorio para persona)';
+    if (nameLbl)   nameLbl.textContent = 'Nombre completo';
+  } else if (t === 'empresa') {
+    if (birthWrap) birthWrap.style.display = 'none';
+    if (rutOpt)    rutOpt.textContent = '(opcional)';
+    if (nameLbl)   nameLbl.textContent = 'Razon social / Nombre empresa';
+  } else {
+    // organismo
+    if (birthWrap) birthWrap.style.display = 'none';
+    if (rutOpt)    rutOpt.textContent = '(opcional)';
+    if (nameLbl)   nameLbl.textContent = 'Nombre del organismo';
+  }
+}
+
+// Validacion en vivo del RUT al perder foco / escribir
+function rutLiveCheck(el) {
+  var raw = el.value;
+  var hint = document.getElementById('m-cli-rut-hint');
+  if (!raw) { if (hint) hint.textContent = ''; return; }
+  var v = validateRut(raw);
+  if (v.valid) {
+    el.value = v.formatted;
+    if (hint) { hint.textContent = '✓ RUT valido'; hint.style.color = 'var(--green)'; }
+  } else {
+    if (hint) { hint.textContent = '✗ ' + v.error; hint.style.color = 'var(--red)'; }
+  }
+}
+// Conectar el live-check
+document.addEventListener('blur', function(ev) {
+  if (ev.target && ev.target.id === 'm-cli-rut') rutLiveCheck(ev.target);
+}, true);
+
+async function saveClient() {
+  var err = document.getElementById('m-cli-err');
+  var btn = document.getElementById('m-cli-btn');
+  err.style.display = 'none';
+
+  var type   = _selClientType;
+  var name   = document.getElementById('m-cli-name').value.trim();
+  var rut    = document.getElementById('m-cli-rut').value.trim();
+  var birth  = document.getElementById('m-cli-birth').value || null;
+  var email  = document.getElementById('m-cli-email').value.trim();
+  var phone  = document.getElementById('m-cli-phone').value.trim();
+  var notes  = document.getElementById('m-cli-notes').value.trim();
+
+  // Validaciones
+  if (!type) { err.textContent = 'Selecciona el tipo de cliente'; err.style.display='block'; return; }
+  if (!name) { err.textContent = 'El nombre es obligatorio'; err.style.display='block'; return; }
+  if (!phone) { err.textContent = 'El telefono es obligatorio'; err.style.display='block'; return; }
+  if (type === 'persona' && !rut) { err.textContent = 'Para persona, el RUT es obligatorio'; err.style.display='block'; return; }
+  if (rut) {
+    var v = validateRut(rut);
+    if (!v.valid) { err.textContent = 'RUT invalido: ' + v.error; err.style.display='block'; return; }
+    rut = v.formatted;
+  }
+  if (email && email.indexOf('@') === -1) { err.textContent = 'Correo invalido'; err.style.display='block'; return; }
+
+  btn.innerHTML = '<span class="spin"></span> Guardando...'; btn.disabled = true;
+
+  var payload = {
+    client_type: type,
+    name: name,
+    rut: rut || null,
+    birth_date: (type === 'persona' ? birth : null),
+    email: email || null,
+    phone: phone,
+    notes: notes || null,
+    updated_by: CU ? CU.id : null
+  };
+
+  var error;
+  try {
+    if (_editClientId) {
+      var r = await sb.from('clients').update(payload).eq('id', _editClientId);
+      error = r.error;
+    } else {
+      payload.created_by = CU ? CU.id : null;
+      var r2 = await sb.from('clients').insert(payload);
+      error = r2.error;
+    }
+  } catch(e) {
+    error = {message: 'Excepcion: ' + (e && e.message ? e.message : String(e))};
+  }
+  logR('SAVE_CLIENT', {edit: !!_editClientId, error: error ? error.message : null});
+
+  btn.innerHTML = 'Guardar cliente'; btn.disabled = false;
+  if (error) {
+    err.textContent = 'Error al guardar: ' + (error.message || 'desconocido');
+    err.style.display = 'block';
+    return;
+  }
+
+  closeModal('m-client');
+  if (curBossTab === 'b-clientes') {
+    await loadClients();
+  }
+  showGlobalError(_editClientId ? 'Cliente actualizado' : 'Cliente creado correctamente', 2500);
+}
+
+async function deleteClient() {
+  if (!_editClientId) return;
+  if (!confirm('Eliminar este cliente? Tambien se eliminaran sus vehiculos asociados. Esta accion no se puede deshacer.')) return;
+  var btn = document.getElementById('m-cli-del');
+  if (btn) { btn.disabled = true; btn.textContent = 'Eliminando...'; }
+  var r = await sb.from('clients').delete().eq('id', _editClientId);
+  if (r.error) {
+    showGlobalError('No se pudo eliminar: ' + r.error.message, 5000);
+    if (btn) { btn.disabled = false; btn.textContent = 'Eliminar cliente'; }
+    return;
+  }
+  closeModal('m-client');
+  if (curBossTab === 'b-clientes') await loadClients();
+  showGlobalError('Cliente eliminado', 2500);
 }
 
 // ═══════════════════════════════════════════════
