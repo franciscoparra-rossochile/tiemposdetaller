@@ -820,7 +820,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // CONFIG & DEBUG
 // ═══════════════════════════════════════════════
 const DEBUG = true;
-const APP_VERSION = 'v2.5.OPS-entry-date';
+const APP_VERSION = 'v2.6.OPS-time-fixes';
 const SURL = 'https://jczmupcmeixpwjedfgtk.supabase.co';
 const SKEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impjem11cGNtZWl4cHdqZWRmZ3RrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY5NzMxOTMsImV4cCI6MjA5MjU0OTE5M30.DuICC_pCQGv27lZivieXRRvGz9A1GNkgmhvTvyKo25o';
 var sb = null; // initialized in init()
@@ -2561,15 +2561,39 @@ function liveSecondsNow(s) {
   // Restar pausas ya cerradas
   elapsedMs -= (s.accumulated_paused_ms || 0);
 
+  // FASE 2.6 SANITY: si la BD dice que la sesion esta pausada pero falta paused_at,
+  // usar updated_at como referencia para no contar tiempo libre como activo.
+  var inferredPause = null;
+  if (s.status === 'paused' && !s.paused_at && s.updated_at) {
+    inferredPause = new Date(s.updated_at).getTime();
+  }
+
   // Si esta pausado ahora, restar tambien el tiempo desde que empezo la pausa actual
-  if (s.status === 'paused' && s.paused_at) {
-    var pausedAt = new Date(s.paused_at).getTime();
-    if (!isNaN(pausedAt)) {
+  if (s.status === 'paused') {
+    var pausedAt = s.paused_at ? new Date(s.paused_at).getTime() : inferredPause;
+    if (pausedAt && !isNaN(pausedAt)) {
       elapsedMs -= (now - pausedAt);
     }
   }
 
-  return Math.max(0, Math.floor(elapsedMs / 1000));
+  // FASE 2.6 SANITY: clamp defensivo. Si una sesion "running" supera 18h sin pausas
+  // nuevas, es casi seguro que el tecnico cerro el navegador sin pausar. Cappear
+  // al snapshot (s.seconds) si es razonable, evitando mostrar 72h+ basura.
+  var calculated = Math.max(0, Math.floor(elapsedMs / 1000));
+  var MAX_REASONABLE_S = 18 * 3600; // 18h
+  if (s.status === 'running' && calculated > MAX_REASONABLE_S) {
+    var snap = s.seconds || 0;
+    // Si el snapshot tiene un valor razonable, usarlo y marcar la sesion como sospechosa
+    if (snap > 0 && snap < MAX_REASONABLE_S) {
+      s.__suspect_drift = true;
+      return snap;
+    }
+    // Si tampoco hay snapshot util, devolver el cap (se vera como "18:00:00+" en UI)
+    s.__suspect_drift = true;
+    return MAX_REASONABLE_S;
+  }
+
+  return calculated;
 }
 
 async function fetchLive() {
@@ -2959,7 +2983,34 @@ async function doStartSession() {
   dbSyncCtr = 0;
   
   logR('TIMER_STARTED', {key, label, goal, plate: selPlate});
-  
+
+  // FASE 2.6 FIX-B: sincronizar planificacion. Si hay scheduled_services pendientes
+  // con esta patente para hoy, marcarlos como 'en_curso' y asignarles al tecnico actual.
+  // Esto resuelve el bug de "la patente sigue saliendo pendiente en planificacion del tecnico".
+  try {
+    if (selPlate && selPlate !== 'Logistica de taller') {
+      var todayISO = new Date().toISOString().slice(0,10);
+      var rsync = await sb.from('scheduled_services')
+        .update({
+          status: 'en_curso',
+          technician_username: CU.username,
+          technician_name: CU.name,
+          updated_at: new Date().toISOString()
+        })
+        .eq('plate', selPlate)
+        .eq('status', 'pendiente')
+        .gte('scheduled_at', todayISO + 'T00:00:00')
+        .lte('scheduled_at', todayISO + 'T23:59:59');
+      if (rsync && rsync.error) {
+        logR('SYNC_PLAN_ERR', {msg: rsync.error.message}, 'warn');
+      } else {
+        logR('SYNC_PLAN_OK', {plate: selPlate, tech: CU.username});
+      }
+    }
+  } catch(e) {
+    logR('SYNC_PLAN_THREW', {msg: e.message}, 'warn');
+  }
+
   selSrv = null; selSub = null; selDesc = ''; selPlate = '';
   await fetchLive();
   techTab('t-nuevo');
@@ -3919,7 +3970,9 @@ function buildSessCard(s, isTech) {
   h += '</div></div>';
   h += '<div style="text-align:right;flex-shrink:0">';
   h += '<span class="badge ' + (over?'b-over':paused?'b-pau':'b-run') + '">' + (over?'Superado':paused?'Pausado':'En curso') + '</span>';
-  h += '<div style="font-size:26px;font-weight:700;font-family:var(--mono);color:' + (over?'var(--red)':paused?'var(--gold)':'#111') + ';letter-spacing:2px;margin-top:3px">' + fmtT(sec) + '</div>';
+  // FASE 2.6: si liveSecondsNow detecto drift sospechoso, marcar el cronometro
+  var driftWarn = s.__suspect_drift ? '<span title="Tiempo sospechoso (sesion sin pausa formal). Revisar." style="color:var(--red);font-size:11px;margin-right:4px">⚠</span>' : '';
+  h += '<div style="font-size:26px;font-weight:700;font-family:var(--mono);color:' + (over?'var(--red)':paused?'var(--gold)':'#111') + ';letter-spacing:2px;margin-top:3px">' + driftWarn + fmtT(sec) + '</div>';
   if (s.goal_minutes) h += '<div style="font-size:9px;color:#aaa;text-transform:uppercase">OBJ:' + s.goal_minutes + 'm</div>';
   h += '</div></div>';
   if (pct !== null) h += '<div class="prog-bar" style="margin-top:8px"><div class="prog-fill" style="width:' + pct + '%;background:' + (over?'var(--red)':'var(--green)') + '"></div></div>';
