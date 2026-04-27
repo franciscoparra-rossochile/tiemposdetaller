@@ -320,6 +320,19 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
   </div>
 </div>
 
+<!-- FASE 2.6: Modal de confirmación tipeada (anti-clic accidental en eliminar) -->
+<div class="overlay" id="m-confirm-delete" style="display:none">
+  <div class="modal" style="max-width:440px;border:2px solid var(--red)">
+    <div class="modal-t" style="color:var(--red)">⚠ Confirmar eliminación</div>
+    <div class="modal-s" id="m-cd-msg" style="line-height:1.4">¿Seguro?</div>
+    <div class="lbl" style="margin-top:14px">Para confirmar, escribe <b style="color:var(--red);font-family:var(--mono)" id="m-cd-keyword">ELIMINAR</b> abajo:</div>
+    <input class="inp" type="text" id="m-cd-input" placeholder="Escribe la palabra clave" autocomplete="off" autocapitalize="characters" oninput="cdValidate()" style="font-family:var(--mono);letter-spacing:.05em"/>
+    <div id="m-cd-hint" style="font-size:11px;color:var(--wh4);margin-top:4px;font-family:var(--mono);min-height:14px"></div>
+    <button class="btn btn-red" id="m-cd-btn" onclick="cdConfirm()" disabled style="margin-top:8px;opacity:.5">Eliminar definitivamente</button>
+    <button class="btn btn-out" onclick="closeModal('m-confirm-delete')" style="margin-top:8px">Cancelar</button>
+  </div>
+</div>
+
 <!-- FASE 2.6: Modal Asistir en otro servicio -->
 <div class="overlay" id="m-asistir" style="display:none">
   <div class="modal">
@@ -849,7 +862,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // CONFIG & DEBUG
 // ═══════════════════════════════════════════════
 const DEBUG = true;
-const APP_VERSION = 'v2.6.OPS-multitec-hotfix3';
+const APP_VERSION = 'v2.6.OPS-multitec-hotfix4';
 const SURL = 'https://jczmupcmeixpwjedfgtk.supabase.co';
 const SKEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impjem11cGNtZWl4cHdqZWRmZ3RrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY5NzMxOTMsImV4cCI6MjA5MjU0OTE5M30.DuICC_pCQGv27lZivieXRRvGz9A1GNkgmhvTvyKo25o';
 var sb = null; // initialized in init()
@@ -2571,6 +2584,53 @@ async function pollAll() {
 //   = accumulated_paused_ms (de pausas ya cerradas)
 //   + (si esta pausado ahora): (ahora - paused_at)
 //
+// FASE 2.6: confirmación tipeada anti-clic accidental para eliminaciones.
+// Usar: confirmHard('Vas a borrar X', function(){ ... realizar borrado ... });
+// Por defecto pide tipear "ELIMINAR". Se puede pasar keyword custom.
+var _cdCallback = null;
+var _cdKeyword = 'ELIMINAR';
+function confirmHard(msg, onConfirm, opts) {
+  opts = opts || {};
+  _cdKeyword = (opts.keyword || 'ELIMINAR').toUpperCase();
+  _cdCallback = onConfirm;
+  var msgEl = document.getElementById('m-cd-msg');
+  var kwEl  = document.getElementById('m-cd-keyword');
+  var inEl  = document.getElementById('m-cd-input');
+  var btnEl = document.getElementById('m-cd-btn');
+  var hintEl= document.getElementById('m-cd-hint');
+  if (msgEl) msgEl.innerHTML = msg;
+  if (kwEl)  kwEl.textContent = _cdKeyword;
+  if (inEl)  inEl.value = '';
+  if (hintEl) hintEl.textContent = '';
+  if (btnEl) { btnEl.disabled = true; btnEl.style.opacity = '.5'; }
+  openModal('m-confirm-delete');
+  setTimeout(function(){ if (inEl) inEl.focus(); }, 100);
+}
+function cdValidate() {
+  var inEl  = document.getElementById('m-cd-input');
+  var btnEl = document.getElementById('m-cd-btn');
+  var hintEl= document.getElementById('m-cd-hint');
+  var typed = (inEl && inEl.value || '').toUpperCase().trim();
+  var ok = (typed === _cdKeyword);
+  if (btnEl) {
+    btnEl.disabled = !ok;
+    btnEl.style.opacity = ok ? '1' : '.5';
+  }
+  if (hintEl) {
+    hintEl.textContent = ok ? '✓ Confirmación válida' : (typed ? 'No coincide. Tipo exacto: ' + _cdKeyword : '');
+    hintEl.style.color = ok ? 'var(--green)' : 'var(--wh4)';
+  }
+}
+function cdConfirm() {
+  var inEl = document.getElementById('m-cd-input');
+  var typed = (inEl && inEl.value || '').toUpperCase().trim();
+  if (typed !== _cdKeyword) return;
+  var cb = _cdCallback;
+  closeModal('m-confirm-delete');
+  _cdCallback = null;
+  if (typeof cb === 'function') cb();
+}
+
 // FASE 2.6 FIX (v3): work_orders NO tiene columna 'plate'. La patente esta en
 // client_vehicles. Helper centralizado: dado un plate, busca el vehicle_id y
 // luego la OT abierta mas reciente. Devuelve {id, ot_number, status} o null.
@@ -5899,7 +5959,14 @@ async function saveUser() {
 
 async function deleteUser() {
   if (!editUserId) return;
-  if (!confirm('Eliminar este usuario? Esta accion no se puede deshacer.')) return;
+  // FASE 2.6: confirmación tipeada anti-clic accidental
+  confirmHard(
+    '<b>Vas a eliminar este usuario</b><br/>Pierde acceso al sistema. Sus servicios históricos se mantienen.',
+    function(){ _doDeleteUser(); }
+  );
+}
+async function _doDeleteUser() {
+  if (!editUserId) return;
   // QA-STABLE: verificar éxito real antes de cerrar modal y refrescar.
   var r = await sb.from('users').delete().eq('id', editUserId);
   if (r && r.error) {
@@ -7843,7 +7910,13 @@ async function editOT(otId) {
 
 async function deleteOT(otId) {
   if (!hasPerm(CU, 'can_ingresar_clientes')) { showGlobalError('Sin permiso', 3000); return; }
-  if (!confirm('¿Eliminar esta OT? También se borrará el servicio agendado vinculado en el calendario (si existe). Esta acción no se puede deshacer.')) return;
+  // FASE 2.6: confirmación tipeada anti-clic accidental
+  confirmHard(
+    '<b>Vas a eliminar esta OT</b><br/>También se borrará el servicio agendado vinculado en el calendario (si existe).<br/><br/><span style="color:var(--red)">Esta acción NO se puede deshacer.</span>',
+    function(){ _doDeleteOT(otId); }
+  );
+}
+async function _doDeleteOT(otId) {
   try {
     // Primero borrar scheduled_service vinculado (si existe)
     try { await sb.from('scheduled_services').delete().eq('work_order_id', otId); } catch(_){}
@@ -8615,6 +8688,40 @@ async function generateRecepcionConforme(otId) {
       .order('started_at', {ascending: true});
     var entries = (rste && rste.data) || [];
     var totalSec = await getOTTotalSeconds(otId);
+
+    // FASE 2.6 FIX (v4): FALLBACK a history. Si service_time_entries esta vacio
+    // (porque el backfill SQL no se corrio o por sesiones viejas pre-fix),
+    // leemos directamente de history filtrando por patente + ventana de tiempo OT.
+    if (entries.length === 0 && v.plate) {
+      try {
+        var fromDate = o.entry_date
+          ? o.entry_date + 'T00:00:00'
+          : new Date(new Date(o.created_at).getTime() - 1*86400000).toISOString();
+        var toDate = new Date(Date.now() + 7*86400000).toISOString();
+        var rhist = await sb.from('history')
+          .select('technician, username, ended_at, seconds, pauses')
+          .eq('plate', v.plate)
+          .gte('ended_at', fromDate)
+          .lte('ended_at', toDate)
+          .order('ended_at', {ascending: true});
+        if (rhist && rhist.data && rhist.data.length > 0) {
+          entries = rhist.data.map(function(h) {
+            return {
+              technician_name: h.technician,
+              technician_username: h.username,
+              type: 'own',
+              started_at: new Date(new Date(h.ended_at).getTime() - (h.seconds||0)*1000).toISOString(),
+              ended_at: h.ended_at,
+              duration_seconds: h.seconds || 0,
+              assisted_plate: null,
+              notes: 'desde historial'
+            };
+          });
+          totalSec = entries.reduce(function(a,e){ return a + (e.duration_seconds||0); }, 0);
+          logR('PDF_RECEPCION_FALLBACK_HISTORY', {ot: otId, plate: v.plate, found: entries.length, total: totalSec});
+        }
+      } catch(e) { logR('PDF_RECEPCION_FALLBACK_ERR', {msg: e.message}, 'warn'); }
+    }
     // Resumen por tecnico
     var byTech = {};
     entries.forEach(function(e) {
@@ -8836,16 +8943,20 @@ async function deleteClient() {
     var ro = await sb.from('work_orders').select('id', {count:'exact', head:true}).eq('client_id', _editClientId);
     otCount = ro.count || 0;
   } catch(_){}
-  var msg = 'ELIMINAR CLIENTE\n\n';
+  // FASE 2.6: confirmación tipeada anti-clic accidental
+  var htmlMsg = '<b>Vas a eliminar este cliente</b>';
   if (vehCount > 0 || otCount > 0) {
-    msg += 'ATENCION: este cliente tiene asociados:\n';
-    if (vehCount > 0) msg += '  • ' + vehCount + ' vehiculo(s) registrado(s) (se eliminaran TODAS sus fotos del bucket)\n';
-    if (otCount > 0)  msg += '  • ' + otCount  + ' orden(es) de trabajo (con sus checklists y eventos agendados)\n';
-    msg += '\nTODO se borrara en cascada. Esta accion no se puede deshacer.\n\n¿Continuar?';
+    htmlMsg += '<br/><br/>Este cliente tiene asociados:<br/>';
+    if (vehCount > 0) htmlMsg += '• ' + vehCount + ' vehículo(s) (se borran fotos del bucket)<br/>';
+    if (otCount > 0)  htmlMsg += '• ' + otCount  + ' OT(s) con checklists y eventos<br/>';
+    htmlMsg += '<br/><span style="color:var(--red)">TODO se borra en cascada. NO se puede deshacer.</span>';
   } else {
-    msg += 'Este cliente no tiene vehiculos ni OTs asociadas.\n\n¿Confirmas la eliminacion?';
+    htmlMsg += '<br/>Sin vehículos ni OTs asociadas.';
   }
-  if (!confirm(msg)) return;
+  confirmHard(htmlMsg, function(){ _doDeleteClient(); });
+}
+async function _doDeleteClient() {
+  if (!_editClientId) return;
   var btn = document.getElementById('m-cli-del');
   if (btn) { btn.disabled = true; btn.textContent = 'Eliminando...'; }
   // Limpieza explícita previa: scheduled_services vinculados a las OTs del cliente
@@ -9078,7 +9189,14 @@ async function saveEvent() {
 
 async function deleteEvent() {
   if (!editEventId) return;
-  if (!confirm('Eliminar este servicio agendado?')) return;
+  // FASE 2.6: confirmación tipeada anti-clic accidental
+  confirmHard(
+    '<b>Vas a eliminar este servicio agendado</b><br/>El evento desaparecerá del calendario y de la planificación del día.',
+    function(){ _doDeleteEvent(); }
+  );
+}
+async function _doDeleteEvent() {
+  if (!editEventId) return;
   // Marcar notificaciones relacionadas como canceladas (no borrarlas - historial)
   var {error: notifErr} = await sb.from('notifications')
     .update({cancelled: true})
