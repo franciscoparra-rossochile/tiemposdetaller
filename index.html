@@ -452,6 +452,18 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     <input type="hidden" id="m-cli-id"/>
     <div id="m-cli-meta" style="font-size:10px;color:var(--wh4);margin-bottom:10px;font-family:var(--mono)"></div>
 
+    <!-- ═══ FASE 2.2.B: BUSCADOR DE CLIENTE EXISTENTE (solo modo ingreso) ═══ -->
+    <div id="m-cli-existing-wrap" style="display:none;background:#eef4ff;border-left:3px solid var(--blue);padding:10px 12px;margin-bottom:12px;border-radius:3px">
+      <div style="font-size:11px;font-weight:700;color:var(--blue);font-family:'Rajdhani',sans-serif;letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px">¿Cliente que ya tienes en tu base?</div>
+      <div style="font-size:10px;color:var(--wh3);margin-bottom:8px;line-height:1.4">Búscalo por RUT, nombre o teléfono. Al seleccionarlo, sus datos se autocompletan y solo llenas el vehículo.</div>
+      <input type="text" class="inp" id="m-cli-existing-search" placeholder="Buscar..." autocomplete="off" data-no-upper oninput="onExistingClientSearch(this.value)" style="margin-bottom:0"/>
+      <div id="m-cli-existing-results" style="margin-top:6px;max-height:180px;overflow-y:auto"></div>
+      <div id="m-cli-existing-selected" style="display:none;margin-top:8px;padding:8px;background:#fff;border:1px solid var(--blue);border-radius:3px;font-size:12px">
+        <span id="m-cli-existing-selected-text"></span>
+        <button type="button" onclick="clearExistingClient()" style="margin-left:6px;background:none;border:none;color:var(--red);font-weight:700;cursor:pointer;font-size:11px">[Limpiar]</button>
+      </div>
+    </div>
+
     <div class="lbl">Tipo de cliente</div>
     <div class="g3" style="margin-bottom:10px">
       <button type="button" class="sel-btn" data-cli-type="persona"   onclick="selectClientType('persona')">PERSONA</button>
@@ -482,7 +494,60 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     <div class="lbl">Notas internas <span style="color:var(--wh4);font-weight:400;text-transform:none;letter-spacing:0">(opcional)</span></div>
     <textarea class="inp" id="m-cli-notes" rows="2" placeholder="Datos relevantes, contacto secundario, etc."></textarea>
 
-    <div id="m-cli-err" style="display:none;color:var(--red);font-size:12px;margin:6px 0 8px;font-weight:600;padding:8px;background:var(--red4);border-radius:4px"></div>
+    <!-- ═══ FASE 2.2.B: SECCIONES SOLO VISIBLES EN MODO INGRESO ═══ -->
+    <div id="m-cli-ingreso-block" style="display:none">
+
+      <!-- VEHICULO -->
+      <div style="border-top:2px solid var(--red);margin:18px -2px 12px;padding-top:14px">
+        <div style="font-size:14px;font-weight:700;color:#111;font-family:'Rajdhani',sans-serif;text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px">🚗 Vehículo</div>
+
+        <div class="lbl">Marca</div>
+        <select class="inp" id="m-veh-brand" onchange="onVehBrandChange()">
+          <option value="">Selecciona marca...</option>
+        </select>
+
+        <div class="lbl">Modelo</div>
+        <input class="inp" id="m-veh-model" list="m-veh-model-list" placeholder="Selecciona o escribe..." autocomplete="off"/>
+        <datalist id="m-veh-model-list"></datalist>
+
+        <div class="lbl">Patente</div>
+        <input class="inp" id="m-veh-plate" placeholder="BJKR-18 o AB-1234" autocomplete="off" maxlength="9"/>
+        <div id="m-veh-plate-hint" style="font-size:10px;color:var(--wh4);margin-top:-4px;margin-bottom:8px;font-family:var(--mono);min-height:12px"></div>
+
+        <div class="lbl">Kilometraje de entrada</div>
+        <input class="inp" id="m-veh-km" type="number" min="0" max="9999999" placeholder="Ej: 45000" data-no-upper/>
+      </div>
+
+      <!-- COMPROBACIONES INTERIORES -->
+      <div style="border-top:1px solid var(--border);margin:14px -2px 10px;padding-top:12px">
+        <div style="font-size:13px;font-weight:700;color:#111;font-family:'Rajdhani',sans-serif;text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px">Comprobaciones interiores</div>
+        <div style="font-size:10px;color:var(--wh4);margin-bottom:8px">Marca SOLO los items que correspondan al estado del vehículo.</div>
+        <div id="m-veh-checks-int" style="display:flex;flex-direction:column;gap:4px"></div>
+      </div>
+
+      <!-- COMPROBACIONES EXTERIORES -->
+      <div style="border-top:1px solid var(--border);margin:14px -2px 10px;padding-top:12px">
+        <div style="font-size:13px;font-weight:700;color:#111;font-family:'Rajdhani',sans-serif;text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px">Comprobaciones exteriores</div>
+        <div id="m-veh-checks-ext" style="display:flex;flex-direction:column;gap:4px"></div>
+      </div>
+
+      <!-- FOTOS -->
+      <div style="border-top:1px solid var(--border);margin:14px -2px 10px;padding-top:12px">
+        <div style="font-size:13px;font-weight:700;color:#111;font-family:'Rajdhani',sans-serif;text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px">📸 Fotografías del vehículo</div>
+        <div style="font-size:10px;color:var(--wh4);margin-bottom:10px;line-height:1.4">Las fotos se comprimen automáticamente antes de subir (máx 1.5 MB). El tablero debe sacarse con motor encendido.</div>
+        <div id="m-veh-photos" style="display:grid;grid-template-columns:1fr 1fr;gap:8px"></div>
+      </div>
+
+      <!-- COMENTARIOS -->
+      <div style="border-top:1px solid var(--border);margin:14px -2px 6px;padding-top:12px">
+        <div class="lbl">Comentarios / requerimientos especiales del cliente</div>
+        <textarea class="inp" id="m-veh-comments" rows="3" placeholder="Lo que el cliente solicita específicamente, ruidos a revisar, etc."></textarea>
+      </div>
+
+    </div>
+    <!-- ═══ FIN sección modo ingreso ═══ -->
+
+    <div id="m-cli-err" style="display:none;color:var(--red);font-size:12px;margin:6px 0 8px;font-weight:600;padding:8px;background:var(--red4);border-radius:4px;white-space:pre-line"></div>
 
     <button class="btn btn-red" id="m-cli-btn" onclick="saveClient()">Guardar cliente</button>
     <button class="btn btn-sm danger" id="m-cli-del" onclick="deleteClient()" style="margin-top:8px;width:100%;display:none">Eliminar cliente</button>
@@ -615,7 +680,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // CONFIG & DEBUG
 // ═══════════════════════════════════════════════
 const DEBUG = true;
-const APP_VERSION = 'v2.4.1-FASE2.1.1';
+const APP_VERSION = 'v2.5.0-FASE2.2B';
 const SURL = 'https://jczmupcmeixpwjedfgtk.supabase.co';
 const SKEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impjem11cGNtZWl4cHdqZWRmZ3RrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY5NzMxOTMsImV4cCI6MjA5MjU0OTE5M30.DuICC_pCQGv27lZivieXRRvGz9A1GNkgmhvTvyKo25o';
 var sb = null; // initialized in init()
@@ -752,6 +817,182 @@ async function getUsersWithPerm(key) {
     logR('GET_USERS_PERM_ERR', {key: key, msg: e.message}, 'warn');
     return [];
   }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// FASE 2.2.B: MARCAS Y MODELOS DE VEHICULOS (Chile 2026)
+// ═══════════════════════════════════════════════════════════════
+// Lista basada en el Google Form actual del taller (47 marcas) + agregadas
+// las que faltaban relevantes en Chile: Tesla, BYD, Lexus, Iveco, Hino,
+// Scania, Alfa Romeo, Cadillac, etc. El usuario puede tipear modelo libre
+// si no aparece en las sugerencias.
+const VEHICLE_BRANDS = {
+  'ALFA ROMEO': ['Giulia','Stelvio','Tonale','Giulietta'],
+  'AUDI': ['A1','A3','A4','A5','A6','A7','A8','Q2','Q3','Q5','Q7','Q8','e-tron','RS3','RS6','S3','S5','TT'],
+  'BAIC': ['X35','X55','X7','BJ40','BJ80','U5','D20'],
+  'BMW': ['Serie 1','Serie 2','Serie 3','Serie 4','Serie 5','Serie 7','X1','X2','X3','X4','X5','X6','X7','M2','M3','M4','M5','Z4','i3','i4','i7','iX'],
+  'BYD': ['Atto 3','Dolphin','Seal','Han','Tang','Yuan Plus','Song Plus','F0'],
+  'CADILLAC': ['Escalade','XT4','XT5','CT5'],
+  'CHANGAN': ['CS15','CS35 Plus','CS55','CS75 Plus','CS85','CS95','Alsvin','Eado','Hunter'],
+  'CHERY': ['QQ','Tiggo 2','Tiggo 3','Tiggo 4','Tiggo 7','Tiggo 8','Arrizo 5','Arrizo 6','Tiggo 8 Pro'],
+  'CHEVROLET': ['Spark','Sail','Aveo','Cruze','Sonic','Onix','Tracker','Captiva','Equinox','Tahoe','Suburban','S10','Silverado','Colorado','NPR','Trailblazer','Groove','Joy','Montana'],
+  'CITROEN': ['C3','C4','C4 Cactus','C5','C5 Aircross','Berlingo','Jumpy','Jumper'],
+  'DODGE': ['Journey','Charger','Challenger','Durango','RAM 1500','RAM 2500'],
+  'DONGFENG': ['AX3','AX4','AX5','AX7','S30','T6','ZNA Rich','Pickup','580'],
+  'DS': ['DS3','DS4','DS7'],
+  'FIAT': ['Mobi','Argo','Cronos','Strada','Toro','Ducato','Fiorino','500','Pulse'],
+  'FORD': ['Fiesta','Focus','Mondeo','EcoSport','Escape','Edge','Explorer','Expedition','Ranger','F-150','Transit','Mustang','Bronco','Territory','Maverick'],
+  'FOTON': ['Aumark','Tunland','Sauvana','Auman','View','TM5','TX'],
+  'FREIGHTLINER': ['Cascadia','Coronado','M2','Argosy'],
+  'GAC': ['GS3','GS4','GS5','GS8','M6','M8'],
+  'GEELY': ['Coolray','Tugella','Emgrand','Atlas','Monjaro','Okavango'],
+  'GREAT WALL': ['Wingle','Poer','Tank 300','Tank 500','Cannon'],
+  'HAVAL': ['H6','H9','Jolion','Dargo','F7','Jolion HEV'],
+  'HINO': ['300','500','700'],
+  'HONDA': ['City','Civic','Accord','Fit','HR-V','CR-V','Pilot','Odyssey','Ridgeline','BR-V','WR-V'],
+  'HYUNDAI': ['Accent','Elantra','Sonata','i10','i20','i30','Tucson','Santa Fe','Creta','Kona','H1','HR','H100','Palisade','Venue','Ioniq 5','Ioniq 6','Stargazer'],
+  'INTERNATIONAL': ['9200i','9800i','LoneStar','LT','RH','MV'],
+  'ISUZU': ['D-Max','MU-X','NPR','NQR','FRR','FVR','FXR'],
+  'IVECO': ['Daily','Eurocargo','Stralis','Trakker','S-Way','Tector'],
+  'JAC': ['J3','J4','J5','J7','S2','S3','S4','S7','T6','T8','X200','iEV7S'],
+  'JAGUAR': ['XE','XF','XJ','F-Pace','E-Pace','I-Pace','F-Type'],
+  'JCB': ['3CX','4CX','JS Series','Telehandler'],
+  'JEEP': ['Renegade','Compass','Cherokee','Grand Cherokee','Wrangler','Gladiator','Commander','Avenger'],
+  'JETOUR': ['X70','X70 Plus','X90','Dashing','T2'],
+  'JMC': ['Vigus','Boarding','N601','N800','Carrying'],
+  'KENWORTH': ['T880','T800','W900','T680','T370'],
+  'KIA': ['Picanto','Rio','Cerato','Sportage','Sorento','Soul','Carnival','Stonic','Seltos','Frontier','K2700','Niro','EV6','Carens','Stinger'],
+  'LAND ROVER': ['Defender','Discovery','Discovery Sport','Range Rover','Range Rover Sport','Range Rover Evoque','Range Rover Velar'],
+  'LEXUS': ['IS','ES','LS','UX','NX','RX','GX','LX','LC','RC','RZ'],
+  'MAHINDRA': ['Pik Up','XUV300','XUV500','XUV700','Scorpio','Bolero'],
+  'MAXUS': ['T60','T70','T90','D60','D90','V80','G10','eDeliver 3'],
+  'MAZDA': ['Mazda 2','Mazda 3','Mazda 6','CX-3','CX-30','CX-5','CX-9','CX-50','CX-60','CX-90','BT-50','MX-5'],
+  'MERCEDES BENZ': ['Clase A','Clase B','Clase C','Clase E','Clase S','GLA','GLB','GLC','GLE','GLS','Sprinter','Vito','Citan','Actros','Atego','Axor','EQS','EQA','EQB','EQC','EQE'],
+  'MG': ['MG3','MG5','MG6','ZS','HS','RX5','EHS','ZS EV','MG4','Marvel R'],
+  'MINI': ['Cooper','Cooper S','Countryman','Clubman','John Cooper Works','Electric'],
+  'MITSUBISHI': ['Mirage','Lancer','Outlander','ASX','Eclipse Cross','Montero','L200','Pajero','Triton','Xpander'],
+  'NISSAN': ['March','Versa','Sentra','Altima','Note','Juke','Qashqai','X-Trail','Pathfinder','Patrol','NP300','Frontier','Navara','Terrano','Kicks','Leaf','Magnite','Townstar'],
+  'OPEL': ['Astra','Corsa','Insignia','Mokka','Crossland','Grandland','Combo'],
+  'PEUGEOT': ['208','301','308','408','508','2008','3008','5008','Partner','Expert','Boxer','Rifter','e-208'],
+  'PORSCHE': ['911','718 Cayman','718 Boxster','Taycan','Panamera','Cayenne','Macan'],
+  'RAM': ['1500','2500','3500','700','1000','ProMaster'],
+  'RENAULT': ['Kwid','Logan','Sandero','Symbol','Megane','Duster','Captur','Koleos','Oroch','Master','Kangoo','Stepway','Triber','Kiger'],
+  'SAMSUNG': ['SM3','SM5','SM7','QM3','QM5','QM6'],
+  'SCANIA': ['P Series','R Series','S Series','G Series','XT Series'],
+  'SEAT': ['Ibiza','Leon','Arona','Ateca','Tarraco','Toledo'],
+  'SKODA': ['Fabia','Octavia','Superb','Kamiq','Karoq','Kodiaq','Scala'],
+  'SSANGYONG': ['Tivoli','Korando','Rexton','Musso','Actyon','Stavic','Torres'],
+  'SUBARU': ['Impreza','Legacy','XV','Forester','Outback','Crosstrek','BRZ','WRX','Ascent','Solterra'],
+  'SUZUKI': ['Swift','Baleno','Celerio','Alto','S-Presso','Vitara','Grand Vitara','Jimny','S-Cross','Ertiga','Carry','APV','Fronx'],
+  'TESLA': ['Model 3','Model Y','Model S','Model X','Cybertruck','Roadster'],
+  'TOYOTA': ['Yaris','Corolla','Camry','Hilux','Land Cruiser','Land Cruiser Prado','RAV4','4Runner','Avanza','Etios','Hiace','Fortuner','Tacoma','Tundra','C-HR','Corolla Cross','Yaris Cross','Highlander','Sequoia','Coaster','Dyna','Hino'],
+  'VOLKSWAGEN': ['Gol','Voyage','Polo','Vento','Jetta','Passat','Golf','Tiguan','T-Cross','Touareg','Amarok','Saveiro','Crafter','Virtus','Nivus','Taos','Atlas'],
+  'VOLVO': ['V40','V60','S60','S90','XC40','XC60','XC90','EX30','C40','FH','FM','FMX','FE','FL'],
+  'ZEEKR': ['001','009','X','007']
+};
+
+// ═══════════════════════════════════════════════════════════════
+// FASE 2.2.B: COMPROBACIONES (matchea el Google Form actual)
+// ═══════════════════════════════════════════════════════════════
+const VEHICLE_CHECKS_INTERIOR = [
+  {key:'tapiceria_rajada',     label:'Tapicería rajada'},
+  {key:'sombrillas_buenas',    label:'Sombrillas en buen estado'},
+  {key:'radio',                label:'Tiene radio'},
+  {key:'gomas_piso',           label:'Tiene todas sus gomas de piso'},
+  {key:'cinturones_ok',        label:'Cinturones de seguridad funcionales'},
+  {key:'dinero_interior',      label:'Contiene dinero al interior'},
+  {key:'tag',                  label:'Tiene TAG'},
+  {key:'cargador_usb',         label:'Tiene cargador USB / soporte teléfono'},
+  {key:'documentos_dia',       label:'Documentos al día al interior'},
+  {key:'kit_seguridad',        label:'Kit de seguridad completo'},
+  {key:'chaleco_reflectante',  label:'Chaleco reflectante'},
+  {key:'check_engine',         label:'Check engine encendido'},
+  {key:'plasticos_rotos',      label:'Plásticos o accesorios rotos'}
+];
+const VEHICLE_CHECKS_EXTERIOR = [
+  {key:'retrovisores_ok',      label:'Retrovisores en buen estado'},
+  {key:'llantas_ok',           label:'Llantas en buen estado'},
+  {key:'abolladuras',          label:'Abolladuras, rayas o choques'},
+  {key:'rayas_pintura',        label:'Rayas en su pintura'},
+  {key:'parabrisas_dano',      label:'Parabrisas tiene daños'},
+  {key:'insignias_ok',         label:'Tiene todas sus insignias de marca'},
+  {key:'neumaticos_ok',        label:'Neumáticos en buen estado'},
+  {key:'molduras_falta',       label:'Faltan molduras u otros de carrocería'},
+  {key:'antena_ok',            label:'Antena correspondiente'},
+  {key:'manillas_ok',          label:'Manillas en buen estado (incl. portalón)'},
+  {key:'tuercas_rueda',        label:'Tiene todas sus tuercas de rueda'}
+];
+
+// 5 vistas de fotos del vehiculo
+const VEHICLE_PHOTOS = [
+  {key:'frente',          label:'Frente del vehículo'},
+  {key:'costado_piloto',  label:'Costado piloto'},
+  {key:'trasera',         label:'Parte trasera'},
+  {key:'costado_copiloto',label:'Costado copiloto'},
+  {key:'tablero',         label:'Tablero (motor encendido)'}
+];
+
+// ═══════════════════════════════════════════════════════════════
+// FASE 2.2.B: VALIDACION PATENTE CHILENA
+// ═══════════════════════════════════════════════════════════════
+// Acepta dos formatos:
+//   - Moderna (vehículos matriculados desde 2007): 4 letras + 2 números
+//     ej "BJKR18" o "BJKR-18". Format display: "BJ·KR·18".
+//   - Antigua: 2 letras + 4 números
+//     ej "AB1234". Format display: "AB·1234".
+// Internamente la guardamos sin separadores.
+function validatePlate(raw) {
+  if (!raw) return {valid: false, formatted: '', clean: '', error: 'Patente vacía'};
+  var clean = String(raw).toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (clean.length === 0) return {valid: false, formatted: '', clean: '', error: 'Patente vacía'};
+  if (clean.length !== 6) return {valid: false, formatted: clean, clean: clean, error: 'Debe tener 6 caracteres (tienes ' + clean.length + ')'};
+  if (/^[A-Z]{4}[0-9]{2}$/.test(clean)) {
+    return {valid: true, clean: clean, formatted: clean.slice(0,2) + '·' + clean.slice(2,4) + '·' + clean.slice(4), type: 'moderna'};
+  }
+  if (/^[A-Z]{2}[0-9]{4}$/.test(clean)) {
+    return {valid: true, clean: clean, formatted: clean.slice(0,2) + '·' + clean.slice(2), type: 'antigua'};
+  }
+  return {valid: false, formatted: clean, clean: clean, error: 'Formato no válido (esperado: 4 letras+2 nº o 2 letras+4 nº)'};
+}
+
+// ═══════════════════════════════════════════════════════════════
+// FASE 2.2.B: COMPRESION DE FOTOS PARA UPLOAD
+// ═══════════════════════════════════════════════════════════════
+// Los celulares mandan fotos de 5-10MB que tardan demasiado en subir y
+// llenan el bucket. Las bajamos a max 1.5MB redimensionando a 1600px lado
+// largo y bajando calidad JPEG iterativamente. Devuelve un Blob.
+function compressImage(file, opts) {
+  opts = opts || {};
+  var maxBytes = opts.maxBytes || (1.5 * 1024 * 1024);
+  var maxDim = opts.maxDim || 1600;
+  return new Promise(function(resolve, reject) {
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      var img = new Image();
+      img.onload = function() {
+        var w = img.width, h = img.height;
+        var scale = Math.min(1, maxDim / Math.max(w, h));
+        var canvas = document.createElement('canvas');
+        canvas.width = Math.round(w * scale);
+        canvas.height = Math.round(h * scale);
+        var ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        var quality = 0.85;
+        function tryAt(q) {
+          canvas.toBlob(function(blob) {
+            if (!blob) { reject(new Error('toBlob fallo')); return; }
+            if (blob.size <= maxBytes || q <= 0.4) resolve(blob);
+            else tryAt(Math.max(0.4, q - 0.1));
+          }, 'image/jpeg', q);
+        }
+        tryAt(quality);
+      };
+      img.onerror = function(){ reject(new Error('No se pudo leer la imagen')); };
+      img.src = e.target.result;
+    };
+    reader.onerror = function(){ reject(new Error('FileReader fallo')); };
+    reader.readAsDataURL(file);
+  });
 }
 
 // Helper para deshabilitar un boton/select segun permiso. Visual: opacidad + cursor + tooltip.
@@ -4385,6 +4626,15 @@ async function openUserModal(uid) {
   openModal('m-create-user');
 }
 
+// FASE 2.2.B: hook llamado desde openClientModal para preparar el bloque ingreso
+function setupIngresoBlock() {
+  buildBrandsDropdown();
+  buildCheckboxes();
+  buildPhotosGrid();
+  resetIngresoBlock();
+  toggleClientFieldsLock(false);
+}
+
 // Render checkboxes de permisos en el modal (FASE 2.1)
 function renderPermsCheckboxes(currentPerms) {
   currentPerms = currentPerms || {};
@@ -4738,6 +4988,11 @@ async function openClientModal(cid) {
     selectClientType('persona');
   }
   document.getElementById('m-cli-rut-hint').textContent = '';
+
+  // FASE 2.2.B: preparar bloque ingreso (vehiculo + checks + fotos) si corresponde
+  setupIngresoBlock();
+  toggleIngresoBlock(isIngreso && !cid); // solo en modo ingreso y al CREAR (editar cliente no muestra vehiculo)
+
   openModal('m-client');
 }
 
@@ -4788,6 +5043,7 @@ async function saveClient() {
   var err = document.getElementById('m-cli-err');
   var btn = document.getElementById('m-cli-btn');
   err.style.display = 'none';
+  var isIngreso = _clientsViewMode === 'ingreso' && !_editClientId; // solo modo ingreso al CREAR
 
   var type   = _selClientType;
   var name   = document.getElementById('m-cli-name').value.trim();
@@ -4797,59 +5053,357 @@ async function saveClient() {
   var phone  = document.getElementById('m-cli-phone').value.trim();
   var notes  = document.getElementById('m-cli-notes').value.trim();
 
-  // Validaciones
-  if (!type) { err.textContent = 'Selecciona el tipo de cliente'; err.style.display='block'; return; }
-  if (!name) { err.textContent = 'El nombre es obligatorio'; err.style.display='block'; return; }
-  if (!phone) { err.textContent = 'El telefono es obligatorio'; err.style.display='block'; return; }
-  if (type === 'persona' && !rut) { err.textContent = 'Para persona, el RUT es obligatorio'; err.style.display='block'; return; }
-  if (rut) {
-    var v = validateRut(rut);
-    if (!v.valid) { err.textContent = 'RUT invalido: ' + v.error; err.style.display='block'; return; }
-    rut = v.formatted;
+  // ─── Validación cliente ───
+  if (!_ingExistingSelectedId) {
+    if (!type) { err.textContent = 'Selecciona el tipo de cliente'; err.style.display='block'; return; }
+    if (!name) { err.textContent = 'El nombre es obligatorio'; err.style.display='block'; return; }
+    if (!phone) { err.textContent = 'El teléfono es obligatorio'; err.style.display='block'; return; }
+    if (type === 'persona' && !rut) { err.textContent = 'Para persona, el RUT es obligatorio'; err.style.display='block'; return; }
+    if (rut) {
+      var v = validateRut(rut);
+      if (!v.valid) { err.textContent = 'RUT inválido: ' + v.error; err.style.display='block'; return; }
+      rut = v.formatted;
+    }
+    if (email && email.indexOf('@') === -1) { err.textContent = 'Correo inválido'; err.style.display='block'; return; }
   }
-  if (email && email.indexOf('@') === -1) { err.textContent = 'Correo invalido'; err.style.display='block'; return; }
+
+  // ─── Validación vehículo (solo en modo ingreso) ───
+  var vehBrand = '', vehModel = '', vehPlate = '', vehKm = null, vehComments = '';
+  var vehChecks = {};
+  if (isIngreso) {
+    vehBrand = document.getElementById('m-veh-brand').value;
+    vehModel = document.getElementById('m-veh-model').value.trim().toUpperCase();
+    vehPlate = document.getElementById('m-veh-plate').value;
+    vehKm    = document.getElementById('m-veh-km').value ? parseInt(document.getElementById('m-veh-km').value, 10) : null;
+    vehComments = document.getElementById('m-veh-comments').value.trim();
+
+    if (!vehBrand) { err.textContent = 'Selecciona la marca del vehículo'; err.style.display='block'; return; }
+    if (!vehModel) { err.textContent = 'Indica el modelo del vehículo'; err.style.display='block'; return; }
+    var pv = validatePlate(vehPlate);
+    if (!pv.valid) { err.textContent = 'Patente inválida: ' + pv.error; err.style.display='block'; return; }
+    vehPlate = pv.clean; // sin separadores para BD
+    if (vehKm == null || isNaN(vehKm) || vehKm < 0) { err.textContent = 'Indica el kilometraje de entrada'; err.style.display='block'; return; }
+
+    // Recolectar checks marcados
+    document.querySelectorAll('#m-veh-checks-int input[type=checkbox], #m-veh-checks-ext input[type=checkbox]').forEach(function(cb) {
+      vehChecks[cb.dataset.checkKey] = cb.checked;
+    });
+
+    // Validar al menos foto frente y patente (foto de tablero se sugiere pero no se bloquea)
+    if (!_ingPhotosBlobs.frente) { err.textContent = 'Falta la foto del frente del vehículo'; err.style.display='block'; return; }
+  }
 
   btn.innerHTML = '<span class="spin"></span> Guardando...'; btn.disabled = true;
 
-  var payload = {
-    client_type: type,
-    name: name,
-    rut: rut || null,
-    birth_date: (type === 'persona' ? birth : null),
-    email: email || null,
-    phone: phone,
-    notes: notes || null,
-    updated_by: CU ? CU.id : null
-  };
+  var clientId = _ingExistingSelectedId || _editClientId;
+  var error = null;
 
-  var error;
+  // ─── 1) Crear o actualizar cliente ───
   try {
-    if (_editClientId) {
+    if (_ingExistingSelectedId) {
+      // Cliente existente: no tocar sus datos
+      logR('SAVE_INGRESO_REUSE_CLIENT', {clientId: clientId});
+    } else if (_editClientId) {
+      var payload = {
+        client_type: type, name: name, rut: rut || null,
+        birth_date: (type === 'persona' ? birth : null),
+        email: email || null, phone: phone, notes: notes || null,
+        updated_by: CU ? CU.id : null
+      };
       var r = await sb.from('clients').update(payload).eq('id', _editClientId);
-      error = r.error;
+      if (r.error) error = r.error;
     } else {
-      payload.created_by = CU ? CU.id : null;
-      var r2 = await sb.from('clients').insert(payload);
-      error = r2.error;
+      var payloadIns = {
+        client_type: type, name: name, rut: rut || null,
+        birth_date: (type === 'persona' ? birth : null),
+        email: email || null, phone: phone, notes: notes || null,
+        created_by: CU ? CU.id : null, updated_by: CU ? CU.id : null
+      };
+      var r2 = await sb.from('clients').insert(payloadIns).select('id').single();
+      if (r2.error) error = r2.error; else clientId = r2.data.id;
     }
-  } catch(e) {
-    error = {message: 'Excepcion: ' + (e && e.message ? e.message : String(e))};
-  }
-  logR('SAVE_CLIENT', {edit: !!_editClientId, error: error ? error.message : null});
+  } catch(e) { error = {message: 'Excepción al guardar cliente: ' + (e && e.message ? e.message : String(e))}; }
 
-  btn.innerHTML = 'Guardar cliente'; btn.disabled = false;
   if (error) {
-    err.textContent = 'Error al guardar: ' + (error.message || 'desconocido');
+    btn.innerHTML = isIngreso ? 'Registrar ingreso' : 'Guardar cliente'; btn.disabled = false;
+    err.textContent = 'Error al guardar cliente: ' + (error.message || 'desconocido');
     err.style.display = 'block';
     return;
   }
 
+  // ─── 2) Si es ingreso, subir fotos y crear vehículo ───
+  if (isIngreso && clientId) {
+    btn.innerHTML = '<span class="spin"></span> Subiendo fotos...';
+    var photoUrls = {};
+    try {
+      var ts = Date.now();
+      for (var i = 0; i < VEHICLE_PHOTOS.length; i++) {
+        var pkey = VEHICLE_PHOTOS[i].key;
+        var blob = _ingPhotosBlobs[pkey];
+        if (!blob) continue;
+        var path = clientId + '/' + ts + '_' + pkey + '.jpg';
+        var up = await sb.storage.from('vehicle-photos').upload(path, blob, {
+          upsert: true, contentType: 'image/jpeg'
+        });
+        if (up.error) {
+          throw new Error('Foto ' + pkey + ': ' + up.error.message);
+        }
+        var pub = sb.storage.from('vehicle-photos').getPublicUrl(path);
+        photoUrls[pkey] = pub.data.publicUrl;
+      }
+    } catch(e) {
+      btn.innerHTML = 'Registrar ingreso'; btn.disabled = false;
+      err.textContent = 'Error subiendo fotos: ' + e.message + '\n\nVerifica que el bucket "vehicle-photos" tenga policies de upload (script SQL incluido en la entrega).';
+      err.style.display = 'block';
+      return;
+    }
+
+    btn.innerHTML = '<span class="spin"></span> Guardando vehículo...';
+    try {
+      var vehPayload = {
+        client_id: clientId,
+        brand: vehBrand,
+        model: vehModel,
+        plate: vehPlate,
+        km_entry: vehKm,
+        comprobaciones: vehChecks,
+        photos: photoUrls,
+        comments: vehComments || null,
+        created_by: CU ? CU.id : null
+      };
+      var rv = await sb.from('client_vehicles').insert(vehPayload);
+      if (rv.error) throw new Error(rv.error.message);
+    } catch(e) {
+      btn.innerHTML = 'Registrar ingreso'; btn.disabled = false;
+      err.textContent = 'Error al guardar vehículo: ' + e.message;
+      err.style.display = 'block';
+      return;
+    }
+  }
+
+  logR('SAVE_INGRESO_OK', {clientId: clientId, isIngreso: isIngreso, edited: !!_editClientId, reused: !!_ingExistingSelectedId});
+
+  btn.innerHTML = isIngreso ? 'Registrar ingreso' : 'Guardar cliente'; btn.disabled = false;
   closeModal('m-client');
   if (curBossTab === 'b-clientes' || curBossTab === 'b-ingreso') {
     await loadClients();
   }
-  showGlobalError(_editClientId ? 'Cliente actualizado' : 'Cliente creado correctamente', 2500);
+  var msg = isIngreso ? 'Ingreso registrado correctamente' :
+            _editClientId ? 'Cliente actualizado' : 'Cliente creado correctamente';
+  showGlobalError(msg, 2500);
 }
+
+// ═══════════════════════════════════════════════════════════════
+// FASE 2.2.B: SECCION VEHICULO + COMPROBACIONES + FOTOS
+// ═══════════════════════════════════════════════════════════════
+// Estado interno del bloque "ingreso" del modal
+var _ingPhotosBlobs = {}; // { frente: Blob, costado_piloto: Blob, ... }
+var _ingExistingSelectedId = null; // id del cliente existente seleccionado del buscador
+
+// Llenar el dropdown de marcas (una vez al cargar la app)
+function buildBrandsDropdown() {
+  var sel = document.getElementById('m-veh-brand');
+  if (!sel) return;
+  if (sel.options.length > 1) return; // ya se construyó
+  Object.keys(VEHICLE_BRANDS).sort().forEach(function(brand) {
+    var o = document.createElement('option');
+    o.value = brand; o.textContent = brand;
+    sel.appendChild(o);
+  });
+}
+
+// Cuando cambia la marca, actualizar la lista de modelos sugeridos
+function onVehBrandChange() {
+  var brand = document.getElementById('m-veh-brand').value;
+  var dl = document.getElementById('m-veh-model-list');
+  if (!dl) return;
+  dl.innerHTML = '';
+  if (!brand || !VEHICLE_BRANDS[brand]) return;
+  VEHICLE_BRANDS[brand].forEach(function(m) {
+    var o = document.createElement('option');
+    o.value = m;
+    dl.appendChild(o);
+  });
+}
+
+// Renderizar checkboxes de comprobaciones interior y exterior
+function buildCheckboxes() {
+  var c1 = document.getElementById('m-veh-checks-int');
+  var c2 = document.getElementById('m-veh-checks-ext');
+  if (!c1 || !c2) return;
+  if (c1.children.length > 0) return; // ya construido
+  function render(list, container) {
+    container.innerHTML = list.map(function(c) {
+      return '<label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;user-select:none;padding:5px 6px;border:1px solid #eee;border-radius:3px;font-size:12px;line-height:1.3">'
+        + '<input type="checkbox" data-check-key="' + c.key + '" style="margin-top:2px;flex-shrink:0"/>'
+        + '<span>' + c.label + '</span></label>';
+    }).join('');
+  }
+  render(VEHICLE_CHECKS_INTERIOR, c1);
+  render(VEHICLE_CHECKS_EXTERIOR, c2);
+}
+
+// Renderizar las 5 cajas de upload de fotos
+function buildPhotosGrid() {
+  var grid = document.getElementById('m-veh-photos');
+  if (!grid) return;
+  if (grid.children.length > 0) return;
+  grid.innerHTML = VEHICLE_PHOTOS.map(function(p) {
+    return '<div data-photo-key="' + p.key + '" style="border:1.5px dashed var(--border2);border-radius:4px;padding:8px;text-align:center;background:var(--bg3);min-height:120px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;cursor:pointer;position:relative" onclick="document.getElementById(\'m-veh-photo-' + p.key + '\').click()">'
+      + '<div id="m-veh-photo-prev-' + p.key + '" style="font-size:28px;line-height:1">📷</div>'
+      + '<div style="font-size:10px;font-weight:700;color:var(--wh3);font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.04em">' + p.label + '</div>'
+      + '<div id="m-veh-photo-status-' + p.key + '" style="font-size:9px;color:var(--wh4);font-family:var(--mono)"></div>'
+      + '<input type="file" id="m-veh-photo-' + p.key + '" accept="image/*" capture="environment" style="display:none" onchange="onPhotoSelected(\'' + p.key + '\', this)"/>'
+      + '</div>';
+  }).join('');
+}
+
+// Cuando el usuario elige una foto: comprimir y guardarla en _ingPhotosBlobs + preview
+async function onPhotoSelected(key, input) {
+  if (!input.files || !input.files[0]) return;
+  var file = input.files[0];
+  var statusEl = document.getElementById('m-veh-photo-status-' + key);
+  var prevEl   = document.getElementById('m-veh-photo-prev-' + key);
+  if (file.size > 30 * 1024 * 1024) {
+    if (statusEl) { statusEl.textContent = '✗ Imagen muy grande (>30MB)'; statusEl.style.color = 'var(--red)'; }
+    return;
+  }
+  if (!file.type.startsWith('image/')) {
+    if (statusEl) { statusEl.textContent = '✗ No es imagen'; statusEl.style.color = 'var(--red)'; }
+    return;
+  }
+  if (statusEl) { statusEl.textContent = 'Comprimiendo...'; statusEl.style.color = 'var(--wh3)'; }
+  try {
+    var blob = await compressImage(file);
+    _ingPhotosBlobs[key] = blob;
+    var url = URL.createObjectURL(blob);
+    if (prevEl) prevEl.innerHTML = '<img src="' + url + '" style="max-width:100%;max-height:80px;border-radius:3px;object-fit:cover" alt=""/>';
+    if (statusEl) {
+      var kb = Math.round(blob.size / 1024);
+      statusEl.textContent = '✓ ' + kb + ' KB';
+      statusEl.style.color = 'var(--green)';
+    }
+  } catch(e) {
+    if (statusEl) { statusEl.textContent = '✗ Error: ' + e.message; statusEl.style.color = 'var(--red)'; }
+    logR('PHOTO_COMPRESS_ERR', {key: key, msg: e.message}, 'err');
+  }
+}
+
+// Resetear el bloque ingreso al abrir el modal en modo ingreso (nuevo)
+function resetIngresoBlock() {
+  _ingPhotosBlobs = {};
+  _ingExistingSelectedId = null;
+  document.getElementById('m-cli-existing-search').value = '';
+  document.getElementById('m-cli-existing-results').innerHTML = '';
+  document.getElementById('m-cli-existing-selected').style.display = 'none';
+  document.getElementById('m-veh-brand').value = '';
+  document.getElementById('m-veh-model').value = '';
+  document.getElementById('m-veh-plate').value = '';
+  document.getElementById('m-veh-plate-hint').textContent = '';
+  document.getElementById('m-veh-km').value = '';
+  document.getElementById('m-veh-comments').value = '';
+  // Reset checkboxes
+  document.querySelectorAll('#m-veh-checks-int input[type=checkbox], #m-veh-checks-ext input[type=checkbox]').forEach(function(cb){ cb.checked = false; });
+  // Reset photo previews
+  VEHICLE_PHOTOS.forEach(function(p) {
+    var prev = document.getElementById('m-veh-photo-prev-' + p.key);
+    var st   = document.getElementById('m-veh-photo-status-' + p.key);
+    var inp  = document.getElementById('m-veh-photo-' + p.key);
+    if (prev) prev.innerHTML = '📷';
+    if (st)   { st.textContent = ''; st.style.color = 'var(--wh4)'; }
+    if (inp)  inp.value = '';
+  });
+  onVehBrandChange();
+}
+
+// Mostrar/ocultar el bloque ingreso completo
+function toggleIngresoBlock(visible) {
+  var block = document.getElementById('m-cli-ingreso-block');
+  var existing = document.getElementById('m-cli-existing-wrap');
+  if (block) block.style.display = visible ? '' : 'none';
+  if (existing) existing.style.display = visible ? '' : 'none';
+}
+
+// ─── Búsqueda de cliente existente ───
+function onExistingClientSearch(q) {
+  var resultsEl = document.getElementById('m-cli-existing-results');
+  if (!resultsEl) return;
+  q = (q || '').trim().toUpperCase();
+  if (q.length < 2) { resultsEl.innerHTML = ''; return; }
+  var matches = _clientsCache.filter(function(c) {
+    return (c.name || '').toUpperCase().indexOf(q) !== -1
+        || (c.rut || '').toUpperCase().indexOf(q) !== -1
+        || (c.phone || '').indexOf(q) !== -1;
+  }).slice(0, 8);
+  if (matches.length === 0) {
+    resultsEl.innerHTML = '<div style="font-size:11px;color:var(--wh4);padding:6px">Sin coincidencias - completa el formulario para crear nuevo</div>';
+    return;
+  }
+  resultsEl.innerHTML = matches.map(function(c) {
+    return '<div onclick="selectExistingClient(\'' + c.id + '\')" style="padding:6px 8px;border:1px solid #ddd;border-radius:3px;background:#fff;margin-bottom:4px;cursor:pointer;font-size:12px">'
+      + '<div style="font-weight:700">' + escapeHtml(c.name) + '</div>'
+      + '<div style="font-size:10px;color:var(--wh3)">' + (c.rut ? escapeHtml(c.rut) : 'Sin RUT') + ' · ' + escapeHtml(c.phone || '') + '</div>'
+      + '</div>';
+  }).join('');
+}
+
+function selectExistingClient(cid) {
+  var c = _clientsCache.find(function(x){ return x.id === cid; });
+  if (!c) return;
+  _ingExistingSelectedId = cid;
+  // Autollenar campos del cliente y deshabilitarlos
+  document.getElementById('m-cli-id').value      = c.id;
+  document.getElementById('m-cli-name').value    = c.name || '';
+  document.getElementById('m-cli-rut').value     = c.rut  || '';
+  document.getElementById('m-cli-birth').value   = c.birth_date || '';
+  document.getElementById('m-cli-email').value   = c.email || '';
+  document.getElementById('m-cli-phone').value   = c.phone || '';
+  document.getElementById('m-cli-notes').value   = c.notes || '';
+  selectClientType(c.client_type || 'persona');
+  toggleClientFieldsLock(true);
+  document.getElementById('m-cli-existing-results').innerHTML = '';
+  document.getElementById('m-cli-existing-search').value = '';
+  var sel = document.getElementById('m-cli-existing-selected');
+  document.getElementById('m-cli-existing-selected-text').innerHTML = 'Cliente seleccionado: <strong>' + escapeHtml(c.name) + '</strong> (' + escapeHtml(c.rut || c.phone || '') + ')';
+  sel.style.display = '';
+}
+
+function clearExistingClient() {
+  _ingExistingSelectedId = null;
+  document.getElementById('m-cli-existing-selected').style.display = 'none';
+  toggleClientFieldsLock(false);
+  ['m-cli-name','m-cli-rut','m-cli-birth','m-cli-email','m-cli-phone','m-cli-notes'].forEach(function(id){
+    var el = document.getElementById(id); if (el) el.value = '';
+  });
+  selectClientType('persona');
+}
+
+function toggleClientFieldsLock(locked) {
+  ['m-cli-name','m-cli-rut','m-cli-birth','m-cli-email','m-cli-phone','m-cli-notes'].forEach(function(id){
+    var el = document.getElementById(id); if (el) el.disabled = locked;
+  });
+  document.querySelectorAll('#m-client [data-cli-type]').forEach(function(b){ b.disabled = locked; b.style.opacity = locked ? '0.5' : ''; });
+}
+
+// Live check de patente
+function plateLiveCheck(el) {
+  var raw = el.value;
+  var hint = document.getElementById('m-veh-plate-hint');
+  if (!hint) return;
+  if (!raw) { hint.textContent = ''; return; }
+  var v = validatePlate(raw);
+  if (v.valid) {
+    el.value = v.formatted;
+    hint.textContent = '✓ Patente ' + v.type + ' válida';
+    hint.style.color = 'var(--green)';
+  } else {
+    hint.textContent = '✗ ' + v.error;
+    hint.style.color = 'var(--red)';
+  }
+}
+document.addEventListener('blur', function(ev){
+  if (ev.target && ev.target.id === 'm-veh-plate') plateLiveCheck(ev.target);
+}, true);
 
 async function deleteClient() {
   if (!_editClientId) return;
