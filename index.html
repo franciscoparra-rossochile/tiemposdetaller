@@ -869,7 +869,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // CONFIG & DEBUG
 // ═══════════════════════════════════════════════
 const DEBUG = true;
-const APP_VERSION = 'v2.7.OPS-3changes';
+const APP_VERSION = 'v2.7.OPS-3changes-fix';
 const SURL = 'https://jczmupcmeixpwjedfgtk.supabase.co';
 const SKEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impjem11cGNtZWl4cHdqZWRmZ3RrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY5NzMxOTMsImV4cCI6MjA5MjU0OTE5M30.DuICC_pCQGv27lZivieXRRvGz9A1GNkgmhvTvyKo25o';
 var sb = null; // initialized in init()
@@ -5485,20 +5485,10 @@ var _histSelected = {};
 async function renderBossHist(body) {
   body.innerHTML = '<div class="empty"><span class="spin"></span>Cargando...</div>';
   var {data} = await sb.from('history').select('*').order('ended_at',{ascending:false}).limit(200);
-  // Cargar checklists de cada sesión (best-effort)
-  var checklistsByKey = {};
-  try {
-    var keys = (data || []).map(function(h){ return 'history_' + h.id; });
-    if (keys.length) {
-      var rck = await sb.from('service_checklists').select('*');
-      if (rck && rck.data) {
-        rck.data.forEach(function(ck){ checklistsByKey[ck.session_key] = ck; });
-      }
-    }
-  } catch(_){}
-
+  // FASE 2.7 FIX: el checklist YA viene como columna JSON en cada fila de history.
+  // No hay que joinear con service_checklists (esa tabla guarda lo mismo pero es secundaria).
   _histData = (data || []).map(function(h){
-    h._checklist = checklistsByKey[h.session_key] || null;
+    h._checklist = h.checklist || null;
     return h;
   });
   _histSelected = {};
