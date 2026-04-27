@@ -816,7 +816,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // CONFIG & DEBUG
 // ═══════════════════════════════════════════════
 const DEBUG = true;
-const APP_VERSION = 'v2.9.2-visado+sched-resilient';
+const APP_VERSION = 'v2.2.QA-STABLE';
 const SURL = 'https://jczmupcmeixpwjedfgtk.supabase.co';
 const SKEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impjem11cGNtZWl4cHdqZWRmZ3RrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY5NzMxOTMsImV4cCI6MjA5MjU0OTE5M30.DuICC_pCQGv27lZivieXRRvGz9A1GNkgmhvTvyKo25o';
 var sb = null; // initialized in init()
@@ -857,6 +857,12 @@ function logR(l,d,lv){
   else if (lv === 'warn' || lv === 'w') console.warn(prefix, l, d || '');
   else if (DEBUG) console.log(prefix, l, d || '');
 }
+
+// QA-STABLE: stubs para handlers legacy del HTML que nunca llegaron a implementarse.
+// Sin estos, el click producía "X is not defined" y rompía la app.
+window.pickRadioD = window.pickRadioD || function(){ showGlobalError('Modal antiguo no disponible.', 4000); };
+window.submitComment = window.submitComment || function(){ showGlobalError('Modal antiguo no disponible.', 4000); };
+window.submitDeferredChecklist = window.submitDeferredChecklist || function(){ showGlobalError('Checklist diferido no disponible.', 4000); };
 
 // ═══════════════════════════════════════════════
 // FASE 2.1: AUTO-UPPERCASE GLOBAL
@@ -1880,6 +1886,10 @@ function renderUI(forceText) {
 }
 
 function initSupabase() {
+  // QA-STABLE: SINGLETON. Si ya hay un cliente válido, no recrear (evita conexiones duplicadas).
+  if (sb && typeof sb.from === 'function' && _supabaseReady) {
+    return {ok: true, cached: true};
+  }
   try {
     if (typeof supabase === 'undefined' || !supabase || typeof supabase.createClient !== 'function') {
       _connState = 'sdk_fail';
@@ -1976,6 +1986,12 @@ function armSkipButton() {
 }
 
 function init() {
+  // QA-STABLE: guard contra re-entry. Si ya se ejecutó, ignorar.
+  if (window.__rossoInitFired) {
+    logR('INIT_SKIP', {reason: 'already_fired'}, 'warn');
+    return;
+  }
+  window.__rossoInitFired = true;
   console.log('[INIT] START', APP_VERSION);
   setLoadStatus('Iniciando', APP_VERSION);
   armSkipButton();
@@ -2869,7 +2885,7 @@ function applyAssign(service, plate) {
 
 async function doStartSession() {
   var srv = SRVS.find(function(s) { return s.name === selSrv; });
-  if (!srv) { alert('Selecciona un servicio'); return; }
+  if (!srv) { showGlobalError('Selecciona un servicio', 5000); return; }
 
   // Servicios con noPlate (actividades operativas) -> patente automatica.
   // Resto de servicios (incluido Lavado) -> patente manual requerida.
@@ -2879,12 +2895,12 @@ async function doStartSession() {
     // input no sincronizado con selPlate, etc.
     selPlate = 'Logistica de taller';
   } else {
-    if (!selPlate || selPlate.length < 4) { alert('Patente invalida (minimo 4 caracteres)'); return; }
+    if (!selPlate || selPlate.length < 4) { showGlobalError('Patente invalida (minimo 4 caracteres)', 5000); return; }
   }
 
   // Allow multiple paused - only block if one is RUNNING
   var running = liveData.find(function(s) { return s.username === CU.username && s.status === 'running'; });
-  if (running) { alert('Ya tienes un servicio en curso: ' + running.service + '\nPausalo antes de iniciar otro.'); return; }
+  if (running) { showGlobalError('Ya tienes un servicio en curso: ' + running.service + '\nPausalo antes de iniciar otro.', 5000); return; }
 
   var label = selSub ? (selSrv + ' - ' + selSub) : (selDesc ? (selSrv + ' - ' + selDesc) : selSrv);
   var goal = (srv && srv.subGoals && selSub) ? srv.subGoals[selSub] : (srv ? srv.goal : null);
@@ -2911,9 +2927,9 @@ async function doStartSession() {
   logR('INSERT_SESSION_PAYLOAD', payload);
   
   // Validate
-  if (!payload.session_key) { alert('Error: session_key faltante'); return; }
-  if (!payload.technician) { alert('Error: technician faltante'); return; }
-  if (!payload.service) { alert('Error: service faltante'); return; }
+  if (!payload.session_key) { showGlobalError('Error: session_key faltante', 5000); return; }
+  if (!payload.technician) { showGlobalError('Error: technician faltante', 5000); return; }
+  if (!payload.service) { showGlobalError('Error: service faltante', 5000); return; }
   
   var btn = document.getElementById('ini-btn');
   btn.innerHTML = '<span class="spin"></span> Iniciando...'; btn.disabled = true;
@@ -2923,7 +2939,7 @@ async function doStartSession() {
   
   if (error) {
     btn.innerHTML = 'Iniciar cronometro'; btn.disabled = false;
-    alert('Error al iniciar sesion:\n' + error.message + '\nCodigo: ' + (error.code || 'N/A'));
+    showGlobalError('Error al iniciar sesion:\n' + error.message + '\nCodigo: ' + (error.code || 'N/A'), 5000);
     return;
   }
   
@@ -3033,7 +3049,7 @@ async function confirmPrioridadPause() {
   var txt = document.getElementById('pr-text');
   var nueva = (txt && txt.value || '').trim();
   if (!nueva || nueva.length < 3) {
-    alert('Describe cual es la nueva prioridad (minimo 3 caracteres)');
+    showGlobalError('Describe cual es la nueva prioridad (minimo 3 caracteres)', 5000);
     return;
   }
   closeModal('m-prioridad');
@@ -3055,7 +3071,7 @@ async function confirmPause(reason) {
       T.pauses = myRunning.pauses || [];
       T.plate = myRunning.plate || '';
     } else {
-      alert('No hay sesion activa para pausar');
+      showGlobalError('No hay sesion activa para pausar', 5000);
       return;
     }
   }
@@ -3082,7 +3098,7 @@ async function confirmPause(reason) {
   }).eq('session_key', T.sessionKey);
 
   logR('PAUSE_RESULT', {error: error ? error.message : null});
-  if (error) { alert('Error al pausar: ' + error.message); return; }
+  if (error) { showGlobalError('Error al pausar: ' + error.message, 5000); return; }
 
   await pushNotif('pau', CU.name + ' pauso el servicio', T.srvLabel + ' - Motivo: ' + reason);
   await fetchLive();
@@ -3093,7 +3109,7 @@ async function doResume() {
   if (!T.sessionKey) {
     // Find session in liveData
     var mine = liveData.find(function(s) { return s.username === CU.username; });
-    if (!mine) { alert('No hay sesion activa'); return; }
+    if (!mine) { showGlobalError('No hay sesion activa', 5000); return; }
     T.sessionKey = mine.session_key;
     T.srvLabel = mine.service;
     T.srvGoal = mine.goal_minutes;
@@ -3129,7 +3145,7 @@ async function doResume() {
     updated_at: new Date().toISOString()
   }).eq('session_key', T.sessionKey);
   logR('RESUME_RESULT', {error: error ? error.message : null});
-  if (error) { alert('Error al reanudar: ' + error.message); return; }
+  if (error) { showGlobalError('Error al reanudar: ' + error.message, 5000); return; }
   await pushNotif('resume', CU.name + ' reanudo servicio', T.srvLabel);
   await fetchLive();
   techTab('t-nuevo');
@@ -3138,10 +3154,10 @@ async function doResume() {
 // Resume from a specific session key (used in Mis Servicios)
 async function resumeSession(sessionKey) {
   var sess = liveData.find(function(s) { return s.session_key === sessionKey; });
-  if (!sess) { alert('Sesion no encontrada'); return; }
+  if (!sess) { showGlobalError('Sesion no encontrada', 5000); return; }
   // Check no other session is running
   var running = liveData.find(function(s) { return s.username === CU.username && s.status === 'running' && s.session_key !== sessionKey; });
-  if (running) { alert('Tienes otro servicio en curso: ' + running.service + '\nPausalo primero.'); return; }
+  if (running) { showGlobalError('Tienes otro servicio en curso: ' + running.service + '\nPausalo primero.', 5000); return; }
   // Load into T
   T.sessionKey = sessionKey;
   T.srvLabel = sess.service;
@@ -3174,7 +3190,7 @@ async function resumeSession(sessionKey) {
     pauses: T.pauses,
     updated_at: new Date().toISOString()
   }).eq('session_key', sessionKey);
-  if (error) { alert('Error al reanudar: ' + error.message); return; }
+  if (error) { showGlobalError('Error al reanudar: ' + error.message, 5000); return; }
   await pushNotif('resume', CU.name + ' reanudo servicio', sess.service + ' - ' + (sess.plate||''));
   await fetchLive();
   techTab('t-nuevo');
@@ -3201,7 +3217,7 @@ function deferChecklistFromModal() {
 
 function openChecklist(sessionKey) {
   checklistForKey = sessionKey || T.sessionKey;
-  if (!checklistForKey) { alert('No hay sesion activa'); return; }
+  if (!checklistForKey) { showGlobalError('No hay sesion activa', 5000); return; }
   // Check if service needs checklist
   var sess = liveData.find(function(s) { return s.session_key === checklistForKey; });
   var srvName = sess ? sess.service : T.srvLabel;
@@ -3225,7 +3241,7 @@ function openChecklist(sessionKey) {
 
 async function deferChecklist(sessionKey) {
   var key = sessionKey || T.sessionKey;
-  if (!key) { alert('No hay sesion'); return; }
+  if (!key) { showGlobalError('No hay sesion', 5000); return; }
   var sess = liveData.find(function(s) { return s.session_key === key; });
   var srvName = sess ? sess.service : T.srvLabel;
   var plate = sess ? (sess.plate||'') : T.plate;
@@ -3255,7 +3271,7 @@ async function deferChecklist(sessionKey) {
     seconds: finalSec,                    // snapshot definitivo, ya no cambia
     updated_at: new Date().toISOString()
   }).eq('session_key', key);
-  if (error) { alert('Error al diferir checklist: ' + error.message); return; }
+  if (error) { showGlobalError('Error al diferir checklist: ' + error.message, 5000); return; }
   await pushNotif('checklist_pending', 'Checklist pendiente - ' + CU.name, srvName + ' - ' + plate + ' - Completar checklist requerido');
   await fetchLive();
   techTab('t-misservicios');
@@ -3322,7 +3338,7 @@ async function doFinish(checklist, sessionKey) {
     if (!useKey) {
       var mine = liveData.find(function(s) { return s.username === CU.username; });
       if (!mine) {
-        alert('No se encontro la sesion activa. Recarga la pagina.');
+        showGlobalError('No se encontro la sesion activa. Recarga la pagina.', 5000);
         return false;
       }
       useKey = mine.session_key;
@@ -3336,7 +3352,7 @@ async function doFinish(checklist, sessionKey) {
     if (!sess && (!T.sessionKey || T.sessionKey !== useKey || !T.srvLabel)) {
       logR('FINISH_NO_SESS_FOUND', {useKey: useKey, tKey: T.sessionKey}, 'warn');
       await fetchLive();
-      alert('La sesion ya no esta activa. Puede haber sido finalizada desde otro dispositivo. Revisa el Historial.');
+      showGlobalError('La sesion ya no esta activa. Puede haber sido finalizada desde otro dispositivo. Revisa el Historial.', 5000);
       return false;
     }
 
@@ -3369,7 +3385,7 @@ async function doFinish(checklist, sessionKey) {
     // Si el servicio no tiene nombre, es un error de data. Abortar.
     if (!finSrv) {
       logR('FINISH_NO_SRV', {useKey: useKey}, 'err');
-      alert('Error: no se pudo identificar el servicio. Recarga la pagina.');
+      showGlobalError('Error: no se pudo identificar el servicio. Recarga la pagina.', 5000);
       return false;
     }
 
@@ -3395,7 +3411,7 @@ async function doFinish(checklist, sessionKey) {
     var {error: hErr} = await sb.from('history').insert(histPayload);
     logR('FINISH_HISTORY_RESULT', {error: hErr ? hErr.message : null});
     if (hErr) {
-      alert('Error al guardar historial: ' + hErr.message + '\n\nReintenta tocando Finalizar de nuevo.');
+      showGlobalError('Error al guardar historial: ' + hErr.message + '\n\nReintenta tocando Finalizar de nuevo.', 5000);
       return false;
     }
 
@@ -3422,7 +3438,7 @@ async function doFinish(checklist, sessionKey) {
     return true;
   } catch (e) {
     logR('FINISH_EXCEPTION', {msg: e.message, stack: e.stack}, 'err');
-    alert('Error inesperado al finalizar: ' + e.message + '\n\nReintenta o avisa a jefatura.');
+    showGlobalError('Error inesperado al finalizar: ' + e.message + '\n\nReintenta o avisa a jefatura.', 5000);
     return false;
   } finally {
     _finishing = false;
@@ -3651,8 +3667,8 @@ function openCommentModal(sessionKey) {
 
 async function saveComment() {
   var txt = document.getElementById('cm-text') ? document.getElementById('cm-text').value.trim() : '';
-  if (!txt) { alert('Escribe un comentario'); return; }
-  if (!commentForKey) { alert('No hay sesion'); return; }
+  if (!txt) { showGlobalError('Escribe un comentario', 5000); return; }
+  if (!commentForKey) { showGlobalError('No hay sesion', 5000); return; }
   var sess = liveData.find(function(s) { return s.session_key === commentForKey; });
   var comments = (sess && sess.comments) || [];
   comments.push({text: txt, at: fmtD(new Date().toISOString()), author: CU.name});
@@ -3660,7 +3676,7 @@ async function saveComment() {
   var {error} = await sb.from('active_sessions').update({
     comments: comments, updated_at: new Date().toISOString()
   }).eq('session_key', commentForKey);
-  if (error) { alert('Error: ' + error.message); return; }
+  if (error) { showGlobalError('Error: ' + error.message, 5000); return; }
   if (T.sessionKey === commentForKey) T.comments = comments;
   closeModal('m-comment');
   await fetchLive();
@@ -4071,9 +4087,9 @@ async function confirmResolveContingency() {
   if (!ctx) { closeModal('m-resolve-contingency'); return; }
   var txt = document.getElementById('rc-detail');
   var detail = (txt && txt.value || '').trim();
-  if (detail.length < 3) { alert('Describe como se resolvio la contingencia (minimo 3 caracteres)'); return; }
+  if (detail.length < 3) { showGlobalError('Describe como se resolvio la contingencia (minimo 3 caracteres)', 5000); return; }
   var chk = document.getElementById('rc-confirm');
-  if (!chk || !chk.checked) { alert('Debes marcar la confirmacion'); return; }
+  if (!chk || !chk.checked) { showGlobalError('Debes marcar la confirmacion', 5000); return; }
   closeModal('m-resolve-contingency');
   await resolveContingency(ctx.sessionKey, ctx.techUsername, ctx.techName, detail);
 }
@@ -4109,7 +4125,7 @@ async function resolveContingency(sessionKey, techUsername, techName, resolution
     }
   }
   var {error} = await sb.from('active_sessions').update(updates).eq('session_key', sessionKey);
-  if (error) { alert('Error: ' + error.message); return; }
+  if (error) { showGlobalError('Error: ' + error.message, 5000); return; }
   var {data:tu} = await sb.from('users').select('id').eq('username', techUsername).maybeSingle();
   var tid = tu ? tu.id : null;
   var sub = 'La contingencia fue resuelta por ' + CU.name + '. Puedes continuar.';
@@ -4164,12 +4180,12 @@ async function adminLogAction(sessionKey, actionType, metadata) {
 
 // Forzar pausa de un servicio que esta corriendo
 async function adminForcePause(sessionKey, techName, serviceLabel) {
-  if (!isSuperAdmin()) { alert('Acceso denegado'); return; }
+  if (!isSuperAdmin()) { showGlobalError('Acceso denegado', 5000); return; }
   if (!confirm('¿Forzar PAUSA del servicio de ' + techName + '?\n\n' + serviceLabel + '\n\nQuedara registrado en auditoria.')) return;
 
   var sess = liveData.find(function(s) { return s.session_key === sessionKey; });
-  if (!sess) { alert('Sesion no encontrada'); return; }
-  if (sess.status !== 'running') { alert('La sesion no esta en curso'); return; }
+  if (!sess) { showGlobalError('Sesion no encontrada', 5000); return; }
+  if (sess.status !== 'running') { showGlobalError('La sesion no esta en curso', 5000); return; }
 
   var pausedAtISO = new Date().toISOString();
   var pauses = (sess.pauses || []).slice();
@@ -4190,7 +4206,7 @@ async function adminForcePause(sessionKey, techName, serviceLabel) {
     updated_at: new Date().toISOString()
   }).eq('session_key', sessionKey);
 
-  if (error) { alert('Error: ' + error.message); return; }
+  if (error) { showGlobalError('Error: ' + error.message, 5000); return; }
 
   await adminLogAction(sessionKey, 'admin_force_pause', {
     technician: techName,
@@ -4205,14 +4221,14 @@ async function adminForcePause(sessionKey, techName, serviceLabel) {
 // Forzar finalizacion de un servicio. Lo mueve a history con una marca
 // de "finalizacion forzada" en el checklist y sin observaciones del tecnico.
 async function adminForceFinish(sessionKey, techName, serviceLabel, plate) {
-  if (!isSuperAdmin()) { alert('Acceso denegado'); return; }
+  if (!isSuperAdmin()) { showGlobalError('Acceso denegado', 5000); return; }
   if (!confirm('¿Forzar FINALIZACION del servicio de ' + techName + '?\n\n'
     + serviceLabel + (plate ? ' · ' + plate : '') + '\n\n'
     + 'El servicio se movera al historial con el tiempo actual.\n'
     + 'Quedara registrado como "finalizacion forzada".')) return;
 
   var sess = liveData.find(function(s) { return s.session_key === sessionKey; });
-  if (!sess) { alert('Sesion no encontrada'); return; }
+  if (!sess) { showGlobalError('Sesion no encontrada', 5000); return; }
 
   var finSec = liveSecondsNow(sess) || sess.seconds || 1;
   if (finSec < 1) finSec = 1;
@@ -4246,7 +4262,7 @@ async function adminForceFinish(sessionKey, techName, serviceLabel, plate) {
   };
 
   var {error: hErr} = await sb.from('history').insert(histPayload);
-  if (hErr) { alert('Error al guardar historial: ' + hErr.message); return; }
+  if (hErr) { showGlobalError('Error al guardar historial: ' + hErr.message, 5000); return; }
 
   var {error: dErr} = await sb.from('active_sessions').delete().eq('session_key', sessionKey);
   if (dErr) logR('ADMIN_FINISH_DELETE_ERR', {err: dErr.message}, 'warn');
@@ -4277,7 +4293,7 @@ async function adminForceFinish(sessionKey, techName, serviceLabel, plate) {
 
 // Borrar un servicio activo (sin moverlo a history)
 async function adminDeleteActive(sessionKey, techName, serviceLabel) {
-  if (!isSuperAdmin()) { alert('Acceso denegado'); return; }
+  if (!isSuperAdmin()) { showGlobalError('Acceso denegado', 5000); return; }
   if (!confirm('¿BORRAR el servicio activo de ' + techName + '?\n\n'
     + serviceLabel + '\n\n'
     + '⚠ Esta accion NO es reversible. El servicio no quedara en historial.\n'
@@ -4291,7 +4307,7 @@ async function adminDeleteActive(sessionKey, techName, serviceLabel) {
   });
 
   var {error} = await sb.from('active_sessions').delete().eq('session_key', sessionKey);
-  if (error) { alert('Error al borrar: ' + error.message); return; }
+  if (error) { showGlobalError('Error al borrar: ' + error.message, 5000); return; }
 
   showToast('pau', 'Servicio borrado', serviceLabel + ' · ' + techName);
   await fetchLive();
@@ -4299,7 +4315,7 @@ async function adminDeleteActive(sessionKey, techName, serviceLabel) {
 
 // Borrar un registro del historial
 async function adminDeleteHistory(historyId, techName, serviceLabel, plate, duration) {
-  if (!isSuperAdmin()) { alert('Acceso denegado'); return; }
+  if (!isSuperAdmin()) { showGlobalError('Acceso denegado', 5000); return; }
   if (!confirm('¿BORRAR registro del historial?\n\n'
     + techName + ' · ' + serviceLabel + (plate ? ' · ' + plate : '') + '\n'
     + 'Duracion: ' + duration + '\n\n'
@@ -4317,7 +4333,7 @@ async function adminDeleteHistory(historyId, techName, serviceLabel, plate, dura
   });
 
   var {error} = await sb.from('history').delete().eq('id', historyId);
-  if (error) { alert('Error al borrar: ' + error.message); return; }
+  if (error) { showGlobalError('Error al borrar: ' + error.message, 5000); return; }
 
   showToast('pau', 'Registro borrado', serviceLabel + ' · ' + techName);
   // Refrescar vista de historial
@@ -5461,10 +5477,16 @@ async function saveUser() {
 async function deleteUser() {
   if (!editUserId) return;
   if (!confirm('Eliminar este usuario? Esta accion no se puede deshacer.')) return;
-  await sb.from('users').delete().eq('id', editUserId);
+  // QA-STABLE: verificar éxito real antes de cerrar modal y refrescar.
+  var r = await sb.from('users').delete().eq('id', editUserId);
+  if (r && r.error) {
+    showGlobalError('No se pudo eliminar el usuario: ' + r.error.message, 6000);
+    return;
+  }
   await refreshAvatarsCache();
   closeModal('m-create-user');
   if (curBossTab === 'b-users') renderBossUsers(document.getElementById('boss-body'));
+  showGlobalError('Usuario eliminado', 2500);
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -5581,7 +5603,8 @@ async function loadUnassignedToday() {
             +     (o.commercial_manager_name ? ' · gestor: ' + escapeHtml(o.commercial_manager_name) : '')
             +   '</div>'
             + '</div>'
-            + '<div style="display:flex;gap:4px;flex-shrink:0">'
+            + '<div style="display:flex;gap:4px;flex-shrink:0;flex-wrap:wrap">'
+            +   '<button class="btn-sm" style="background:var(--gold);color:#fff;border-color:var(--gold)" onclick="scheduleOTNow(\'' + o.id + '\')">📅 Agendar</button>'
             +   (o.vehicle_id ? '<button class="btn-sm" onclick="openVehicleDetail(\'' + o.vehicle_id + '\')">Ver</button>' : '')
             +   '<button class="btn-sm" onclick="generateOTPdf(\'' + o.id + '\')">📄 PDF</button>'
             + '</div>'
@@ -6111,12 +6134,20 @@ async function saveClient() {
         } else {
           // FASE 2.4.D: si NO hubo match con planificación, auto-crear scheduled_service
           // para que la unidad aparezca en Calendario y Planificación.
+          // Es OBLIGATORIO porque el ingreso del día implica servicio del día.
           var newOTId = rwoI.data && rwoI.data.id;
+          var schedCreatedOk = false;
           if (newOTId && (!schedHidden || !schedHidden.value)) {
-            await autoCreateScheduledForOT(newOTId, vehicleId, srvKey, srvSub, mgrId);
+            schedCreatedOk = await autoCreateScheduledForOT(newOTId, vehicleId, srvKey, srvSub, mgrId);
+            if (schedCreatedOk) {
+              showGlobalError('✓ Evento agendado en Calendario y Planificación del día (sin técnico asignado).', 5000);
+            } else {
+              showGlobalError('⚠ La OT se creó pero NO se agendó en el calendario. Usa el botón "📅 Agendar" en la lista dorada para hacerlo manual.', 8000);
+            }
           } else if (newOTId && schedHidden && schedHidden.value) {
-            // Si hubo match, vincular bidireccionalmente
+            // Si hubo match con servicio agendado pre-existente, vincular bidireccionalmente
             try { await sb.from('scheduled_services').update({work_order_id: newOTId}).eq('id', schedHidden.value); } catch(_){}
+            showGlobalError('✓ OT vinculada al servicio que ya estaba agendado en el calendario.', 4000);
           }
           // FASE 2.4.D-fix: notificar al gestor + jefe de taller que la OT necesita técnico
           if (newOTId) {
@@ -7740,6 +7771,69 @@ async function rejectVisado() {
   await loadVisadoOTs();
 }
 
+// FASE 2.4.D-fix: agendar OT manualmente desde la lista de OTs sin servicio agendado.
+// Abre el modal m-event con servicio, patente y goal pre-cargados desde la OT.
+// Al guardar, vincula scheduled_service_id en la OT.
+async function scheduleOTNow(otId) {
+  if (!hasPerm(CU, 'can_schedule_services')) {
+    showGlobalError('No tienes permiso para agendar servicios. Pídele a Oscar Bueno o un admin.', 5000);
+    return;
+  }
+  if (!sb) return;
+  try {
+    var rOT = await sb.from('work_orders').select('*').eq('id', otId).maybeSingle();
+    if (rOT.error || !rOT.data) { showGlobalError('OT no encontrada', 4000); return; }
+    var o = rOT.data;
+    // Cargar patente del vehículo
+    var plate = '';
+    if (o.vehicle_id) {
+      try {
+        var rv = await sb.from('client_vehicles').select('plate').eq('id', o.vehicle_id).maybeSingle();
+        if (rv && rv.data) plate = rv.data.plate || '';
+      } catch(_){}
+    }
+    // Mapear el service_classification de SERVICES_INGRESO al label del select de m-event
+    // (los SRVS y SERVICES_INGRESO no son idénticos, así que buscamos coincidencia por label)
+    var srvDef = SERVICES_INGRESO.find(function(x){return x.key === o.service_classification;});
+    var srvLabel = srvDef ? srvDef.label : (o.service_classification || '');
+
+    // Usar la función nueva del modal (openNewEvent) para tener todo el setup correcto
+    await openNewEvent(new Date());
+    // Pre-llenar valores
+    var srvSel = document.getElementById('m-ev-service');
+    if (srvSel) {
+      // Buscar opción que coincida (case-insensitive primer match)
+      for (var i = 0; i < srvSel.options.length; i++) {
+        var opt = srvSel.options[i];
+        if (opt.value && opt.value.toLowerCase().indexOf(srvLabel.toLowerCase().split(' ')[0].toLowerCase()) !== -1) {
+          srvSel.value = opt.value;
+          break;
+        }
+      }
+      // Si no hubo match (porque SERVICES_INGRESO no coincide con SRVS), poner texto literal
+      if (!srvSel.value && srvLabel) {
+        // Crear opción ad-hoc
+        var newOpt = document.createElement('option');
+        newOpt.value = srvLabel; newOpt.textContent = srvLabel;
+        srvSel.appendChild(newOpt);
+        srvSel.value = srvLabel;
+      }
+      onEventServiceChange(); // dispara prellenado de goal si aplica
+    }
+    var plateEl = document.getElementById('m-ev-plate');
+    if (plateEl && plate) plateEl.value = plate.toUpperCase().replace(/[^A-Z0-9]/g,'');
+
+    // Guardar el otId en un atributo data del modal para vincular al guardar
+    var modal = document.getElementById('m-event');
+    if (modal) modal.dataset.linkOtId = otId;
+
+    // Pista visual al usuario
+    showGlobalError('Completa fecha, hora y técnico, luego "Guardar". La OT quedará vinculada al evento.', 6000);
+  } catch(e) {
+    showGlobalError('Error al cargar OT: ' + e.message, 5000);
+  }
+}
+
 // FASE 2.4.D-fix: dispatch de alertas al crear OT.
 // Notifica al gestor comercial asignado + al jefe de taller (Oscar Bueno).
 // Mensaje claro: "OT-X · servicio · vehículo · pendiente de asignar técnico"
@@ -7771,11 +7865,11 @@ async function notifyOTCreated(otId, otNumber, srvLabel, plate, mgrId) {
   } catch(e) { logR('NOTIFY_OT_ERR', {msg: e.message}, 'warn'); }
 }
 
-// FASE 2.4.D: helper para auto-crear scheduled_service vinculado a una OT
-// Resiliente: si falla por la columna work_order_id (SQL no aplicado), reintenta sin ella
-// y avisa explícitamente al usuario que aplique el SQL.
+// FASE 2.4.D: helper para auto-crear scheduled_service vinculado a una OT.
+// Resiliente: si falla por la columna work_order_id (SQL no aplicado), reintenta sin ella.
+// Retorna true si se creó el evento, false si falló completamente.
 async function autoCreateScheduledForOT(otId, vehicleId, srvKey, srvSub, mgrId) {
-  if (!sb || !otId) return;
+  if (!sb || !otId) return false;
   try {
     var srvDef = SERVICES_INGRESO.find(function(x){return x.key === srvKey;});
     var srvName = srvDef ? srvDef.label : srvKey;
@@ -7810,28 +7904,31 @@ async function autoCreateScheduledForOT(otId, vehicleId, srvKey, srvSub, mgrId) 
       var msg = (rs.error.message || '').toLowerCase();
       if (msg.indexOf('work_order_id') !== -1 || msg.indexOf('column') !== -1) {
         logR('AUTO_SCHED_NO_FK_COL', {msg: rs.error.message}, 'warn');
-        showGlobalError('⚠ El evento se agendó pero sin vincular a la OT. Falta correr el SQL "fase_2_4_d_migration.sql" en Supabase. Cuando lo apliques, se vinculará automáticamente en próximas OTs.', 9000);
+        showGlobalError('⚠ Evento creado SIN vincular a OT. Falta correr "fase_2_4_d_migration.sql" en Supabase para vinculación automática.', 9000);
         delete schPayload.work_order_id;
         rs = await sb.from('scheduled_services').insert(schPayload).select('id').single();
         if (rs.error) {
           logR('AUTO_SCHED_FAIL', {msg: rs.error.message}, 'err');
           showGlobalError('No se pudo agendar evento del calendario: ' + rs.error.message, 7000);
-          return;
+          return false;
         }
       } else {
         logR('AUTO_SCHED_ERR', {msg: rs.error.message}, 'err');
         showGlobalError('No se pudo crear evento en el calendario: ' + rs.error.message, 7000);
-        return;
+        return false;
       }
     }
     var schedId = rs.data && rs.data.id;
     if (schedId) {
       try { await sb.from('work_orders').update({scheduled_service_id: schedId}).eq('id', otId); } catch(_){}
       logR('AUTO_SCHED_OK', {otId: otId, schedId: schedId});
+      return true;
     }
+    return false;
   } catch(e) {
     logR('AUTO_SCHED_THREW', {msg: e.message}, 'err');
     showGlobalError('Error al crear evento agendado: ' + e.message, 6000);
+    return false;
   }
 }
 
@@ -8240,6 +8337,26 @@ async function saveEvent() {
   btn.innerHTML = 'Guardar'; btn.disabled = false;
   if (error) { err.textContent = 'Error: ' + error.message; err.style.display='block'; return; }
 
+  // FASE 2.4.D-fix: si vino de "scheduleOTNow", vincular la OT al scheduled_service recién creado
+  try {
+    var modalEv = document.getElementById('m-event');
+    var linkOtId = modalEv && modalEv.dataset.linkOtId;
+    if (savedId && linkOtId) {
+      // Update scheduled_service.work_order_id (resilient: si la columna no existe, ignorar)
+      try { await sb.from('scheduled_services').update({work_order_id: linkOtId}).eq('id', savedId); } catch(_){}
+      // Update work_order.scheduled_service_id + assigned_user_id + status
+      var newSt = techId ? 'assigned' : 'open';
+      await sb.from('work_orders').update({
+        scheduled_service_id: savedId,
+        assigned_user_id: techId || null,
+        status: newSt,
+        updated_by: CU ? CU.id : null
+      }).eq('id', linkOtId);
+      modalEv.dataset.linkOtId = ''; // limpiar
+      logR('OT_LINKED_TO_SCHED', {otId: linkOtId, schedId: savedId, tech: techId});
+    }
+  } catch(e) { logR('OT_LINK_ERR', {msg: e.message}, 'warn'); }
+
   // FASE 2.4.D: si este evento agendado está vinculado a una OT, sincronizar
   // el técnico asignado con work_orders.assigned_user_id (para que aparezca en Mis OTs).
   try {
@@ -8257,6 +8374,8 @@ async function saveEvent() {
       }
     }
   } catch(e) { logR('WO_SYNC_ERR', {msg: e.message}, 'warn'); }
+  // Refrescar lista dorada de Ingreso Taller para que la OT desaparezca de "sin agendar"
+  if (curBossTab === 'b-ingreso') { try { await loadUnassignedToday(); } catch(_){} }
   var dtStr = new Date(dt).toLocaleDateString('es-CL',{day:'2-digit',month:'2-digit'}) + ' ' + new Date(dt).toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'});
   // Notificacion global (cal) vinculada al servicio agendado
   await pushNotif('cal', 'Servicio ' + (editEventId?'actualizado':'agendado'), service + ' - ' + techName + ' - ' + dtStr + (plate?' - '+plate:''), null, savedId);
@@ -8534,7 +8653,7 @@ function pdfKPIBox(doc, x, y, w, h, label, value, color) {
 // Helper: verificar que jsPDF esté cargado
 function pdfCheckLoaded() {
   if (typeof window.jspdf === 'undefined' || !window.jspdf.jsPDF) {
-    alert('La libreria de PDF no cargo. Recarga la pagina e intenta de nuevo.');
+    showGlobalError('La libreria de PDF no cargo. Recarga la pagina e intenta de nuevo.', 5000);
     return false;
   }
   return true;
@@ -8573,7 +8692,7 @@ function pdfRenderHeaderBlock(doc, title, subtitle, kpis) {
 function generatePDFDiario() {
   if (!pdfCheckLoaded()) return;
   var rows = REP.data;
-  if (!rows.length) { alert('No hay servicios en el periodo seleccionado para generar reporte.'); return; }
+  if (!rows.length) { showGlobalError('No hay servicios en el periodo seleccionado para generar reporte.', 5000); return; }
   var doc = new window.jspdf.jsPDF({unit:'mm', format:'a4'});
   var kpis = computeKPIs(rows);
   var y = pdfRenderHeaderBlock(doc, 'Reporte Diario Operativo', repRangeLabel(), kpis);
@@ -8690,7 +8809,7 @@ function generatePDFDiario() {
 function generatePDFTecnico() {
   if (!pdfCheckLoaded()) return;
   var rows = REP.data;
-  if (!rows.length) { alert('No hay servicios en el periodo para generar reporte.'); return; }
+  if (!rows.length) { showGlobalError('No hay servicios en el periodo para generar reporte.', 5000); return; }
   var doc = new window.jspdf.jsPDF({unit:'mm', format:'a4'});
 
   // Agrupar por tecnico
@@ -8795,7 +8914,7 @@ function generatePDFTecnico() {
 function generatePDFGestion() {
   if (!pdfCheckLoaded()) return;
   var rows = REP.data;
-  if (!rows.length) { alert('No hay servicios en el periodo para generar reporte.'); return; }
+  if (!rows.length) { showGlobalError('No hay servicios en el periodo para generar reporte.', 5000); return; }
   var doc = new window.jspdf.jsPDF({unit:'mm', format:'a4'});
   var kpis = computeKPIs(rows);
   var y = pdfRenderHeaderBlock(doc, 'Reporte de Gestion', repRangeLabel(), kpis);
@@ -8931,7 +9050,7 @@ function generatePDFGestion() {
 // ──────────────────────────────────────────────
 function exportCSVFromRep() {
   var rows = REP.data;
-  if (!rows.length) { alert('No hay servicios en el periodo para exportar.'); return; }
+  if (!rows.length) { showGlobalError('No hay servicios en el periodo para exportar.', 5000); return; }
   var headers = ['Fecha','Tecnico','Usuario','Servicio','Patente','Duracion','Segundos','Objetivo_min','En_objetivo','Pausas','Motivos_pausa','Aceite_litros','Tipo_aceite','Prueba_ruta_tipo','Prueba_ruta_resultado','Doble_control','Visado','Anomalias','Observaciones'];
   var lines = [headers.join(',')];
   rows.forEach(function(r) {
@@ -9080,3 +9199,4 @@ window.addEventListener('offline', function() {
 </script>
 </body>
 </html>
+  
