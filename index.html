@@ -240,6 +240,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     <div class="tab" data-tab="b-hist" onclick="bossTab('b-hist')">Historial</div>
     <div class="tab" data-tab="b-reportes" onclick="bossTab('b-reportes')">Reportes</div>
     <div class="tab" data-tab="b-bugs" onclick="bossTab('b-bugs')">Bugs</div>
+    <div class="tab" data-tab="b-protocolos" onclick="bossTab('b-protocolos')" id="tab-protocolos" style="display:none">Protocolos de Seguridad<span class="ndot" id="boss-protocolos-dot"></span></div>
     <div class="tab" data-tab="b-visado" onclick="bossTab('b-visado')" id="tab-boss-visado" style="display:none">Visado<span class="ndot" id="boss-visado-dot"></span></div>
     <div class="tab" data-tab="b-clientes" onclick="bossTab('b-clientes')" id="tab-clientes" style="display:none">Registro Clientes</div>
     <div class="tab" data-tab="b-users" onclick="bossTab('b-users')" id="tab-users" style="display:none">Usuarios</div>
@@ -670,6 +671,19 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 <div class="overlay" id="m-visado-hist" style="display:none">
   <div class="modal" style="max-height:92vh;overflow-y:auto;max-width:520px">
     <div id="m-visado-hist-body"></div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     MÓDULO PROTOCOLOS DE SEGURIDAD: modal de revisión de vehículo
+     Muestra todas las OTs activas/recientes del vehículo con detalle
+     completo de checklist, doble control y visado. Permite al jefe
+     visar y aprobar entrega desde acá.
+     ═══════════════════════════════════════════════════════════════ -->
+<div class="overlay" id="m-protocolos-veh" style="display:none">
+  <div class="modal" style="max-height:94vh;overflow-y:auto;max-width:560px">
+    <div id="m-protocolos-veh-body"></div>
+    <button class="btn btn-out" onclick="closeModal('m-protocolos-veh')" style="margin-top:12px">Cerrar</button>
   </div>
 </div>
 
@@ -3635,6 +3649,7 @@ function bossTab(t) {
   else if (t === 'b-catastro') renderBossCatastro(body);
   else if (t === 'b-entregados') renderBossEntregados(body);
   else if (t === 'b-visado')   renderVisadoPanel(body);
+  else if (t === 'b-protocolos') renderProtocolosPanel(body);
   else if (t === 'b-bugs')     renderBugReports(body);
 }
 
@@ -3650,6 +3665,11 @@ function refreshBossTabsVisibility() {
   if (elEntregados) elEntregados.style.display = hasPerm(CU, 'can_ingresar_clientes') ? '' : 'none';
   var elClientes = document.getElementById('tab-clientes');
   if (elClientes) elClientes.style.display = hasPerm(CU, 'can_ingresar_clientes') ? '' : 'none';
+  // Pestaña Protocolos de Seguridad: admin + jefatura.
+  // Reemplaza la lógica antigua de "ventana de visado" centralizando
+  // checklist + doble control + visado por vehículo.
+  var elProtocolos = document.getElementById('tab-protocolos');
+  if (elProtocolos) elProtocolos.style.display = (CU.role === 'admin' || CU.role === 'jefatura') ? '' : 'none';
   // FASE 2.4.C-fix: pestaña Visado SOLO para visadores explícitos (no para admins por inheritance).
   var isVisador = !!(CU.permissions && CU.permissions.can_visar === true);
   var elBossVisado = document.getElementById('tab-boss-visado');
@@ -10697,6 +10717,10 @@ async function approveVisado() {
   showGlobalError('OT aprobada y cerrada', 3000);
   await loadVisadoOTs();
   if (typeof loadVisadoHistorial === 'function') await loadVisadoHistorial();
+  // Si la pestaña activa es Protocolos, recargar para reflejar el cambio
+  if (curBossTab === 'b-protocolos' && typeof loadProtocolos === 'function') {
+    await loadProtocolos();
+  }
 }
 
 async function rejectVisado() {
@@ -10778,6 +10802,10 @@ async function rejectVisado() {
   showGlobalError('OT devuelta al técnico con observaciones', 3500);
   await loadVisadoOTs();
   if (typeof loadVisadoHistorial === 'function') await loadVisadoHistorial();
+  // Si la pestaña activa es Protocolos, recargar para reflejar el cambio
+  if (curBossTab === 'b-protocolos' && typeof loadProtocolos === 'function') {
+    await loadProtocolos();
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -11020,6 +11048,580 @@ async function openVisadoHistDetail(otId) {
 
   document.getElementById('m-visado-hist-body').innerHTML = html;
   openModal('m-visado-hist');
+}
+
+// ═══════════════════════════════════════════════════════════════
+// MÓDULO PROTOCOLOS DE SEGURIDAD (admin + jefatura)
+// ═══════════════════════════════════════════════════════════════
+// Centraliza la supervisión de protocolos por VEHÍCULO en lugar de por OT
+// suelta. Reemplaza el flujo aislado de la pestaña Visado.
+//
+// Para cada vehículo del catastro con OT activa o cerrada en los últimos
+// 30 días se calcula y muestra:
+//   • Estado del checklist técnico (por OT)
+//   • Estado del doble control (responsabilidad del técnico)
+//   • Estado del visado (responsabilidad del jefe / personal autorizado)
+//
+// Desde acá el jefe puede:
+//   • Abrir cualquier vehículo, ver detalle profundo
+//   • Visar (aprobar/rechazar) — acción que antes vivía en la pestaña Visado
+//   • Aprobar la entrega del servicio cuando todo está listo
+//
+// El doble control sigue siendo responsabilidad del técnico desde su
+// pantalla — acá solo se MUESTRA su estado, no se ejecuta.
+// ═══════════════════════════════════════════════════════════════
+
+// Cache de la pestaña: lista de {vehicle, client, ots} ordenada por urgencia.
+var _protocolosCache = [];
+var _protocolosSearch = '';
+var _protocolosFilter = 'all'; // all | pending_visado | pending_dc | in_progress | recently_closed
+var _activeProtocolosVeh = null; // vehículo actualmente abierto en el modal
+
+async function renderProtocolosPanel(body) {
+  if (!CU || (CU.role !== 'admin' && CU.role !== 'jefatura')) {
+    body.innerHTML = '<div class="card"><div style="text-align:center;color:var(--wh3);padding:18px">No tienes permiso para ver Protocolos de Seguridad. Solo admin y jefatura.</div></div>';
+    return;
+  }
+  body.innerHTML = '<div class="card-accent">'
+    + '<div style="font-size:13px;font-weight:700;color:#111;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">🛡️ Protocolos de Seguridad</div>'
+    + '<div style="font-size:11px;color:var(--wh3);margin-bottom:10px;line-height:1.4">Vehículos con OT activa o cerrada en los últimos 30 días. Cada vehículo muestra el cumplimiento de checklist, doble control y visado. Toca uno para revisar, visar y aprobar entrega.</div>'
+    + '<div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap">'
+    +   '<input class="inp" id="prot-search" placeholder="Buscar por patente, marca, modelo, cliente, OT..." style="flex:1;min-width:160px;font-size:12px;margin-bottom:0" data-no-upper oninput="onProtocolosSearch(this.value)"/>'
+    +   '<select class="inp" id="prot-filter" style="width:auto;font-size:12px;margin-bottom:0" onchange="onProtocolosFilter(this.value)">'
+    +     '<option value="all">Todos</option>'
+    +     '<option value="pending_visado">Pendiente visado</option>'
+    +     '<option value="pending_dc">Pendiente doble control</option>'
+    +     '<option value="in_progress">En proceso</option>'
+    +     '<option value="recently_closed">Cerradas recientes</option>'
+    +   '</select>'
+    +   '<button class="btn-sm" onclick="loadProtocolos()" style="font-size:11px">↻</button>'
+    + '</div>'
+    + '<div id="prot-meta" style="font-size:11px;color:var(--wh3);margin-bottom:8px;font-family:var(--mono)">Cargando...</div>'
+    + '<div id="prot-list"></div>'
+    + '</div>';
+  document.getElementById('prot-search').value = _protocolosSearch;
+  document.getElementById('prot-filter').value = _protocolosFilter;
+  await loadProtocolos();
+}
+
+function onProtocolosSearch(v) {
+  _protocolosSearch = (v || '').trim().toUpperCase();
+  renderProtocolosList();
+}
+function onProtocolosFilter(v) {
+  _protocolosFilter = v || 'all';
+  renderProtocolosList();
+}
+
+async function loadProtocolos() {
+  var meta = document.getElementById('prot-meta');
+  var list = document.getElementById('prot-list');
+  if (!meta || !list || !sb) return;
+  meta.textContent = 'Cargando vehículos y OTs...';
+  list.innerHTML = '';
+  try {
+    // Traemos OTs activas + cerradas últimos 30 días.
+    // ACTIVAS: open, assigned, in_progress, pending_double_check, pending_visado
+    // CERRADAS: closed con updated_at > now - 30d
+    var thirtyDaysAgo = new Date(Date.now() - 30*24*3600*1000).toISOString();
+    var rOT = await sb.from('work_orders')
+      .select('*')
+      .or('status.in.(open,assigned,in_progress,pending_double_check,pending_visado),and(status.eq.closed,updated_at.gte.' + thirtyDaysAgo + ')')
+      .order('updated_at', {ascending: false})
+      .limit(500);
+    if (rOT.error) {
+      // Fallback si el filtro complejo falla en algunos PostgREST: dos queries.
+      logR('PROT_OR_FAIL', {msg: rOT.error.message}, 'warn');
+      var rA = await sb.from('work_orders').select('*').in('status', ['open','assigned','in_progress','pending_double_check','pending_visado']).order('updated_at', {ascending: false}).limit(300);
+      var rB = await sb.from('work_orders').select('*').eq('status', 'closed').gte('updated_at', thirtyDaysAgo).order('updated_at', {ascending: false}).limit(300);
+      if (rA.error) { meta.textContent = 'Error: ' + rA.error.message; return; }
+      var combined = (rA.data || []).concat((rB && rB.data) || []);
+      rOT = {data: combined, error: null};
+    }
+    var ots = rOT.data || [];
+    if (ots.length === 0) {
+      meta.textContent = '0 vehículos con OT activa o reciente';
+      list.innerHTML = '<div class="empty" style="padding:24px;text-align:center;color:var(--wh4)">No hay vehículos con OT activa ni cerradas en los últimos 30 días.</div>';
+      return;
+    }
+
+    // Cargar vehículos y clientes referenciados.
+    var vehIds = Array.from(new Set(ots.map(function(o){return o.vehicle_id;}).filter(Boolean)));
+    var cliIds = Array.from(new Set(ots.map(function(o){return o.client_id;}).filter(Boolean)));
+    var vehs = {}, clis = {};
+    if (vehIds.length) {
+      var rv = await sb.from('client_vehicles').select('*').in('id', vehIds);
+      (rv.data || []).forEach(function(v){ vehs[v.id] = v; });
+    }
+    if (cliIds.length) {
+      var rc = await sb.from('clients').select('id,name,rut,phone,email').in('id', cliIds);
+      (rc.data || []).forEach(function(c){ clis[c.id] = c; });
+    }
+
+    // Agrupar OTs por vehicle_id.
+    var byVeh = {};
+    ots.forEach(function(o) {
+      if (!o.vehicle_id) return;
+      if (!byVeh[o.vehicle_id]) byVeh[o.vehicle_id] = [];
+      byVeh[o.vehicle_id].push(o);
+    });
+
+    // Construir cache: una entrada por vehículo, con sus OTs ordenadas (activa primero).
+    _protocolosCache = Object.keys(byVeh).map(function(vid) {
+      var veh = vehs[vid] || null;
+      var vehOts = byVeh[vid].slice().sort(function(a,b) {
+        // Prioridad: pending_visado > pending_double_check > in_progress > assigned > open > closed
+        var prio = {pending_visado:1, pending_double_check:2, in_progress:3, assigned:4, open:5, closed:6, cancelled:7};
+        var pa = prio[a.status] || 9, pb = prio[b.status] || 9;
+        if (pa !== pb) return pa - pb;
+        return new Date(b.updated_at||0) - new Date(a.updated_at||0);
+      });
+      var cli = (vehOts[0] && vehOts[0].client_id && clis[vehOts[0].client_id]) || null;
+      return {
+        vehicle: veh,
+        client: cli,
+        ots: vehOts,
+        // Resumen agregado para la card
+        summary: _computeProtocolosSummary(vehOts)
+      };
+    }).filter(function(r){ return r.vehicle; }); // sin vehículo no podemos mostrar
+
+    // Ordenar vehículos por urgencia (la OT más prioritaria del grupo manda).
+    _protocolosCache.sort(function(a, b) {
+      var pa = a.summary.priority, pb = b.summary.priority;
+      if (pa !== pb) return pa - pb;
+      // Empate: el de actualización más reciente arriba
+      var aLast = a.ots[0] ? new Date(a.ots[0].updated_at||0).getTime() : 0;
+      var bLast = b.ots[0] ? new Date(b.ots[0].updated_at||0).getTime() : 0;
+      return bLast - aLast;
+    });
+
+    renderProtocolosList();
+  } catch(e) {
+    meta.textContent = 'Error: ' + e.message;
+    logR('PROT_LOAD_ERR', {msg: e.message}, 'error');
+  }
+}
+
+// Calcula el "estado de protocolos" del vehículo a partir de sus OTs.
+// Devuelve {priority, label, color, counts:{tech, dc, visado, total}, hasPendingVisado}
+function _computeProtocolosSummary(ots) {
+  var counts = {total: ots.length, tech_done:0, dc_done:0, visado_done:0, pending_visado:0, pending_dc:0, in_progress:0, closed:0};
+  var hasPendingVisado = false, hasPendingDC = false, hasInProgress = false, hasRecent = false;
+  var oldestPendingVisadoMs = null;
+
+  ots.forEach(function(o) {
+    var cd = o.checklist_data || {};
+    if (cd.tech_completed_at) counts.tech_done++;
+    if (cd.double_check_completed_at) counts.dc_done++;
+    if (cd.visado_at && cd.visado_approved === true) counts.visado_done++;
+    if (o.status === 'pending_visado') {
+      counts.pending_visado++;
+      hasPendingVisado = true;
+      var dcMs = cd.double_check_completed_at ? new Date(cd.double_check_completed_at).getTime() : null;
+      if (dcMs && (oldestPendingVisadoMs == null || dcMs < oldestPendingVisadoMs)) oldestPendingVisadoMs = dcMs;
+    }
+    if (o.status === 'pending_double_check') { counts.pending_dc++; hasPendingDC = true; }
+    if (o.status === 'in_progress' || o.status === 'assigned' || o.status === 'open') { counts.in_progress++; hasInProgress = true; }
+    if (o.status === 'closed') { counts.closed++; hasRecent = true; }
+  });
+
+  // Tiempo esperando visado (si aplica)
+  var waitHours = null;
+  if (oldestPendingVisadoMs) waitHours = Math.round((Date.now() - oldestPendingVisadoMs) / 3600000);
+
+  // Prioridad: 1=máxima
+  var priority, label, color;
+  if (hasPendingVisado) {
+    priority = 1;
+    label = waitHours != null && waitHours >= 4 ? '⚠ VISADO ' + waitHours + 'h' : 'VISADO PENDIENTE';
+    color = waitHours != null && waitHours >= 4 ? 'var(--red)' : 'var(--gold)';
+  } else if (hasPendingDC) {
+    priority = 2;
+    label = 'DOBLE CONTROL PENDIENTE';
+    color = 'var(--gold)';
+  } else if (hasInProgress) {
+    priority = 3;
+    label = 'EN PROCESO';
+    color = 'var(--blue)';
+  } else if (hasRecent) {
+    priority = 4;
+    label = 'CERRADO';
+    color = 'var(--green)';
+  } else {
+    priority = 5;
+    label = '—';
+    color = 'var(--wh4)';
+  }
+
+  return {
+    priority: priority,
+    label: label,
+    color: color,
+    counts: counts,
+    hasPendingVisado: hasPendingVisado,
+    hasPendingDC: hasPendingDC,
+    hasInProgress: hasInProgress,
+    waitHours: waitHours
+  };
+}
+
+function renderProtocolosList() {
+  var list = document.getElementById('prot-list');
+  var meta = document.getElementById('prot-meta');
+  if (!list || !meta) return;
+  var q = _protocolosSearch;
+  var f = _protocolosFilter;
+  var rows = _protocolosCache.filter(function(r) {
+    if (f === 'pending_visado' && !r.summary.hasPendingVisado) return false;
+    if (f === 'pending_dc' && !r.summary.hasPendingDC) return false;
+    if (f === 'in_progress' && !r.summary.hasInProgress) return false;
+    if (f === 'recently_closed' && r.summary.priority !== 4) return false;
+    if (!q) return true;
+    var v = r.vehicle, c = r.client || {};
+    var hay = [
+      v.plate || '', v.brand || '', v.model || '',
+      c.name || '', c.rut || '', c.phone || ''
+    ];
+    r.ots.forEach(function(o){ hay.push(String(o.ot_number || '')); });
+    return hay.join(' ').toUpperCase().indexOf(q) !== -1;
+  });
+
+  // Contadores en meta
+  var cVisado = _protocolosCache.filter(function(r){return r.summary.hasPendingVisado;}).length;
+  var cDC = _protocolosCache.filter(function(r){return r.summary.hasPendingDC;}).length;
+  var cInP = _protocolosCache.filter(function(r){return r.summary.hasInProgress;}).length;
+  meta.innerHTML = rows.length + ' de ' + _protocolosCache.length + ' vehículo(s)'
+    + (cVisado ? ' · <span style="color:var(--gold3);font-weight:700">' + cVisado + ' visado</span>' : '')
+    + (cDC ? ' · <span style="color:var(--gold);font-weight:700">' + cDC + ' doble control</span>' : '')
+    + (cInP ? ' · <span style="color:var(--blue);font-weight:700">' + cInP + ' en proceso</span>' : '');
+
+  if (rows.length === 0) {
+    list.innerHTML = '<div class="empty" style="padding:24px;text-align:center;color:var(--wh4)">Sin resultados con los filtros aplicados.</div>';
+    return;
+  }
+
+  list.innerHTML = rows.map(function(r) {
+    var v = r.vehicle, c = r.client, s = r.summary;
+    var pv = validatePlate(v.plate || '');
+    var plateFmt = pv.valid ? pv.formatted : (v.plate || '?');
+    var thumb = (v.photos && v.photos.frente) ? v.photos.frente : null;
+
+    // Mini-tabla de protocolos (un row por OT)
+    var protRows = r.ots.map(function(o) {
+      var cd = o.checklist_data || {};
+      var srvDef = SERVICES_INGRESO.find(function(x){return x.key === o.service_classification;});
+      var srvLabel = srvDef ? srvDef.label : (o.service_classification || '?');
+      var needsChk = srvNeedsChecklist(srvLabel);
+      var techDone = !!cd.tech_completed_at;
+      var dcDone = !!cd.double_check_completed_at;
+      var visadoDone = cd.visado_approved === true && !!cd.visado_at;
+      var visadoRejected = cd.visado_rejection && (!visadoDone || (cd.visado_rejection.at && new Date(cd.visado_rejection.at) > new Date(cd.visado_at)));
+
+      function dot(state) {
+        // state: 'ok' | 'pending' | 'rejected' | 'na'
+        if (state === 'ok') return '<span title="OK" style="display:inline-block;width:14px;height:14px;border-radius:50%;background:var(--green);color:#fff;font-size:9px;text-align:center;line-height:14px;font-weight:800">✓</span>';
+        if (state === 'rejected') return '<span title="Rechazado" style="display:inline-block;width:14px;height:14px;border-radius:50%;background:var(--red);color:#fff;font-size:9px;text-align:center;line-height:14px;font-weight:800">✗</span>';
+        if (state === 'pending') return '<span title="Pendiente" style="display:inline-block;width:14px;height:14px;border-radius:50%;background:var(--gold);color:#fff;font-size:9px;text-align:center;line-height:14px;font-weight:800">⏳</span>';
+        return '<span title="No aplica" style="display:inline-block;width:14px;height:14px;border-radius:50%;background:#e0e0e0;color:#999;font-size:9px;text-align:center;line-height:14px">—</span>';
+      }
+      var statTech = !needsChk ? 'na' : (techDone ? 'ok' : 'pending');
+      var statDC = !needsChk ? 'na' : (dcDone ? 'ok' : (techDone ? 'pending' : 'na'));
+      var statVis = !needsChk ? 'na' : (visadoDone ? 'ok' : (visadoRejected ? 'rejected' : (dcDone ? 'pending' : 'na')));
+
+      var statusLabel = ({open:'Sin iniciar', assigned:'Asignada', in_progress:'En proceso', pending_double_check:'Pend. doble control', pending_visado:'Pend. visado', closed:'Cerrada', cancelled:'Cancelada'})[o.status] || o.status;
+      var statusColor = ({pending_visado:'var(--gold3)', pending_double_check:'var(--gold)', in_progress:'var(--blue)', closed:'var(--green)'})[o.status] || 'var(--wh3)';
+
+      return '<div style="display:flex;align-items:center;gap:6px;padding:5px 0;border-bottom:1px dotted #eee;font-size:11px">'
+        + '<div style="flex:1;min-width:0">'
+        +   '<div style="font-weight:700;font-family:\'Rajdhani\',sans-serif;color:#111;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">OT-' + (o.ot_number || '?') + ' · ' + escapeHtml(srvLabel) + '</div>'
+        +   '<div style="font-size:9px;color:' + statusColor + ';font-weight:700;text-transform:uppercase;letter-spacing:.04em;font-family:\'Rajdhani\',sans-serif">' + statusLabel + '</div>'
+        + '</div>'
+        + '<div style="display:flex;gap:4px;align-items:center" title="Checklist · Doble control · Visado">'
+        +   dot(statTech) + dot(statDC) + dot(statVis)
+        + '</div>'
+        + '</div>';
+    }).join('');
+
+    // Borde según prioridad
+    var leftBorder = s.color;
+
+    return '<div style="background:#fff;border:1px solid var(--border);border-left:4px solid ' + leftBorder + ';border-radius:3px;padding:10px;margin-bottom:8px;cursor:pointer" onclick="openProtocolosVehicle(\'' + v.id + '\')">'
+      + '<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">'
+      +   (thumb
+          ? '<img src="' + thumb + '" style="width:42px;height:42px;border-radius:4px;object-fit:cover;flex-shrink:0;border:1px solid var(--border)" alt=""/>'
+          : '<div style="width:42px;height:42px;border-radius:4px;background:var(--bg3);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:18px">🚗</div>')
+      +   '<div style="flex:1;min-width:0">'
+      +     '<div style="font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.02em;font-size:14px">' + escapeHtml(v.brand||'') + ' ' + escapeHtml(v.model||'') + ' <span style="color:var(--red);font-family:var(--mono)">' + plateFmt + '</span></div>'
+      +     '<div style="font-size:11px;color:var(--wh3);margin-top:1px">' + (c ? escapeHtml(c.name) + ' · ' + escapeHtml(c.rut || c.phone || '') : '<span style="color:var(--red)">cliente eliminado</span>') + '</div>'
+      +   '</div>'
+      +   '<div style="font-size:9px;color:#fff;background:' + s.color + ';font-weight:800;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.05em;padding:3px 6px;border-radius:2px;flex-shrink:0">' + s.label + '</div>'
+      + '</div>'
+      + '<div style="background:#fafafa;border:1px solid #f0f0f0;border-radius:3px;padding:6px 8px;margin-top:4px">'
+      +   '<div style="font-size:9px;color:var(--wh3);font-weight:700;text-transform:uppercase;letter-spacing:.04em;font-family:\'Rajdhani\',sans-serif;margin-bottom:2px;display:flex;justify-content:space-between"><span>OT · Servicio</span><span>Chk · DC · Vis</span></div>'
+      +   protRows
+      + '</div>'
+      + '</div>';
+  }).join('');
+}
+
+// Abre el modal de detalle profundo del vehículo (con sus OTs y protocolos).
+async function openProtocolosVehicle(vehicleId) {
+  var row = _protocolosCache.find(function(r){return r.vehicle && r.vehicle.id === vehicleId;});
+  if (!row && sb) {
+    // No está en cache: cargar on-demand
+    try {
+      await loadProtocolos();
+      row = _protocolosCache.find(function(r){return r.vehicle && r.vehicle.id === vehicleId;});
+    } catch(_) {}
+  }
+  if (!row) { showGlobalError('Vehículo no encontrado en protocolos', 4000); return; }
+  _activeProtocolosVeh = row;
+  _renderProtocolosVehicleModal();
+  openModal('m-protocolos-veh');
+}
+
+// Re-renderiza el contenido del modal del vehículo activo (sin reabrirlo).
+// Útil después de visar / aprobar para refrescar el estado.
+function _renderProtocolosVehicleModal() {
+  if (!_activeProtocolosVeh) return;
+  var row = _activeProtocolosVeh;
+  var v = row.vehicle, c = row.client;
+  var pv = validatePlate(v.plate || '');
+  var plateFmt = pv.valid ? pv.formatted : (v.plate || '?');
+  var content = document.getElementById('m-protocolos-veh-body');
+  if (!content) return;
+
+  var html = '<div class="modal-t">🛡️ ' + escapeHtml(v.brand||'') + ' ' + escapeHtml(v.model||'') + ' · <span style="color:var(--red);font-family:var(--mono)">' + plateFmt + '</span></div>'
+    + (c ? '<div class="modal-s">' + escapeHtml(c.name) + ' · ' + escapeHtml(c.rut || c.phone || '') + '</div>' : '')
+    + '<div style="font-size:10px;color:var(--wh4);margin-bottom:10px;font-family:var(--mono)">KM ingreso: ' + (v.km_entry||'?') + '</div>';
+
+  // Listado de OTs con bloque expandido por cada una
+  if (!row.ots || row.ots.length === 0) {
+    html += '<div style="padding:18px;text-align:center;color:var(--wh4);font-style:italic">Este vehículo no tiene OTs activas ni recientes.</div>';
+  } else {
+    row.ots.forEach(function(o) {
+      html += _renderProtocolosOTBlock(o, v);
+    });
+  }
+
+  // Acceso rápido a la ficha completa del vehículo (catastro)
+  html += '<div style="border-top:1px solid var(--border);margin-top:14px;padding-top:10px">'
+    +    '<button class="btn-sm" onclick="closeModal(\'m-protocolos-veh\');openVehicleDetail(\'' + v.id + '\')" style="width:100%">📋 Ver ficha completa del vehículo (catastro)</button>'
+    +    '</div>';
+
+  content.innerHTML = html;
+}
+
+// Renderiza el bloque de UNA OT con todos sus protocolos y acciones.
+function _renderProtocolosOTBlock(o, v) {
+  var cd = o.checklist_data || {};
+  var srvDef = SERVICES_INGRESO.find(function(x){return x.key === o.service_classification;});
+  var srvLabel = srvDef ? srvDef.label : (o.service_classification || '?');
+  var techDef = CHECKLISTS_TECH[o.service_classification];
+  var needsChk = srvNeedsChecklist(srvLabel);
+
+  var techDone = !!cd.tech_completed_at;
+  var dcDone   = !!cd.double_check_completed_at;
+  var visadoApproved = cd.visado_approved === true && !!cd.visado_at;
+  var rej = cd.visado_rejection;
+  var rejIsCurrent = false;
+  if (rej && rej.reason) {
+    if (!visadoApproved) rejIsCurrent = true;
+    else if (rej.at && new Date(rej.at) > new Date(cd.visado_at)) rejIsCurrent = true;
+  }
+
+  var statusLabel = ({open:'Sin iniciar', assigned:'Asignada', in_progress:'En proceso', pending_double_check:'Pendiente doble control', pending_visado:'Pendiente visado', closed:'Cerrada', cancelled:'Cancelada'})[o.status] || o.status;
+  var statusColor = ({pending_visado:'var(--gold3)', pending_double_check:'var(--gold)', in_progress:'var(--blue)', closed:'var(--green)', cancelled:'var(--wh4)'})[o.status] || 'var(--wh3)';
+
+  var html = '<div style="border:1px solid var(--border);border-left:4px solid ' + statusColor + ';border-radius:3px;padding:10px;margin-bottom:10px;background:#fff">'
+    // Header
+    + '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:6px">'
+    +   '<div style="flex:1;min-width:0">'
+    +     '<div style="font-size:13px;font-weight:700;font-family:\'Rajdhani\',sans-serif">OT-' + (o.ot_number || '?') + ' · ' + escapeHtml(srvLabel) + '</div>'
+    +     (o.service_subtype ? '<div style="font-size:11px;color:var(--wh2)">' + escapeHtml(o.service_subtype) + '</div>' : '')
+    +     (o.commercial_manager_name ? '<div style="font-size:10px;color:var(--wh3);font-family:var(--mono);margin-top:2px">Gestor: ' + escapeHtml(o.commercial_manager_name) + '</div>' : '')
+    +   '</div>'
+    +   '<div style="font-size:9px;color:#fff;background:' + statusColor + ';font-weight:800;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.05em;padding:3px 6px;border-radius:2px">' + statusLabel + '</div>'
+    + '</div>';
+
+  // Banner de rechazo activo
+  if (rejIsCurrent) {
+    var rejAt = rej.at ? new Date(rej.at).toLocaleString('es-CL') : '?';
+    html += '<div style="background:#ffeaea;border:1px solid var(--red);border-left:3px solid var(--red);border-radius:3px;padding:7px;margin-bottom:8px">'
+      + '<div style="font-size:10px;font-weight:800;color:var(--red);text-transform:uppercase;letter-spacing:.04em;margin-bottom:2px">⚠ Visado rechazado</div>'
+      + '<div style="font-size:10px;color:var(--wh3);margin-bottom:3px;font-family:var(--mono)">Por ' + escapeHtml(rej.by_name || '?') + ' · ' + rejAt + '</div>'
+      + '<div style="font-size:11px;color:#5a1010;background:#fff;padding:5px;border-radius:3px;line-height:1.4">' + escapeHtml(rej.reason) + '</div>'
+      + '</div>';
+  }
+
+  // Si el servicio NO requiere checklist (ej. lavado, estandar de taller), mostrar aviso y salir.
+  if (!needsChk) {
+    html += '<div style="font-size:11px;color:var(--wh3);font-style:italic;background:#f8f8f8;padding:6px 8px;border-radius:3px">Este tipo de servicio no requiere protocolos de seguridad (checklist técnico, doble control ni visado).</div>';
+    html += '<div style="margin-top:8px"><button class="btn-sm" onclick="generateOTPdf(\'' + o.id + '\')">📄 PDF OT</button></div>';
+    html += '</div>';
+    return html;
+  }
+
+  // Cumplimiento de protocolos (3 pasos)
+  html += '<div style="background:#fafafa;border:1px solid #f0f0f0;border-radius:3px;padding:8px;margin-bottom:8px">'
+    + '<div style="font-size:10px;color:var(--wh3);font-weight:700;text-transform:uppercase;letter-spacing:.04em;font-family:\'Rajdhani\',sans-serif;margin-bottom:5px">Cumplimiento de protocolos</div>'
+    // 1. Checklist
+    + '<div style="display:flex;align-items:center;gap:8px;font-size:11px;padding:3px 0;border-bottom:1px dotted #e0e0e0">'
+    +   '<span style="width:18px;text-align:center">' + (techDone ? '✅' : '⬜') + '</span>'
+    +   '<span style="flex:1"><b>1. Checklist técnico</b>' + (techDone ? ' <span style="color:var(--wh3);font-size:10px">· ' + escapeHtml(cd.tech_completed_by_name || '?') + ' · ' + new Date(cd.tech_completed_at).toLocaleString('es-CL') + '</span>' : ' <span style="color:var(--wh4);font-size:10px">— pendiente (técnico)</span>') + '</span>'
+    +   (techDone ? '<button class="btn-sm" onclick="viewProtocolosTechChecklist(\'' + o.id + '\')" style="font-size:10px;padding:3px 6px">Ver</button>' : '')
+    + '</div>'
+    // 2. Doble control
+    + '<div style="display:flex;align-items:center;gap:8px;font-size:11px;padding:3px 0;border-bottom:1px dotted #e0e0e0">'
+    +   '<span style="width:18px;text-align:center">' + (dcDone ? '✅' : (techDone ? '⏳' : '⬜')) + '</span>'
+    +   '<span style="flex:1"><b>2. Doble control</b>' + (dcDone
+          ? ' <span style="color:var(--wh3);font-size:10px">· ' + escapeHtml((cd.double_check_meta && cd.double_check_meta.completed_by_name) || cd.double_check_completed_by_name || '?') + ' · ' + new Date(cd.double_check_completed_at).toLocaleString('es-CL') + '</span>'
+          : (techDone ? ' <span style="color:var(--gold3);font-size:10px;font-weight:700">— pendiente (técnico)</span>' : ' <span style="color:var(--wh4);font-size:10px">— esperando checklist</span>')) + '</span>'
+    +   (dcDone ? '<button class="btn-sm" onclick="viewProtocolosDoubleCheck(\'' + o.id + '\')" style="font-size:10px;padding:3px 6px">Ver</button>' : '')
+    + '</div>'
+    // 3. Visado
+    + '<div style="display:flex;align-items:center;gap:8px;font-size:11px;padding:3px 0">'
+    +   '<span style="width:18px;text-align:center">' + (visadoApproved ? '✅' : (rejIsCurrent ? '❌' : (dcDone ? '⏳' : '⬜'))) + '</span>'
+    +   '<span style="flex:1"><b>3. Visado</b>' + (visadoApproved
+          ? ' <span style="color:var(--green);font-size:10px;font-weight:700">· APROBADO por ' + escapeHtml(cd.visado_by_name || '?') + ' · ' + new Date(cd.visado_at).toLocaleString('es-CL') + '</span>'
+          : (rejIsCurrent ? ' <span style="color:var(--red);font-size:10px;font-weight:700">— RECHAZADO, esperando corrección</span>'
+            : (dcDone ? ' <span style="color:var(--gold3);font-size:10px;font-weight:700">— pendiente, requiere acción</span>'
+              : ' <span style="color:var(--wh4);font-size:10px">— esperando doble control</span>'))) + '</span>'
+    + '</div>'
+    + '</div>';
+
+  // Botones de acción según estado
+  html += '<div style="display:flex;flex-direction:column;gap:5px">';
+  // VISADO: si la OT está pendiente de visado y el doble control ya está hecho,
+  // el jefe puede visarla desde acá.
+  if (o.status === 'pending_visado' && dcDone) {
+    var canVisar = !!(CU && (CU.role === 'admin' || (CU.permissions && CU.permissions.can_visar === true)));
+    if (canVisar) {
+      html += '<button class="btn btn-red" onclick="openProtocolosVisado(\'' + o.id + '\')" style="background:var(--red);color:#fff">⚖️ Visar y aprobar/rechazar entrega</button>';
+    } else {
+      html += '<div style="font-size:11px;color:var(--gold3);background:#fff8e0;border:1px solid var(--gold);padding:7px;border-radius:3px;text-align:center">⚠ No tienes permiso de visado. Solo admin o personal autorizado pueden visar.</div>';
+    }
+  }
+  // Si está pendiente de doble control, mostrar mensaje (es responsabilidad del técnico)
+  if (o.status === 'pending_double_check') {
+    html += '<div style="font-size:11px;color:var(--wh3);background:#fff8e0;border:1px solid var(--gold);padding:7px;border-radius:3px;text-align:center">El doble control debe hacerlo el técnico desde su panel antes de pasar a visado.</div>';
+  }
+  // Si está cerrada y aprobada, mostrar opción de re-imprimir/ver entrega
+  if (o.status === 'closed' && visadoApproved) {
+    html += '<button class="btn-sm" style="background:#1e6f1e;color:#fff;border-color:#1e6f1e" onclick="generateRecepcionConforme(\'' + o.id + '\')">✍️ Recepción Conforme (PDF)</button>';
+  }
+  // PDF siempre disponible
+  html += '<button class="btn-sm" onclick="generateOTPdf(\'' + o.id + '\')">📄 PDF Orden de Trabajo</button>';
+  html += '</div>';
+
+  html += '</div>';
+  return html;
+}
+
+// Abrir el modal de visado (reutiliza openVisadoModal, pero precarga la OT en _visadoCache si no estaba).
+async function openProtocolosVisado(otId) {
+  // Aseguramos que la OT esté en _visadoCache (que lo usa openVisadoModal).
+  if (typeof _visadoCache === 'undefined') window._visadoCache = [];
+  var inCache = _visadoCache.find(function(r){return r.ot.id === otId;});
+  if (!inCache) {
+    // Cargar OT + vehículo + cliente y empujar al cache
+    try {
+      var rOT = await sb.from('work_orders').select('*').eq('id', otId).maybeSingle();
+      if (!rOT || !rOT.data) { showGlobalError('OT no encontrada', 4000); return; }
+      var o = rOT.data;
+      var veh = null, cli = null;
+      if (o.vehicle_id) {
+        var rv = await sb.from('client_vehicles').select('*').eq('id', o.vehicle_id).maybeSingle();
+        if (rv && rv.data) veh = rv.data;
+      }
+      if (o.client_id) {
+        var rc = await sb.from('clients').select('id,name,rut,phone').eq('id', o.client_id).maybeSingle();
+        if (rc && rc.data) cli = rc.data;
+      }
+      _visadoCache.push({ot:o, vehicle:veh, client:cli});
+    } catch(e) {
+      showGlobalError('Error cargando OT: ' + e.message, 4000);
+      return;
+    }
+  }
+  // Cerrar el modal de protocolos para que no se traslapen
+  closeModal('m-protocolos-veh');
+  // Abrir el modal de visado existente. Cuando termine, refrescamos protocolos.
+  await openVisadoModal(otId);
+  // Hook: cuando el visador apruebe o rechace, vamos a re-cargar la lista.
+  // Lo logramos envolviendo aprovado/rechazo: ya disparan loadVisadoOTs/loadVisadoHistorial,
+  // y nosotros simplemente re-cargamos protocolos al cerrar.
+}
+
+// Vista read-only del checklist técnico (sin permitir editarlo).
+async function viewProtocolosTechChecklist(otId) {
+  if (!sb) return;
+  try {
+    var r = await sb.from('work_orders').select('*').eq('id', otId).maybeSingle();
+    if (!r || !r.data) { showGlobalError('OT no encontrada', 4000); return; }
+    var o = r.data, cd = o.checklist_data || {};
+    var techDef = CHECKLISTS_TECH[o.service_classification];
+    if (!techDef || !cd.tech_checklist) {
+      showGlobalError('Esta OT no tiene checklist técnico registrado', 4000);
+      return;
+    }
+    var srvDef = SERVICES_INGRESO.find(function(x){return x.key===o.service_classification;});
+    var srvLabel = srvDef ? srvDef.label : (o.service_classification || '?');
+    var html = '<div class="modal-t">Checklist técnico — OT-' + (o.ot_number || '?') + '</div>'
+      + '<div class="modal-s">' + escapeHtml(srvLabel) + '</div>'
+      + '<div style="font-size:10px;color:var(--wh3);margin:6px 0;font-family:var(--mono)">Por: ' + escapeHtml(cd.tech_completed_by_name || '?') + ' · ' + (cd.tech_completed_at ? new Date(cd.tech_completed_at).toLocaleString('es-CL') : '?') + '</div>';
+    techDef.sections.forEach(function(sec) {
+      html += '<div style="margin-bottom:10px"><div style="font-size:11px;font-weight:700;color:var(--red);font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px">' + escapeHtml(sec.title) + '</div>';
+      sec.items.forEach(function(it) {
+        var val = cd.tech_checklist[it.key];
+        var displayVal = val === true ? '<span style="color:var(--green);font-weight:700">SÍ</span>'
+                       : val === false ? '<span style="color:var(--red);font-weight:700">NO</span>'
+                       : (val == null || val === '') ? '<span style="color:var(--wh4)">—</span>'
+                       : '<b>' + escapeHtml(String(val)) + '</b>';
+        html += '<div style="font-size:11px;color:var(--wh2);padding:3px 0;border-bottom:1px dotted #eee"><span style="color:var(--wh3)">' + escapeHtml(it.label) + ':</span> ' + displayVal + '</div>';
+      });
+      html += '</div>';
+    });
+    // Reutilizamos m-visado-hist como modal genérico de "ver detalle"
+    document.getElementById('m-visado-hist-body').innerHTML = html
+      + '<div style="margin-top:14px"><button class="btn btn-out" onclick="closeModal(\'m-visado-hist\')">Cerrar</button></div>';
+    openModal('m-visado-hist');
+  } catch(e) { showGlobalError('Error: ' + e.message, 4000); }
+}
+
+// Vista read-only del doble control.
+async function viewProtocolosDoubleCheck(otId) {
+  if (!sb) return;
+  try {
+    var r = await sb.from('work_orders').select('*').eq('id', otId).maybeSingle();
+    if (!r || !r.data) { showGlobalError('OT no encontrada', 4000); return; }
+    var o = r.data, cd = o.checklist_data || {};
+    if (!cd.double_check) {
+      showGlobalError('Esta OT no tiene doble control registrado', 4000);
+      return;
+    }
+    var dcMeta = cd.double_check_meta || {};
+    var doneBy = dcMeta.completed_by_name || cd.double_check_completed_by_name || '?';
+    var doneAt = dcMeta.completed_at || cd.double_check_completed_at;
+    var srvDef2 = SERVICES_INGRESO.find(function(x){return x.key===o.service_classification;});
+    var srvLabel2 = srvDef2 ? srvDef2.label : (o.service_classification || '?');
+    var html = '<div class="modal-t">Doble control — OT-' + (o.ot_number || '?') + '</div>'
+      + '<div class="modal-s">' + escapeHtml(srvLabel2) + '</div>'
+      + '<div style="font-size:10px;color:var(--wh3);margin:6px 0;font-family:var(--mono)">Realizado por: ' + escapeHtml(doneBy) + ' · ' + (doneAt ? new Date(doneAt).toLocaleString('es-CL') : '?') + '</div>'
+      + '<div style="border-top:2px solid var(--gold);padding-top:8px;margin-top:8px">';
+    CHECKLIST_DOBLE_CONTROL.forEach(function(it) {
+      var val = cd.double_check[it.key];
+      var displayVal = val === true ? '<span style="color:var(--green);font-weight:700">✓ SÍ</span>'
+                     : val === false ? '<span style="color:var(--red);font-weight:700">✗ NO</span>'
+                     : (val != null && val !== '' ? '<b>' + escapeHtml(String(val)) + '</b>' : '<span style="color:var(--wh4)">—</span>');
+      html += '<div style="font-size:11px;color:var(--wh2);padding:4px 0;border-bottom:1px dotted #eee"><span style="color:var(--wh3)">' + escapeHtml(it.label) + ':</span> ' + displayVal + '</div>';
+    });
+    html += '</div>';
+    document.getElementById('m-visado-hist-body').innerHTML = html
+      + '<div style="margin-top:14px"><button class="btn btn-out" onclick="closeModal(\'m-visado-hist\')">Cerrar</button></div>';
+    openModal('m-visado-hist');
+  } catch(e) { showGlobalError('Error: ' + e.message, 4000); }
 }
 
 // FASE 2.4.D-fix: agendar OT manualmente desde la lista de OTs sin servicio agendado.
