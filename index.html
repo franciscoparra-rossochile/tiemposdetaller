@@ -7528,6 +7528,8 @@ async function renderBugAdminList() {
           return '<button class="sel-btn ' + on + '" style="flex:1 1 auto;min-height:36px;min-width:90px" '
             + 'onclick="setBugAdminFilter(\'' + f[0] + '\')">' + f[1] + '</button>';
         }).join('')
+    +   '<button class="sel-btn" style="flex:1 1 auto;min-height:36px;min-width:90px;background:var(--red);color:#fff;font-weight:700" '
+    +     'onclick="exportBugReportsMd()">⬇ Exportar .md</button>'
     + '</div>';
 
   wrap.innerHTML = header + '<div id="bug-list-inner"><div class="empty"><span class="spin"></span>Cargando...</div></div>';
@@ -7564,6 +7566,149 @@ async function renderBugAdminList() {
 function setBugAdminFilter(f) {
   _bugAdminFilter = f;
   renderBugAdminList();
+}
+
+// ── EXPORT MASIVO DE BUGS A MARKDOWN ─────────────────────────────
+// Descarga un .md con todos los reportes que matchean el filtro
+// activo (pendientes / todos / resueltos). Pensado para que el dev
+// pueda leer todo de corrido y atacar varios bugs de una pasada.
+async function exportBugReportsMd() {
+  if (!sb) { showGlobalError('Sin conexión a BD', 4000); return; }
+  if (!isBugAdmin()) { showGlobalError('Solo admin puede exportar', 3000); return; }
+
+  showGlobalError('Generando export...', 1500);
+
+  // Mismo query que renderBugAdminList, respetando filtro activo
+  var query = sb.from('bug_reports').select('*').order('created_at', {ascending: false}).limit(500);
+  if (_bugAdminFilter === 'pendientes') {
+    query = query.in('status', ['nuevo', 'en_revision']);
+  } else if (_bugAdminFilter === 'resueltos') {
+    query = query.in('status', ['resuelto', 'descartado']);
+  }
+
+  try {
+    var {data, error} = await query;
+    if (error) { showGlobalError('Error al exportar: ' + error.message, 6000); return; }
+    if (!data || !data.length) { showGlobalError('Sin reportes en este filtro', 3000); return; }
+
+    var filterLabel = _bugAdminFilter === 'pendientes' ? 'Pendientes'
+                    : _bugAdminFilter === 'resueltos'  ? 'Resueltos'
+                    : 'Todos';
+
+    var now = new Date();
+    var stamp = now.toISOString().slice(0, 10); // YYYY-MM-DD
+    var nowStr = now.toLocaleString('es-CL');
+
+    // Helpers de formato
+    function escMd(s) {
+      // Markdown no tiene escape duro; basta con neutralizar backticks en texto libre
+      return String(s == null ? '' : s).replace(/`/g, "'");
+    }
+    function fmtSeverity(key) {
+      var s = BUG_SEVERITIES.find(function(x){ return x.key === key; });
+      if (!s) return key || '—';
+      var emoji = key === 'alto' ? '🔴' : key === 'medio' ? '🟡' : '🟢';
+      return emoji + ' ' + s.label;
+    }
+    function fmtStatus(key) {
+      var s = BUG_STATUSES.find(function(x){ return x.key === key; });
+      return s ? s.label : (key || '—');
+    }
+    function fmtArea(key) {
+      var a = BUG_AREAS.find(function(x){ return x.key === key; });
+      return a ? a.label : (key || '—');
+    }
+
+    // Construir el documento
+    var lines = [];
+    lines.push('# Reporte de Bugs — Rosso OPS');
+    lines.push('');
+    lines.push('**Filtro:** ' + filterLabel);
+    lines.push('**Generado:** ' + nowStr);
+    lines.push('**Total reportes:** ' + data.length);
+    lines.push('**Exportado por:** ' + (CU.name || CU.username));
+    lines.push('');
+
+    // Resumen rápido por severidad
+    var bySev = { alto: 0, medio: 0, bajo: 0 };
+    data.forEach(function(b){ if (bySev[b.severity] != null) bySev[b.severity]++; });
+    lines.push('## Resumen');
+    lines.push('');
+    lines.push('- 🔴 No puedo trabajar: **' + bySev.alto + '**');
+    lines.push('- 🟡 Me bloquea a veces: **' + bySev.medio + '**');
+    lines.push('- 🟢 Molesto: **' + bySev.bajo + '**');
+    lines.push('');
+    lines.push('---');
+    lines.push('');
+
+    // Detalle de cada bug
+    data.forEach(function(b, i) {
+      var when = b.created_at ? new Date(b.created_at).toLocaleString('es-CL') : '—';
+      lines.push('## ' + (i + 1) + '. ' + escMd(b.title));
+      lines.push('');
+      lines.push('| Campo | Valor |');
+      lines.push('|---|---|');
+      lines.push('| **ID** | `' + b.id + '` |');
+      lines.push('| **Reportado por** | ' + escMd(b.reporter_name) + ' (' + escMd(b.reporter_role || '—') + ') |');
+      lines.push('| **Fecha** | ' + when + ' |');
+      lines.push('| **Área** | ' + escMd(fmtArea(b.area)) + ' |');
+      lines.push('| **Severidad** | ' + fmtSeverity(b.severity) + ' |');
+      lines.push('| **Estado** | ' + fmtStatus(b.status) + ' |');
+      if (b.resolved_at) {
+        lines.push('| **Resuelto** | ' + new Date(b.resolved_at).toLocaleString('es-CL') + ' |');
+      }
+      lines.push('');
+
+      if (b.steps && b.steps.trim()) {
+        lines.push('### Pasos para reproducir');
+        lines.push('');
+        lines.push(escMd(b.steps));
+        lines.push('');
+      }
+
+      if (b.admin_notes && b.admin_notes.trim()) {
+        lines.push('### Notas internas');
+        lines.push('');
+        lines.push(escMd(b.admin_notes));
+        lines.push('');
+      }
+
+      if (b.context) {
+        lines.push('### Contexto técnico');
+        lines.push('');
+        lines.push('```json');
+        try {
+          lines.push(JSON.stringify(b.context, null, 2));
+        } catch(e) {
+          lines.push(String(b.context));
+        }
+        lines.push('```');
+        lines.push('');
+      }
+
+      lines.push('---');
+      lines.push('');
+    });
+
+    var md = lines.join('\n');
+
+    // Descargar como archivo
+    var blob = new Blob([md], {type: 'text/markdown;charset=utf-8'});
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = 'bugs_rosso_' + filterLabel.toLowerCase() + '_' + stamp + '.md';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+
+    logR('BUG_EXPORT_OK', {filter: _bugAdminFilter, count: data.length});
+    showGlobalError('✓ Exportados ' + data.length + ' reportes', 3000);
+  } catch(e) {
+    logR('BUG_EXPORT_THREW', {msg: e.message}, 'err');
+    showGlobalError('Error inesperado: ' + e.message, 5000);
+  }
 }
 
 function buildBugCardHTML(b) {
