@@ -417,21 +417,19 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     <input type="hidden" id="ck-rr"/>
     <textarea class="inp" id="ck-anom" placeholder="Anomalias encontradas (opcional)" style="height:52px"></textarea>
     <hr style="border:none;border-top:1px solid var(--border);margin:8px 0"/>
-    <!-- FIX C-2 (auditoría extrema): el doble control YA NO se autodeclara aquí.
-         Antes el técnico marcaba "Aprobado" en su propia auto-verificación, lo que
-         confundía: el doble control REAL es el modal m-double-check (con torque,
-         apriete, etiqueta, kilometraje, limpieza), ejecutado desde "Mis OTs"
-         después de cerrar el cronómetro. Acá se conserva un hidden con valor
-         "Pendiente" solo por compatibilidad con history.checklist y reportes
-         legacy. NO afecta el flujo: la OT solo cierra cuando saveDoubleCheck +
-         approveVisado se completan en sus modales propios. -->
-    <input type="hidden" id="ck-doble" value="Pendiente"/>
+    <!-- FASE 2.7: Doble control SI lo hace el técnico (auto-verificación final).
+         Visado queda oculto - lo hace el superior desde su panel. -->
+    <div class="lbl">Doble control <span style="color:var(--red)">*</span> <span style="font-size:10px;color:var(--wh4);font-weight:400">(tu auto-verificación final)</span></div>
+    <div class="radio-group">
+      <button class="radio-btn" onclick="pickRadio('ck-doble','Aprobado',this)">Aprobado</button>
+      <button class="radio-btn" onclick="pickRadio('ck-doble','Rechazado',this)">Rechazado</button>
+    </div>
+    <input type="hidden" id="ck-doble"/>
+    <!-- Visado oculto: lo asigna el superior desde la pestaña Visado -->
     <input type="hidden" id="ck-visado" value="Pendiente"/>
     <div style="background:#f4f7ff;border-left:3px solid var(--blue);padding:8px 10px;border-radius:3px;font-size:11px;color:var(--wh2);margin-bottom:8px;line-height:1.4">
-      <b>📋 Próximos pasos al finalizar</b><br/>
-      1. Llenar checklist técnico de la OT en "Mis OTs"<br/>
-      2. Cerrar el doble control (torque, apriete, etiqueta, km, limpieza)<br/>
-      3. Jefatura realizará el visado final
+      <b>📋 Visado por jefatura</b><br/>
+      Al finalizar este servicio, la OT pasará automáticamente a la lista de visado del jefe de taller. El visado lo hace un superior, tú no.
     </div>
     <div class="lbl">Observaciones finales</div>
     <textarea class="inp" id="ck-obs" placeholder="Observaciones opcionales" style="height:52px"></textarea>
@@ -1022,92 +1020,46 @@ async function syncServiceStateByPlate(opts) {
   var syncResults = {plate: plate, sched: 0, wo: false, action: opts.action};
 
   // 2) Sincronizar scheduled_services para esta patente.
-  //    FIX C-6 (auditoría extrema): NO sobrescribir technician_id/technician_name
-  //    cuando el agendado YA tiene técnico asignado. Antes, cualquier acción de
-  //    cualquier técnico reescribía el campo perdiendo la asignación original
-  //    (ej: agendado para Juan, ejecutado por Pedro → al sincronizar quedaba como
-  //    Pedro y se perdía la trazabilidad de "quién estaba originalmente asignado").
-  //
-  //    Ahora:
-  //      - Siempre actualizamos `status`.
-  //      - `technician_id`/`technician_name` SOLO si el agendado estaba sin
-  //         asignar (technician_id IS NULL).
-  //      - Intentamos registrar el ejecutor real en `executed_by_user_id` /
-  //         `executed_by_name` / `executed_at` (best-effort: si la columna
-  //         no existe en BD, ignoramos el error 42703).
+  //    Importante: NO acotamos a "hoy" — el bug histórico era ese exactamente,
+  //    los servicios atrasados de días previos quedaban con status 'pendiente'
+  //    aunque el técnico ya hubiera registrado tiempo. Ahora actualizamos todos
+  //    los pendientes/en_proceso con esa patente.
   try {
     if (sb && plate && plate !== 'Logistica de taller' && schedStatus) {
-      // Build payload base
-      var execMeta = {
-        executed_by_user_id: techId,
-        executed_by_name:    techName,
-        executed_at:         new Date().toISOString()
-      };
-      // Helper: aplicar update con executed_* y, en caso de error 42703 (columna
-      // inexistente), reintentar sin esas columnas.
-      async function _updSched(filterFn) {
-        var basePayload = {status: schedStatus};
-        var withExec = Object.assign({}, basePayload, execMeta);
-        // Primer intento: con executed_*
-        var r = await filterFn(withExec);
-        if (r && r.error && (r.error.code === '42703' || /column .* does not exist/i.test(r.error.message || ''))) {
-          // Reintento: sin executed_*
-          r = await filterFn(basePayload);
-        }
-        return r;
-      }
-
-      // 2.a) Coincidencia exacta de patente — preserva tech original.
-      var rA = await _updSched(function(payload){
-        return sb.from('scheduled_services')
-          .update(payload)
-          .eq('plate', plate)
-          .in('status', ['pendiente','en_proceso','reagendado'])
-          .select('id, technician_id');
-      });
+      var q = sb.from('scheduled_services')
+        .update({
+          status: schedStatus,
+          technician_id: techId,
+          technician_name: techName
+        });
+      // Coincidencia tolerante por patente (con o sin guión).
+      // Hacemos dos updates: por valor exacto y por valor sin guión, ya que
+      // PostgREST no expone la función replace() directamente como filtro.
+      var rA = await q.eq('plate', plate)
+        .in('status', ['pendiente','en_proceso','reagendado'])
+        .select('id');
       if (rA && rA.error) {
         logR('SYNC_SCHED_ERR_A', {msg: rA.error.message, plate: plate}, 'warn');
       } else if (rA && rA.data) {
         syncResults.sched += rA.data.length;
-        // Para los agendados de esta patente que estaban SIN tech asignado,
-        // recién ahí sí escribimos technician_id/_name (asignación implícita).
-        var unassignedIds = rA.data.filter(function(r){ return !r.technician_id; }).map(function(r){ return r.id; });
-        if (unassignedIds.length && techId) {
-          try {
-            await sb.from('scheduled_services')
-              .update({technician_id: techId, technician_name: techName})
-              .in('id', unassignedIds);
-          } catch(_){}
-        }
       }
-
-      // 2.b) Variantes de patente con/sin guión (mismo plate normalizado).
+      // Variante sin guión / variantes raras: hacer un fetch + filtro local
       try {
         var rAll = await sb.from('scheduled_services')
-          .select('id, plate, status, technician_id')
+          .select('id,plate,status')
           .in('status', ['pendiente','en_proceso','reagendado']);
         if (rAll && rAll.data) {
-          var matching = rAll.data.filter(function(s){
-            return normalizePlate(s.plate) === plateNorm && s.plate !== plate;
-          });
-          var matchingIds = matching.map(function(s){ return s.id; });
+          var matchingIds = rAll.data
+            .filter(function(s){ return normalizePlate(s.plate) === plateNorm && s.plate !== plate; })
+            .map(function(s){ return s.id; });
           if (matchingIds.length) {
-            var rB = await _updSched(function(payload){
-              return sb.from('scheduled_services').update(payload).in('id', matchingIds);
-            });
+            var rB = await sb.from('scheduled_services')
+              .update({status: schedStatus, technician_id: techId, technician_name: techName})
+              .in('id', matchingIds);
             if (rB && rB.error) {
               logR('SYNC_SCHED_ERR_B', {msg: rB.error.message}, 'warn');
             } else {
               syncResults.sched += matchingIds.length;
-            }
-            // Asignación implícita solo a los sin tech.
-            var unassignedIdsB = matching.filter(function(s){ return !s.technician_id; }).map(function(s){ return s.id; });
-            if (unassignedIdsB.length && techId) {
-              try {
-                await sb.from('scheduled_services')
-                  .update({technician_id: techId, technician_name: techName})
-                  .in('id', unassignedIdsB);
-              } catch(_){}
             }
           }
         }
@@ -2341,7 +2293,7 @@ let curTechTab = 't-nuevo';
 let curBossTab = 'b-online';
 let prevScreen = null;
 let liveData = [];
-let pollInt = null, tickInt = null, shiftEndInt = null;
+let pollInt = null, tickInt = null;
 let lastNotifId = null;
 let editUserId = null, editEventId = null;
 let radioState = {};
@@ -3060,12 +3012,6 @@ function startPolling() {
   refreshAvatarsCache();
   pollAll();
   pollInt = setInterval(pollAll, 3000);
-  // FIX C-5: ciclo de auto-pausa por término de jornada cada 60s.
-  // Empezamos con 5s de gracia para que el primer fetchLive haya poblado liveData.
-  setTimeout(function(){ if (CU) autoPauseAtShiftEnd(); }, 5000);
-  shiftEndInt = setInterval(function(){
-    if (CU) autoPauseAtShiftEnd();
-  }, 60000);
   tickInt = setInterval(function() {
     // Este interval corre cada 1 segundo y hace UNA sola cosa: repintar la UI.
     // Todos los numeros de tiempo se calculan derivados de timestamps con
@@ -3098,7 +3044,6 @@ function startPolling() {
 function stopPolling() {
   if (pollInt) { clearInterval(pollInt); pollInt = null; }
   if (tickInt) { clearInterval(tickInt); tickInt = null; }
-  if (shiftEndInt) { clearInterval(shiftEndInt); shiftEndInt = null; }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -3133,150 +3078,6 @@ async function pollAll() {
   if (!CU) return;
   await Promise.all([fetchLive(), fetchNotifs()]);
 }
-
-// ═══════════════════════════════════════════════════════════════════
-// FIX C-5 (auditoría extrema): AUTO-PAUSA POR TÉRMINO DE JORNADA
-// ═══════════════════════════════════════════════════════════════════
-// Problema: el técnico puede olvidar pausar al irse del taller. Antes:
-//   - El servicio quedaba 'running' toda la noche/fin de semana.
-//   - Al día siguiente bloqueaba al técnico para iniciar otro (línea 3877:
-//     "Ya tienes un servicio en curso").
-//   - Manchaba el dashboard de jefatura mostrando "En curso" fuera de horario.
-//
-// Solución: cada 60s revisamos sesiones 'running'. Si la hora actual cae
-// FUERA de un bloque laboral (definido en WORK_HOURS) y la sesión sigue
-// corriendo, la pausamos con motivo "Término de jornada (auto)" anclando
-// `paused_at` al fin exacto del último bloque laboral. Así el cálculo de
-// tiempo trabajado queda intacto y la pausa abierta no acumula tiempo
-// nocturno (effectivePauseMsBetween ya excluye fuera de jornada).
-//
-// La auto-pausa se aplica SOLO al técnico actual sobre SUS sesiones —
-// cada cliente decide por sí mismo, sin lock global. Es idempotente:
-// si otro cliente ya pausó, el update no agrega una pausa duplicada.
-// ═══════════════════════════════════════════════════════════════════
-
-// _isInsideWorkingHours(d) — true si el instante d cae dentro de un bloque laboral.
-function _isInsideWorkingHours(d) {
-  var blocks = getWorkingIntervals(d);
-  if (!blocks || !blocks.length) return false;
-  var t = d.getTime();
-  for (var i = 0; i < blocks.length; i++) {
-    if (t >= blocks[i][0] && t < blocks[i][1]) return true;
-  }
-  return false;
-}
-
-// _lastBlockEndBefore(d) — devuelve el timestamp del fin del último bloque
-// laboral terminado antes de `d`. Útil para anclar paused_at al cierre exacto
-// de la jornada (no a "ahora"). Busca hacia atrás hasta 7 días.
-function _lastBlockEndBefore(d) {
-  var t = d.getTime();
-  var cursor = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);
-  for (var k = 0; k < 8; k++) {
-    var blocks = getWorkingIntervals(cursor);
-    // bloques del día — recorrer en reversa
-    for (var i = blocks.length - 1; i >= 0; i--) {
-      if (blocks[i][1] <= t) return blocks[i][1];
-    }
-    // retroceder un día calendario
-    cursor = new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate() - 1, 0, 0, 0, 0);
-  }
-  return null; // no se pudo determinar (timestamps muy antiguos / corruptos)
-}
-
-// Guard: una sesión recién auto-pausada no debe re-procesarse hasta el próximo
-// ciclo de fetchLive. Se rastrea por session_key.
-var _autoPausedKeys = {};
-
-async function autoPauseAtShiftEnd() {
-  try {
-    if (!CU || !sb) return;
-    var now = new Date();
-    if (_isInsideWorkingHours(now)) return; // dentro de jornada → no hacer nada
-
-    // Sesiones 'running' del usuario actual.
-    var myRunning = (liveData || []).filter(function(s){
-      return s.username === CU.username && s.status === 'running' && !_autoPausedKeys[s.session_key];
-    });
-    if (!myRunning.length) return;
-
-    var anchor = _lastBlockEndBefore(now);
-    if (!anchor) {
-      logR('AUTO_PAUSE_NO_ANCHOR', {now: now.toISOString()}, 'warn');
-      return;
-    }
-    var pausedAtISO = new Date(anchor).toISOString();
-
-    for (var i = 0; i < myRunning.length; i++) {
-      var s = myRunning[i];
-      _autoPausedKeys[s.session_key] = true;
-
-      // Construir array de pausas con la nueva entrada cerrada conceptualmente
-      // pero abierta (resumed_at=null) para que al volver al taller el técnico
-      // simplemente reanude.
-      var pauses = (s.pauses || []).slice();
-      pauses.push({
-        reason: 'Término de jornada (auto)',
-        at: fmtT(s.seconds || 0),
-        paused_at: pausedAtISO,
-        resumed_at: null,
-        duration_ms: null,
-        auto: true
-      });
-
-      try {
-        var rUp = await sb.from('active_sessions').update({
-          running: false,
-          status: 'paused',
-          pauses: pauses,
-          paused_at: pausedAtISO,
-          updated_at: new Date().toISOString()
-        }).eq('session_key', s.session_key).eq('status', 'running'); // condición de carrera
-
-        if (rUp && rUp.error) {
-          logR('AUTO_PAUSE_ERR', {key: s.session_key, msg: rUp.error.message}, 'warn');
-          delete _autoPausedKeys[s.session_key]; // permitir retry
-          continue;
-        }
-
-        // Si era MI sesión activa local, sincronizar T
-        if (T.sessionKey === s.session_key) {
-          T.running = false;
-          T.pauses = pauses;
-        }
-
-        // Log estructurado vía syncServiceStateByPlate
-        try {
-          await syncServiceStateByPlate({
-            plate: s.plate,
-            workOrderId: s.work_order_id || null,
-            action: 'session_auto_paused_shift_end',
-            prevStatus: 'running',
-            newStatus: 'paused',
-            origin: 'auto_pause',
-            serviceLabel: s.service,
-            sessionKey: s.session_key,
-            detail: {anchor: pausedAtISO, reason: 'Término de jornada (auto)'},
-            skipWoUpdate: true,
-            refreshLive: false
-          });
-        } catch(_){}
-
-        logR('AUTO_PAUSE_OK', {key: s.session_key, srv: s.service, plate: s.plate, anchor: pausedAtISO});
-        try { showGlobalError('Tu servicio "' + (s.service || '') + '" se pausó automáticamente al cierre de jornada.', 5000); } catch(_){}
-      } catch(e) {
-        logR('AUTO_PAUSE_THREW', {key: s.session_key, msg: e.message}, 'warn');
-        delete _autoPausedKeys[s.session_key];
-      }
-    }
-    if (myRunning.length) {
-      try { await fetchLive(); } catch(_){}
-    }
-  } catch(e) {
-    logR('AUTO_PAUSE_OUTER_ERR', {msg: e.message}, 'warn');
-  }
-}
-window.autoPauseAtShiftEnd = autoPauseAtShiftEnd;
 
 // ═══════════════════════════════════════════════════════════════════
 // CALCULO DE TIEMPO DETERMINISTICO
@@ -3737,41 +3538,15 @@ async function fetchLive() {
   const {data, error} = await sb.from('active_sessions').select('*').order('started_at');
   logR('FETCH_LIVE', {count: data ? data.length : 0, error: error ? error.message : null});
   if (error) { logR('FETCH_LIVE_ERR', {msg: error.message}, 'err'); return; }
-
-  // FIX C-3 (auditoría extrema): detectar si MI sesión local ya no existe en BD.
-  // Casos: jefatura forzó finalización desde su panel, otro dispositivo cerró,
-  // o la sesión fue eliminada. Antes el código local mantenía status 'running'
-  // o 'paused' indefinidamente y el técnico veía un cronómetro fantasma.
-  if (T.sessionKey) {
-    var stillExists = (data || []).some(function(x){ return x.session_key === T.sessionKey; });
-    if (!stillExists) {
-      logR('SESSION_GONE_REMOTE', {key: T.sessionKey, srv: T.srvLabel}, 'warn');
-      var goneLabel = T.srvLabel || 'tu servicio';
-      resetT();
-      try { showGlobalError('Tu sesión "' + goneLabel + '" fue cerrada desde otro dispositivo o por jefatura. Se actualizó la pantalla.', 6000); } catch(_){}
-    }
-  }
-
   // liveData guarda el snapshot tal cual de BD. El tiempo se calcula en el render
   // usando liveSecondsNow(). No mutamos .seconds aqui.
   liveData = (data || []).map(function(s) {
     var local = Object.assign({}, s);
-    // FIX C-3: la merge con estado local SOLO aplica cuando el status remoto
-    // sigue siendo "vivo" (running/paused). Si BD ya migró a checklist_pending,
-    // completed o cualquier otro estado terminal, RESPETAR la verdad de BD.
+    // Para MI sesion, si tengo state local T mas reciente, preservarlo.
+    // Principalmente para mantener T.pauses sincronizado antes de que llegue el refresh de BD.
     if (T.sessionKey && s.session_key === T.sessionKey) {
-      var remoteIsLive = (s.status === 'running' || s.status === 'paused');
-      if (remoteIsLive) {
-        local.status = T.running ? 'running' : (T.pauses.length ? 'paused' : s.status);
-        local.pauses = T.pauses.length ? T.pauses : s.pauses;
-      } else {
-        // BD cerró la sesión (checklist_pending / completed / etc). Sincronizar local.
-        logR('SESSION_REMOTE_CLOSED', {key: T.sessionKey, remoteStatus: s.status}, 'warn');
-        if (T.running || T.pauses.length) {
-          // Estado local quedó desfasado — limpiar para no mostrar cronómetro corriendo.
-          T.running = false;
-        }
-      }
+      local.status = T.running ? 'running' : (T.pauses.length ? 'paused' : s.status);
+      local.pauses = T.pauses.length ? T.pauses : s.pauses;
     }
     return local;
   });
@@ -4415,12 +4190,6 @@ async function doResume() {
     T.plate = mine.plate || '';
     logR('RESUME_RECOVERED_STATE', {key: T.sessionKey, sec: T.sec});
   }
-  // FIX C-5: al reanudar manualmente, limpiar el flag de auto-pausa para esa
-  // session_key. Si se pasa un nuevo cierre de jornada, podrá auto-pausarse de
-  // nuevo. Sin esto, la sesión quedaría inmune a auto-pausa el resto del día.
-  if (T.sessionKey && _autoPausedKeys && _autoPausedKeys[T.sessionKey]) {
-    delete _autoPausedKeys[T.sessionKey];
-  }
   // FASE 3.2: la pausa que se está cerrando se mide en HORARIO LABORAL.
   // Antes: (Date.now() - paused_at) sumaba noches completas y rompía KPIs.
   // Ahora: solo el tiempo efectivo que el taller estuvo abierto.
@@ -4663,17 +4432,16 @@ async function submitChecklist() {
   var aceite = document.getElementById('ck-aceite').value;
   var rt = document.getElementById('ck-rt').value;
   var rr = document.getElementById('ck-rr').value;
-  // FIX C-2: doble_control y visado YA NO se autodeclaran. Se persisten como
-  // "Pendiente" en history.checklist solo por compat con reportes legacy.
-  // El doble control real vive en work_orders.checklist_data.double_check_*
-  // y el visado en work_orders.checklist_data.visado_*.
-  var doble = 'Pendiente';
-  var visado = 'Pendiente';
+  var doble = document.getElementById('ck-doble').value;
+  var visado = document.getElementById('ck-visado').value;
 
   if (!litros) { fail('Indica los litros de aceite'); return; }
   if (!aceite) { fail('Selecciona el tipo de aceite'); return; }
   if (!rt) { fail('Selecciona el tipo de prueba de ruta'); return; }
   if (!rr) { fail('Indica el resultado de la prueba de ruta'); return; }
+  if (!doble) { fail('Indica el resultado del doble control (auto-verificación final)'); return; }
+  // FASE 2.7: visado YA NO se pide al técnico — lo hace el superior. Forzar a 'Pendiente'.
+  if (!visado || visado === 'Aprobado' || visado === 'Rechazado') visado = 'Pendiente';
 
   var checklist = {
     litros: parseFloat(litros), aceite: aceite,
@@ -4826,63 +4594,52 @@ async function doFinish(checklist, sessionKey) {
         var rste = await sb.from('service_time_entries').insert(ste);
         if (rste && rste.error) logR('STE_FINISH_ERR', {msg: rste.error.message}, 'warn');
 
-        // FIX C-1 (auditoría extrema): el cierre del cronómetro YA NO promueve la OT
-        // directo a pending_visado. Esa promoción saltaba el checklist técnico y el
-        // doble control de cierre, ensuciando la cola de visadores con OTs que aún
-        // no estaban listas para visar.
-        //
-        // Progresión correcta de la OT:
-        //   in_progress (cierre cronómetro)
-        //     → pending_double_check (saveCheckTech, modal m-tech-checklist)
-        //       → pending_visado     (saveDoubleCheck, modal m-double-check)
-        //         → closed           (approveVisado, modal m-visado)
-        //
-        // Servicios sin checklist técnico (Lavado, Compras, Movimiento, Estándar de
-        // taller, Cierre de taller) no necesitan ese flujo: se sincronizan a
-        // 'completado' en scheduled_services más abajo y NO tocan work_orders.
-        // Ver srvNeedsChecklist() para la lista.
+        // FASE 2.7 BUG-FIX: auto-promover la OT a pending_visado al cerrar el cronometro.
+        // Antes el tecnico se auto-marcaba "visado aprobado" en su propio checklist y la OT
+        // se quedaba en assigned/open. Ahora al finalizar se manda a Benjamin / visadores.
+        // FASE 2.7-fix abr 2026: skip para servicios de apoyo logistico (Lavado, Estandar
+        // de taller, Compras, Movimiento, Cierre). Estos no llevan checklist tecnico ni
+        // necesitan visado: cierran directo. Ver srvNeedsChecklist().
         var skipVisado = (sess && sess.service && !srvNeedsChecklist(sess.service));
         if (skipVisado) {
           logR('OT_SKIP_VISADO_LOGISTICO', {srv: sess && sess.service, wo: woId});
         }
         try {
           var rGet = await sb.from('work_orders').select('status,ot_number,service_classification').eq('id', woId).maybeSingle();
-          // Solo cambiamos estado en dos casos:
-          //   1) servicio logístico (skipVisado) y la OT estaba "open"/"assigned":
-          //      la subimos a 'in_progress' (alguien estuvo trabajando en ella).
-          //   2) servicio normal y la OT estaba "open"/"assigned":
-          //      idem, la subimos a 'in_progress' para que aparezca en "Mis OTs".
-          //      El cierre real (pending_double_check / pending_visado / closed)
-          //      lo hace el flujo de checklist técnico → doble control → visado.
-          if (rGet && rGet.data && (rGet.data.status === 'open' || rGet.data.status === 'assigned')) {
+          if (rGet && rGet.data && !skipVisado && ['open','assigned','in_progress','pending_double_check'].indexOf(rGet.data.status) !== -1) {
             await sb.from('work_orders').update({
-              status: 'in_progress',
+              status: 'pending_visado',
               updated_by: CU ? CU.id : null
             }).eq('id', woId);
-            logR('OT_TO_IN_PROGRESS_AT_FINISH', {wo: woId, ot: rGet.data.ot_number, from: rGet.data.status});
-          } else if (rGet && rGet.data) {
-            logR('OT_KEEP_STATUS_AT_FINISH', {wo: woId, ot: rGet.data.ot_number, status: rGet.data.status, skipVisado: skipVisado});
+            logR('OT_AUTO_TO_VISADO', {wo: woId, ot: rGet.data.ot_number, from: rGet.data.status});
+            // Notificar a visadores
+            try {
+              var visadores = (typeof getUsersWithExplicitPerm === 'function') ? (getUsersWithExplicitPerm('can_visar') || []) : [];
+              for (var iv = 0; iv < visadores.length; iv++) {
+                await sb.from('notifications').insert({
+                  type: 'visado',
+                  title: 'Nueva OT pendiente de visado',
+                  sub: 'OT-' + (rGet.data.ot_number || '?') + ' · ' + (rGet.data.service_classification || '?') + ' · ' + (finPlate || '?') + ' por ' + CU.name,
+                  target_user_id: visadores[iv].id,
+                  work_order_id: woId
+                });
+              }
+            } catch(_){}
           }
-          // FIX C-1: las notificaciones a visadores se mueven a saveDoubleCheck()
-          // (línea 9449), donde corresponden. Antes se enviaban acá, generando avisos
-          // de OTs incompletas. Ya estaban movidas en FASE 3.2; este código solo
-          // confirma que NO se notifica desde el cierre de cronómetro.
-        } catch(e) { logR('OT_FINISH_STATUS_ERR', {msg: e.message}, 'warn'); }
+        } catch(e) { logR('OT_AUTO_VISADO_ERR', {msg: e.message}, 'warn'); }
       }
     } catch(_){}
 
     var {error: dErr} = await sb.from('active_sessions').delete().eq('session_key', useKey);
     logR('FINISH_DELETE_SESSION', {key: useKey, error: dErr ? dErr.message : null});
 
-    // FIX C-1: la sincronización por patente al cerrar cronómetro propaga estado
-    // OPERATIVO, no de OT. Si el servicio es logístico (sin checklist) cierra y
-    // pasa a 'completado' en scheduled_services. Si es un servicio con checklist,
-    // el agendado QUEDA EN 'en_proceso' (sigue habiendo trabajo: checklist,
-    // doble control, visado). Solo cuando el visado se aprueba pasa a 'completado'.
+    // FASE 3.0: sincronización por patente al finalizar.
+    // Si tiene OT con checklist (skipVisado=false) la OT subió a pending_visado.
+    // Si es servicio sin checklist (Lavado, Logística, etc.) lo marcamos completado.
     try {
-      var derivedNew = (checklist && typeof checklist === 'object')
-        ? 'in_progress'    // queda activo en BD; sched seguirá en 'en_proceso'
-        : 'completado';    // logística cierra acá
+      var derivedNew = checklist && typeof checklist === 'object'
+        ? 'pending_visado'
+        : 'completado';
       await syncServiceStateByPlate({
         plate: finPlate,
         workOrderId: (sess && sess.work_order_id) || null,
@@ -4892,7 +4649,7 @@ async function doFinish(checklist, sessionKey) {
         origin: 'timer',
         serviceLabel: finSrv,
         sessionKey: useKey,
-        skipWoUpdate: true // ya manejado arriba
+        skipWoUpdate: true // ya se actualizó arriba si correspondía
       });
     } catch(_){}
 
@@ -4926,23 +4683,13 @@ async function renderMisServicios(body) {
   body.innerHTML = '<div class="empty"><span class="spin"></span>Cargando...</div>';
 
   var myRows = liveData.filter(function(s) { return s.username === CU.username; });
-  // FIX C-4: dos queries distintos.
-  //   histData         → personal, últimos 20: alimenta sección "Finalizados recientes" del técnico.
-  //   histAllRecent    → global últimos 30 días, hasta 500: alimenta el cruce por patente
-  //                       que evita el bug "Atrasado con 0 registros" cuando el cierre
-  //                       lo hizo otro técnico (asistencia / cambio de turno).
-  var personalQ = sb.from('history').select('*').eq('username', CU.username)
+  var {data: histData} = await sb.from('history').select('*').eq('username', CU.username)
     .order('ended_at', {ascending: false}).limit(20);
-  var since30 = new Date(Date.now() - 30*24*3600*1000).toISOString();
-  var globalQ = sb.from('history').select('plate,ended_at,username,service')
-    .gte('ended_at', since30)
-    .order('ended_at', {ascending: false}).limit(500);
-  var schedQ = sb.from('scheduled_services').select('*')
+  var {data: schedData} = await sb.from('scheduled_services').select('*')
     .eq('technician_id', CU.id).neq('status','cancelado').neq('status','completado')
     .order('scheduled_at').limit(10);
-  var [{data: histData}, {data: histAllRecent}, {data: schedData}] = await Promise.all([personalQ, globalQ, schedQ]);
 
-  logR('MIS_SERVICIOS', {live: myRows.length, hist: histData ? histData.length : 0, histGlobal: histAllRecent ? histAllRecent.length : 0});
+  logR('MIS_SERVICIOS', {live: myRows.length, hist: histData ? histData.length : 0});
   body.innerHTML = '';
 
   // Summary bar
@@ -4995,9 +4742,7 @@ async function renderMisServicios(body) {
       }
     });
     var histByPlate = {};
-    // FIX C-4: cruce con historial GLOBAL de 30 días (hasta 500 registros) para
-    // que un agendado asignado a Juan no aparezca "Atrasado" si Pedro lo cerró.
-    (histAllRecent || []).forEach(function(h){
+    (histData || []).forEach(function(h){
       if (h && h.plate && h.plate !== 'Logistica de taller') {
         var pn2 = normalizePlate(h.plate);
         if (pn2 && !histByPlate[pn2]) histByPlate[pn2] = h.ended_at;
@@ -6466,16 +6211,12 @@ async function renderBossPlan(body) {
         liveByPlate[p] = s.status;
       }
     });
-    // FIX C-4 (auditoría extrema): consultar history de los ÚLTIMOS 30 DÍAS, no solo
-    // hoy. El planning visualiza próximos 7 días, pero un servicio agendado puede
-    // haberse ejecutado días antes (reagendado, asistencia previa, etc.). Antes
-    // limitar a "hoy" hacía aparecer "Atrasado" servicios ya cerrados pero antiguos.
-    var hist30StartISO = new Date(Date.now() - 30*24*3600*1000).toISOString();
+    // Tambien consultar history de hoy para marcar 'completado'
+    var todayStartISO = today.toISOString();
     var rhist = await sb.from('history')
       .select('plate, ended_at')
-      .gte('ended_at', hist30StartISO)
-      .order('ended_at', {ascending: false})
-      .limit(500);
+      .gte('ended_at', todayStartISO)
+      .order('ended_at', {ascending: false});
     var histByPlate = {};
     if (rhist && rhist.data) {
       rhist.data.forEach(function(h){
@@ -6581,10 +6322,45 @@ var _histSelected = {};
 async function renderBossHist(body) {
   body.innerHTML = '<div class="empty"><span class="spin"></span>Cargando...</div>';
   var {data} = await sb.from('history').select('*').order('ended_at',{ascending:false}).limit(200);
-  // FASE 2.7 FIX: el checklist YA viene como columna JSON en cada fila de history.
-  // No hay que joinear con service_checklists (esa tabla guarda lo mismo pero es secundaria).
+
+  // Cargar work_orders cerradas para cruzar checklist_data (tech_checklist, double_check, visado)
+  var woMap = {}; // plate -> [ot, ...] ordenadas por updated_at desc
+  try {
+    var {data: woData} = await sb.from('work_orders')
+      .select('id,plate,checklist_data,service_classification,updated_at,closed_at,status,ot_number')
+      .in('status', ['closed','pending_visado','pending_double_check'])
+      .order('updated_at', {ascending: false})
+      .limit(400);
+    (woData || []).forEach(function(wo) {
+      var p = (wo.plate || '').trim().toUpperCase();
+      if (p) {
+        if (!woMap[p]) woMap[p] = [];
+        woMap[p].push(wo);
+      }
+    });
+  } catch(e) { /* no bloquear si falla el join */ }
+
   _histData = (data || []).map(function(h){
     h._checklist = h.checklist || null;
+    // Intentar cruzar con work_order por plate + ended_at cercano (ventana 72h)
+    var plate = (h.plate || '').trim().toUpperCase();
+    var endedMs = h.ended_at ? new Date(h.ended_at).getTime() : 0;
+    h._ot = null;
+    if (plate && woMap[plate] && endedMs) {
+      var candidates = woMap[plate].filter(function(wo) {
+        var woMs = wo.updated_at ? new Date(wo.updated_at).getTime() : 0;
+        return Math.abs(woMs - endedMs) < 72 * 3600 * 1000; // 72h ventana
+      });
+      if (candidates.length) {
+        // Tomar el más cercano en tiempo
+        candidates.sort(function(a, b) {
+          var dA = Math.abs(new Date(a.updated_at).getTime() - endedMs);
+          var dB = Math.abs(new Date(b.updated_at).getTime() - endedMs);
+          return dA - dB;
+        });
+        h._ot = candidates[0];
+      }
+    }
     return h;
   });
   _histSelected = {};
@@ -6704,7 +6480,43 @@ function buildHistDetailHTML(r) {
     });
     html += '</ul></div>';
   }
-  if (r._checklist) {
+
+  // ── Checklist del técnico (nuevo sistema) ──
+  var cd = (r._ot && r._ot.checklist_data) ? r._ot.checklist_data : null;
+  var tc = cd ? (cd.tech_checklist || null) : null;
+
+  if (tc) {
+    html += '<hr style="border:none;border-top:1px solid var(--border);margin:10px 0"/>';
+    html += '<div style="font-weight:700;color:var(--red)">CHECKLIST DEL TÉCNICO</div>';
+    var srvKey = r._ot && r._ot.service_classification;
+    var techDef = srvKey ? CHECKLISTS_TECH[srvKey] : null;
+    if (techDef) {
+      techDef.sections.forEach(function(sec) {
+        html += '<div style="margin-top:8px;font-size:11px;font-weight:700;color:var(--red);text-transform:uppercase">' + escapeHTML(sec.title) + '</div>';
+        sec.items.forEach(function(it) {
+          var val = tc[it.key];
+          var displayVal = val === true ? '<span style="color:var(--green);font-weight:700">SÍ</span>'
+                         : val === false ? '<span style="color:var(--red);font-weight:700">NO</span>'
+                         : (val == null || val === '') ? '<span style="color:var(--wh4)">—</span>'
+                         : '<b>' + escapeHTML(String(val)) + '</b>';
+          html += '<div style="font-size:11px;color:var(--wh2);padding:3px 0;border-bottom:1px dotted #eee"><span style="color:var(--wh3)">' + escapeHTML(it.label) + ':</span> ' + displayVal + '</div>';
+        });
+      });
+    } else {
+      // Sin definición de tipo: clave/valor genérico
+      Object.keys(tc).forEach(function(k) {
+        var val = tc[k];
+        if (val == null || val === '') return;
+        var displayVal = val === true ? '<span style="color:var(--green);font-weight:700">SÍ</span>'
+                       : val === false ? '<span style="color:var(--red);font-weight:700">NO</span>'
+                       : '<b>' + escapeHTML(String(val)) + '</b>';
+        html += '<div style="font-size:11px;color:var(--wh2);padding:2px 0">' + escapeHTML(k.replace(/_/g,' ')) + ': ' + displayVal + '</div>';
+      });
+    }
+    var tcObs = tc.tech_observations || tc.observaciones || tc.obs || null;
+    if (tcObs) html += '<div style="margin-top:6px"><b>Observaciones del técnico:</b><br/>' + escapeHTML(tcObs) + '</div>';
+  } else if (r._checklist) {
+    // Fallback checklist viejo
     var ck = r._checklist;
     html += '<hr style="border:none;border-top:1px solid var(--border);margin:10px 0"/>';
     html += '<div style="font-weight:700;color:var(--red)">CHECKLIST DEL MECÁNICO</div>';
@@ -6715,11 +6527,49 @@ function buildHistDetailHTML(r) {
       var prTxt = (typeof pr === 'object') ? ((pr.tipo || '') + ' · ' + (pr.resultado || '') + (pr.anomalias ? ' · Anomalías: ' + pr.anomalias : '')) : String(pr);
       html += '<div>Prueba de ruta: ' + escapeHTML(prTxt) + '</div>';
     }
-    if (ck.doble_control) html += '<div><b>Doble control</b> (auto-verificación del mecánico): ' + escapeHTML(String(ck.doble_control)) + '</div>';
+    if (ck.doble_control) html += '<div><b>Doble control:</b> ' + escapeHTML(String(ck.doble_control)) + '</div>';
     if (ck.observaciones) html += '<div style="margin-top:6px"><b>Observaciones:</b><br/>' + escapeHTML(ck.observaciones) + '</div>';
-    // FASE 2.7: NO mostrar ck.visado del checklist viejo. El visado real lo hace el supervisor
-    // desde la pestaña Visado y queda en work_orders.checklist_data.visado_status.
-    html += '<div style="margin-top:8px;font-size:10px;color:var(--wh4);font-style:italic">El visado oficial lo realiza un superior desde la pestaña Visado.</div>';
+  }
+
+  // ── Doble Control ──
+  var dc = cd ? (cd.double_check || null) : null;
+  if (dc && Object.keys(dc).length) {
+    html += '<hr style="border:none;border-top:1px solid var(--border);margin:10px 0"/>';
+    html += '<div style="font-weight:700;color:var(--gold3)">DOBLE CONTROL DE CIERRE</div>';
+    var dcMeta = cd.double_check_meta || {};
+    var dcPor = dcMeta.completed_by_name || cd.double_check_completed_by_name || '';
+    var dcAt = dcMeta.completed_at || cd.double_check_completed_at || '';
+    if (dcPor) html += '<div style="font-size:10px;color:var(--wh3);margin-bottom:4px">Por: ' + escapeHTML(dcPor) + (dcAt ? ' · ' + new Date(dcAt).toLocaleString('es-CL') : '') + '</div>';
+    CHECKLIST_DOBLE_CONTROL.forEach(function(it) {
+      var val = dc[it.key];
+      if (val == null) return;
+      var displayVal = val === true ? '<span style="color:var(--green);font-weight:700">✓ SÍ</span>'
+                     : val === false ? '<span style="color:var(--red);font-weight:700">✗ NO</span>'
+                     : (val !== '' ? '<b>' + escapeHTML(String(val)) + '</b>' : null);
+      if (!displayVal) return;
+      html += '<div style="font-size:11px;color:var(--wh2);padding:3px 0;border-bottom:1px dotted #eee"><span style="color:var(--wh3)">' + escapeHTML(it.label) + ':</span> ' + displayVal + '</div>';
+    });
+  }
+
+  // ── Visado ──
+  var vc = cd ? (cd.visado_checklist || null) : null;
+  var visadoAt = cd ? (cd.visado_checklist_completed_at || cd.visado_at || null) : null;
+  var visadoBy = cd ? (cd.visado_by_name || cd.visado_checklist_by_name || null) : null;
+  if (vc && Object.keys(vc).length) {
+    html += '<hr style="border:none;border-top:2px solid var(--green);margin:10px 0"/>';
+    html += '<div style="font-weight:700;color:var(--green)">✓ VISADO</div>';
+    if (visadoBy) html += '<div style="font-size:10px;color:var(--wh3);margin-bottom:4px">Por: ' + escapeHTML(visadoBy) + (visadoAt ? ' · ' + new Date(visadoAt).toLocaleString('es-CL') : '') + '</div>';
+    CHECKLIST_VISADO.forEach(function(it) {
+      var val = vc[it.key];
+      if (val == null) return;
+      var displayVal = val === true ? '<span style="color:var(--green);font-weight:700">✓ SÍ</span>'
+                     : val === false ? '<span style="color:var(--red);font-weight:700">✗ NO</span>'
+                     : (val !== '' ? '<b>' + escapeHTML(String(val)) + '</b>' : null);
+      if (!displayVal) return;
+      html += '<div style="font-size:11px;color:var(--wh2);padding:3px 0;border-bottom:1px dotted #eee"><span style="color:var(--wh3)">' + escapeHTML(it.label) + ':</span> ' + displayVal + '</div>';
+    });
+  } else {
+    html += '<div style="margin-top:8px;font-size:10px;color:var(--wh4);font-style:italic">Visado: ' + (cd ? 'pendiente' : 'ver pestaña Visado') + '</div>';
   }
   return html;
 }
@@ -6735,7 +6585,42 @@ function buildHistTextBlock(r, num) {
   if (r.pauses && r.pauses.length) {
     L.push('   Pausas: ' + r.pauses.map(function(p){ return p.reason || '?'; }).join(', '));
   }
-  if (r._checklist) {
+
+  // ── Checklist nuevo (tech_checklist del work_order) ──
+  var cd = (r._ot && r._ot.checklist_data) ? r._ot.checklist_data : null;
+  var tc = cd ? (cd.tech_checklist || null) : null;
+
+  if (tc) {
+    L.push('');
+    L.push('   ── CHECKLIST DEL TÉCNICO ──');
+    var srvKey = r._ot && r._ot.service_classification;
+    var techDef = srvKey ? CHECKLISTS_TECH[srvKey] : null;
+    if (techDef) {
+      techDef.sections.forEach(function(sec) {
+        L.push('   [' + sec.title + ']');
+        sec.items.forEach(function(it) {
+          var val = tc[it.key];
+          var displayVal = val === true ? 'SÍ'
+                         : val === false ? 'NO'
+                         : (val == null || val === '') ? '—'
+                         : String(val);
+          L.push('      ' + it.label + ': ' + displayVal);
+        });
+      });
+    } else {
+      // Sin definición de tipo: mostrar claves genéricas
+      Object.keys(tc).forEach(function(k) {
+        var val = tc[k];
+        if (val == null || val === '') return;
+        var displayVal = val === true ? 'SÍ' : val === false ? 'NO' : String(val);
+        L.push('      ' + k.replace(/_/g, ' ') + ': ' + displayVal);
+      });
+    }
+    // Observaciones del técnico (si están en tech_checklist)
+    var tcObs = tc.tech_observations || tc.observaciones || tc.obs || null;
+    if (tcObs) L.push('   Observaciones técnico: ' + tcObs);
+  } else if (r._checklist) {
+    // Fallback: checklist viejo (legacy)
     var ck = r._checklist;
     var parts = [];
     if (ck.litros != null) parts.push(ck.litros + 'L');
@@ -6745,12 +6630,48 @@ function buildHistTextBlock(r, num) {
       var prTxt = (typeof pr === 'object') ? ('Ruta ' + (pr.tipo || '') + ' ' + (pr.resultado || '')) : ('Ruta: ' + pr);
       parts.push(prTxt);
     }
-    if (ck.doble_control) parts.push('Doble ctrl mecánico: ' + ck.doble_control);
-    // FASE 2.7: NO incluir ck.visado (campo viejo auto-marcado por el técnico, engañoso).
-    // El visado real lo hace el supervisor desde la pestaña Visado.
+    if (ck.doble_control) parts.push('Doble ctrl: ' + ck.doble_control);
     if (parts.length) L.push('   ' + parts.join(' | '));
     if (ck.observaciones) L.push('   Observaciones: ' + ck.observaciones);
-    L.push('   (Visado oficial: ver pestaña Visado)');
+  }
+
+  // ── Doble Control ──
+  var dc = cd ? (cd.double_check || null) : null;
+  if (dc && Object.keys(dc).length) {
+    L.push('');
+    L.push('   ── DOBLE CONTROL DE CIERRE ──');
+    var dcMeta = cd.double_check_meta || {};
+    var dcPor = dcMeta.completed_by_name || cd.double_check_completed_by_name || '';
+    var dcAt = dcMeta.completed_at || cd.double_check_completed_at || '';
+    if (dcPor) L.push('   Por: ' + dcPor + (dcAt ? ' · ' + new Date(dcAt).toLocaleString('es-CL') : ''));
+    CHECKLIST_DOBLE_CONTROL.forEach(function(it) {
+      var val = dc[it.key];
+      if (val == null || val === '') return;
+      var displayVal = val === true ? 'SÍ' : val === false ? 'NO' : String(val);
+      L.push('      ' + it.label + ': ' + displayVal);
+    });
+  }
+
+  // ── Visado ──
+  var vc = cd ? (cd.visado_checklist || null) : null;
+  var visadoAt = cd ? (cd.visado_checklist_completed_at || cd.visado_at || null) : null;
+  var visadoBy = cd ? (cd.visado_by_name || cd.visado_checklist_by_name || null) : null;
+  if (vc && Object.keys(vc).length) {
+    L.push('');
+    L.push('   ── VISADO ──');
+    if (visadoBy) L.push('   Visador: ' + visadoBy + (visadoAt ? ' · ' + new Date(visadoAt).toLocaleString('es-CL') : ''));
+    CHECKLIST_VISADO.forEach(function(it) {
+      var val = vc[it.key];
+      if (val == null || val === '') return;
+      var displayVal = val === true ? '✓ SÍ' : val === false ? '✗ NO' : String(val);
+      L.push('      ' + it.label + ': ' + displayVal);
+    });
+  } else if (!tc && !r._checklist) {
+    L.push('   (Sin checklist registrado)');
+  }
+
+  if (!cd && !r._checklist) {
+    // nada extra
   }
   L.push('');
   return L.join('\n');
@@ -6785,6 +6706,11 @@ async function exportSelectedHist(mode) {
     var dataRows = rows.map(function(r){
       var ck = r._checklist || {};
       var pr = ck.prueba_ruta || {};
+      var cd = (r._ot && r._ot.checklist_data) ? r._ot.checklist_data : null;
+      var tc = cd ? (cd.tech_checklist || {}) : {};
+      var dc = cd ? (cd.double_check || {}) : {};
+      var vc = cd ? (cd.visado_checklist || {}) : {};
+      var dcMeta = cd ? (cd.double_check_meta || {}) : {};
       return {
         Tecnico: r.technician,
         Servicio: r.service,
@@ -6794,13 +6720,26 @@ async function exportSelectedHist(mode) {
         Objetivo_min: r.goal_minutes || '',
         Finalizado: r.ended_at,
         Pausas: (r.pauses || []).map(function(p){return p.reason || '?';}).join(' | '),
-        Litros: ck.litros || '',
-        Aceite: ck.aceite || '',
-        PruebaRuta_tipo: (typeof pr === 'object') ? (pr.tipo || '') : '',
-        PruebaRuta_resultado: (typeof pr === 'object') ? (pr.resultado || '') : '',
-        Anomalias_ruta: (typeof pr === 'object') ? (pr.anomalias || '') : '',
-        Doble_control_mecanico: ck.doble_control || '',
-        Observaciones: ck.observaciones || ''
+        // Checklist técnico (nuevo)
+        TC_Observaciones: tc.tech_observations || tc.observaciones || ck.observaciones || '',
+        TC_Litros: tc.oil_liters || ck.litros || '',
+        TC_Aceite: tc.oil_brand || ck.aceite || '',
+        TC_Filtro: tc.oil_filter_code || '',
+        // Doble control
+        DC_Por: dcMeta.completed_by_name || cd && cd.double_check_completed_by_name || '',
+        DC_KM_Salida: dc.dc_km_exit || '',
+        DC_Observaciones: dc.dc_observations || '',
+        DC_Torque_Filtro: dc.dc_torque_filter === true ? 'SÍ' : dc.dc_torque_filter === false ? 'NO' : '',
+        DC_Limpieza: dc.dc_clean === true ? 'SÍ' : dc.dc_clean === false ? 'NO' : '',
+        // Visado
+        Visado_Por: (cd && cd.visado_by_name) || '',
+        Visado_At: (cd && (cd.visado_checklist_completed_at || cd.visado_at)) || '',
+        Visado_Obs: vc.vs_observations || '',
+        Visado_PruebaRuta: vc.vs_prueba_ruta === true ? 'SÍ' : vc.vs_prueba_ruta === false ? 'NO' : '',
+        // Legacy
+        Legacy_Litros: ck.litros || '',
+        Legacy_Aceite: ck.aceite || '',
+        Legacy_PruebaRuta: (typeof pr === 'object') ? ((pr.tipo || '') + ' ' + (pr.resultado || '')) : String(pr || '')
       };
     });
     if (mode === 'xlsx') {
