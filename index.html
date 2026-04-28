@@ -4535,12 +4535,22 @@ async function doFinish(checklist, sessionKey) {
       finSec = 1;
     }
 
+    // Resolver woId ANTES de insertar en history para guardarlo como referencia exacta
+    var woId = sess && sess.work_order_id;
+    if (!woId && finPlate && finPlate !== 'Logistica de taller') {
+      try {
+        var fbOT = await findOpenOTByPlate(finPlate);
+        if (fbOT) { woId = fbOT.id; logR('OT_RESOLVED_AT_FINISH', {plate: finPlate, ot_id: woId}); }
+      } catch(_){}
+    }
+
     var histPayload = {
       technician: CU.name, username: CU.username,
       service: finSrv, plate: finPlate,
       duration: fmtT(finSec), seconds: finSec,
       goal_minutes: finGoal || null,
       pauses: finPauses, checklist: checklist,
+      work_order_id: woId || null,
       ended_at: new Date().toISOString()
     };
     logR('FINISH_HISTORY_PAYLOAD', histPayload);
@@ -4548,8 +4558,19 @@ async function doFinish(checklist, sessionKey) {
     var {error: hErr} = await sb.from('history').insert(histPayload);
     logR('FINISH_HISTORY_RESULT', {error: hErr ? hErr.message : null});
     if (hErr) {
-      showGlobalError('Error al guardar historial: ' + hErr.message + '\n\nReintenta tocando Finalizar de nuevo.', 5000);
-      return false;
+      // Si falla porque la columna work_order_id no existe aún en Supabase, reintentar sin ella
+      if (hErr.message && hErr.message.toLowerCase().indexOf('work_order_id') !== -1) {
+        logR('HIST_NO_WOID_COL', {msg: hErr.message}, 'warn');
+        delete histPayload.work_order_id;
+        var {error: hErr2} = await sb.from('history').insert(histPayload);
+        if (hErr2) {
+          showGlobalError('Error al guardar historial: ' + hErr2.message + '\n\nReintenta tocando Finalizar de nuevo.', 5000);
+          return false;
+        }
+      } else {
+        showGlobalError('Error al guardar historial: ' + hErr.message + '\n\nReintenta tocando Finalizar de nuevo.', 5000);
+        return false;
+      }
     }
 
     // Save checklist SOLO si realmente hay checklist (ej: Lavado no requiere).
@@ -4567,18 +4588,7 @@ async function doFinish(checklist, sessionKey) {
 
     // FASE 2.6: escribir tramo en service_time_entries si la sesión está vinculada a una OT
     try {
-      var woId = sess && sess.work_order_id;
-      // FASE 2.7: fallback - si la sesion no tenia work_order_id (lookup fallo al iniciar),
-      // intentar resolver por patente AHORA al cerrar.
-      if (!woId && finPlate && finPlate !== 'Logistica de taller') {
-        try {
-          var fbOT = await findOpenOTByPlate(finPlate);
-          if (fbOT) {
-            woId = fbOT.id;
-            logR('OT_RESOLVED_AT_FINISH', {plate: finPlate, ot_id: woId});
-          }
-        } catch(_){}
-      }
+      // woId ya fue resuelto arriba antes del insert en history
       if (woId) {
         var ste = {
           work_order_id: woId,
@@ -5584,6 +5594,7 @@ async function adminForceFinish(sessionKey, techName, serviceLabel, plate) {
     goal_minutes: sess.goal_minutes,
     pauses: pauses,
     checklist: { forced_finish: true, forced_by: CU.name, forced_at: new Date().toISOString() },
+    work_order_id: (sess && sess.work_order_id) || null,
     ended_at: new Date().toISOString()
     // odometer_photo_start: sess.odometer_photo_start || null,  // columna no existe en history
     // odometer_photo_end: null,                                  // columna no existe en history
@@ -6323,17 +6334,19 @@ async function renderBossHist(body) {
   body.innerHTML = '<div class="empty"><span class="spin"></span>Cargando...</div>';
   var {data} = await sb.from('history').select('*').order('ended_at',{ascending:false}).limit(200);
 
-  // Cargar work_orders cerradas para cruzar checklist_data (tech_checklist, double_check, visado)
-  var woMap = {}; // plate -> [ot, ...] ordenadas por updated_at desc
+  // Cargar work_orders para cruzar checklist_data (tech_checklist, double_check, visado)
+  // Usamos todos los statuses relevantes y también un mapa por ID para join exacto
+  var woById = {};  // id -> ot
+  var woMap = {};   // plate -> [ot, ...]
   try {
     var {data: woData} = await sb.from('work_orders')
-      .select('id,plate,checklist_data,service_classification,updated_at,closed_at,status,ot_number')
-      .in('status', ['closed','pending_visado','pending_double_check'])
+      .select('id,plate,checklist_data,service_classification,updated_at,status,ot_number')
       .order('updated_at', {ascending: false})
-      .limit(400);
+      .limit(600);
     (woData || []).forEach(function(wo) {
+      woById[wo.id] = wo;
       var p = (wo.plate || '').trim().toUpperCase();
-      if (p) {
+      if (p && p !== 'LOGISTICA DE TALLER') {
         if (!woMap[p]) woMap[p] = [];
         woMap[p].push(wo);
       }
@@ -6342,23 +6355,26 @@ async function renderBossHist(body) {
 
   _histData = (data || []).map(function(h){
     h._checklist = h.checklist || null;
-    // Intentar cruzar con work_order por plate + ended_at cercano (ventana 72h)
-    var plate = (h.plate || '').trim().toUpperCase();
-    var endedMs = h.ended_at ? new Date(h.ended_at).getTime() : 0;
     h._ot = null;
-    if (plate && woMap[plate] && endedMs) {
-      var candidates = woMap[plate].filter(function(wo) {
-        var woMs = wo.updated_at ? new Date(wo.updated_at).getTime() : 0;
-        return Math.abs(woMs - endedMs) < 72 * 3600 * 1000; // 72h ventana
-      });
-      if (candidates.length) {
-        // Tomar el más cercano en tiempo
-        candidates.sort(function(a, b) {
-          var dA = Math.abs(new Date(a.updated_at).getTime() - endedMs);
-          var dB = Math.abs(new Date(b.updated_at).getTime() - endedMs);
-          return dA - dB;
+    // 1. Join exacto por work_order_id (servicios nuevos con la columna guardada)
+    if (h.work_order_id && woById[h.work_order_id]) {
+      h._ot = woById[h.work_order_id];
+    } else {
+      // 2. Fallback: cruzar por plate + tiempo cercano (72h)
+      var plate = (h.plate || '').trim().toUpperCase();
+      var endedMs = h.ended_at ? new Date(h.ended_at).getTime() : 0;
+      if (plate && woMap[plate] && endedMs) {
+        var candidates = woMap[plate].filter(function(wo) {
+          var woMs = wo.updated_at ? new Date(wo.updated_at).getTime() : 0;
+          return Math.abs(woMs - endedMs) < 72 * 3600 * 1000;
         });
-        h._ot = candidates[0];
+        if (candidates.length) {
+          candidates.sort(function(a, b) {
+            return Math.abs(new Date(a.updated_at).getTime() - endedMs)
+                 - Math.abs(new Date(b.updated_at).getTime() - endedMs);
+          });
+          h._ot = candidates[0];
+        }
       }
     }
     return h;
