@@ -1774,15 +1774,44 @@ const CHECKLIST_PRUEBA_RUTA = [
 // (técnico designado lo ejecuta al cerrar el servicio)
 // FASE 3.0: ampliado con observaciones libres + captura automática de
 // técnico/fecha/hora en saveDoubleCheck() (no van como item visible).
+// FASE 3.3: items con allow_na:true permiten respuesta tri-estado (Sí/No/N/A).
+// Los items relacionados a aceite se marcan así porque hay servicios donde no
+// aplican (reparaciones generales) o donde el cliente excluye el cambio.
+// Si algún item queda en N/A, dc_na_reason pasa a ser obligatorio.
 // ═══════════════════════════════════════════════════════════════
+// Servicios donde NORMALMENTE se cambia aceite — usado solo para alertar al
+// visador cuando uno de estos cierra con items de aceite en N/A (no bloquea).
+const SERVICES_OIL_EXPECTED = [
+  'CAMBIO_ACEITE',
+  'MANT_EXPRESS',
+  'MANT_COMPLETO',
+  'DPF_PACK_ESENCIAL',
+  'DPF_PACK_AVANZADO',
+  'DPF_PACK_PREMIUM'
+];
+
+function serviceExpectsOil(serviceClassification) {
+  return SERVICES_OIL_EXPECTED.indexOf(serviceClassification) !== -1;
+}
+
 const CHECKLIST_DOBLE_CONTROL = [
-  {key:'dc_torque_filter',  label:'Marcaje torque filtro de aceite',     type:'bool',   required:true},
-  {key:'dc_apriete_filter', label:'Marcaje apriete filtro de aceite',    type:'bool',   required:true},
-  {key:'dc_label',          label:'Etiqueta de cambio de aceite pegada', type:'bool',   required:true},
+  {key:'dc_torque_filter',  label:'Marcaje torque filtro de aceite',     type:'bool',   required:true, allow_na:true},
+  {key:'dc_apriete_filter', label:'Marcaje apriete filtro de aceite',    type:'bool',   required:true, allow_na:true},
+  {key:'dc_label',          label:'Etiqueta de cambio de aceite pegada', type:'bool',   required:true, allow_na:true},
   {key:'dc_clean',          label:'Limpieza zona de trabajo',            type:'bool',   required:true},
   {key:'dc_km_exit',        label:'Kilometraje de salida',               type:'number', required:true},
+  {key:'dc_na_reason',      label:'Motivo de la no aplicación (N/A)',    type:'textarea', required_if_na:true, rows:2, placeholder:'Ej: cliente excluyó cambio de aceite, reparación general sin aceite, etc.'},
   {key:'dc_observations',   label:'Observaciones (opcional)',            type:'textarea', required:false, rows:2}
 ];
+
+// Devuelve true si el doble control tiene items aceite-dependientes en N/A.
+// Útil para destacar el caso al visador.
+function hasOilNa(doubleCheckData) {
+  if (!doubleCheckData) return false;
+  return CHECKLIST_DOBLE_CONTROL.some(function(it){
+    return it.allow_na && doubleCheckData[it.key] === 'N/A';
+  });
+}
 
 // ═══════════════════════════════════════════════════════════════
 // CHECKLIST DE VISADO — control final crítico, SIEMPRE obligatorio
@@ -6668,6 +6697,7 @@ function buildHistDetailHTML(r) {
       if (val == null) return;
       var displayVal = val === true ? '<span style="color:var(--green);font-weight:700">✓ SÍ</span>'
                      : val === false ? '<span style="color:var(--red);font-weight:700">✗ NO</span>'
+                     : val === 'N/A' ? '<span style="color:#7a4a00;font-weight:700;background:#fff4e5;padding:1px 6px;border-radius:3px">N/A</span>'
                      : (val !== '' ? '<b>' + escapeHTML(String(val)) + '</b>' : null);
       if (!displayVal) return;
       html += '<div style="font-size:11px;color:var(--wh2);padding:3px 0;border-bottom:1px dotted #eee"><span style="color:var(--wh3)">' + escapeHTML(it.label) + ':</span> ' + displayVal + '</div>';
@@ -6852,8 +6882,11 @@ async function exportSelectedHist(mode) {
         DC_Por: dcMeta.completed_by_name || cd && cd.double_check_completed_by_name || '',
         DC_KM_Salida: dc.dc_km_exit || '',
         DC_Observaciones: dc.dc_observations || '',
-        DC_Torque_Filtro: dc.dc_torque_filter === true ? 'SÍ' : dc.dc_torque_filter === false ? 'NO' : '',
+        DC_Torque_Filtro: dc.dc_torque_filter === true ? 'SÍ' : dc.dc_torque_filter === false ? 'NO' : dc.dc_torque_filter === 'N/A' ? 'N/A' : '',
+        DC_Apriete_Filtro: dc.dc_apriete_filter === true ? 'SÍ' : dc.dc_apriete_filter === false ? 'NO' : dc.dc_apriete_filter === 'N/A' ? 'N/A' : '',
+        DC_Etiqueta: dc.dc_label === true ? 'SÍ' : dc.dc_label === false ? 'NO' : dc.dc_label === 'N/A' ? 'N/A' : '',
         DC_Limpieza: dc.dc_clean === true ? 'SÍ' : dc.dc_clean === false ? 'NO' : '',
+        DC_Motivo_NA: dc.dc_na_reason || '',
         // Visado
         Visado_Por: (cd && cd.visado_by_name) || '',
         Visado_At: (cd && (cd.visado_checklist_completed_at || cd.visado_at)) || '',
@@ -10198,6 +10231,8 @@ function openDoubleCheck(otId) {
   body.innerHTML = html;
   closeModal('m-my-ot');
   openModal('m-double-check');
+  // FASE 3.3: si hay valores previos con N/A, mostrar el motivo desde el inicio.
+  updateDcNaReasonVisibility();
 }
 
 function renderDCItem(it, currentValue) {
@@ -10205,11 +10240,20 @@ function renderDCItem(it, currentValue) {
   if (it.type === 'bool') {
     var checkedYes = currentValue === true ? 'checked' : '';
     var checkedNo  = currentValue === false ? 'checked' : '';
+    var checkedNa  = currentValue === 'N/A' ? 'checked' : '';
+    // FASE 3.3: items con allow_na muestran un tercer botón N/A.
+    // onchange dispara updateDcNaReasonVisibility() para mostrar/ocultar el motivo.
+    var changeHandler = it.allow_na ? ' onchange="updateDcNaReasonVisibility()"' : '';
+    var naBtn = it.allow_na
+      ? '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;padding:8px;border:1px solid var(--border);border-radius:3px;background:#fff;font-size:12px"><input type="radio" name="dc_' + it.key + '" value="N/A" ' + checkedNa + changeHandler + '/> N/A</label>'
+      : '';
+    var gridCols = it.allow_na ? 'g3' : 'g2';
     return '<div style="margin-bottom:10px">'
       + '<div class="lbl" style="margin-bottom:4px">' + lbl + '</div>'
-      + '<div class="g2" style="gap:6px">'
-      +   '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;padding:8px;border:1px solid var(--border);border-radius:3px;background:#fff;font-size:12px"><input type="radio" name="dc_' + it.key + '" value="true" ' + checkedYes + '/> Sí</label>'
-      +   '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;padding:8px;border:1px solid var(--border);border-radius:3px;background:#fff;font-size:12px"><input type="radio" name="dc_' + it.key + '" value="false" ' + checkedNo + '/> No</label>'
+      + '<div class="' + gridCols + '" style="gap:6px">'
+      +   '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;padding:8px;border:1px solid var(--border);border-radius:3px;background:#fff;font-size:12px"><input type="radio" name="dc_' + it.key + '" value="true" ' + checkedYes + changeHandler + '/> Sí</label>'
+      +   '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;padding:8px;border:1px solid var(--border);border-radius:3px;background:#fff;font-size:12px"><input type="radio" name="dc_' + it.key + '" value="false" ' + checkedNo + changeHandler + '/> No</label>'
+      +   naBtn
       + '</div></div>';
   } else if (it.type === 'number') {
     return '<div style="margin-bottom:10px">'
@@ -10218,11 +10262,27 @@ function renderDCItem(it, currentValue) {
   } else if (it.type === 'textarea') {
     var rows = it.rows || 2;
     var v = currentValue != null ? String(currentValue) : '';
-    return '<div style="margin-bottom:10px">'
+    var ph = it.placeholder ? ' placeholder="' + escapeHtml(it.placeholder) + '"' : '';
+    // FASE 3.3: el textarea de motivo N/A se identifica con clase para
+    // mostrar/ocultar dinámicamente según el estado de los items aceite.
+    var wrapperAttrs = it.required_if_na ? ' data-dc-na-reason="1" style="margin-bottom:10px;display:none"' : ' style="margin-bottom:10px"';
+    return '<div' + wrapperAttrs + '>'
       + '<div class="lbl" style="margin-bottom:4px">' + lbl + '</div>'
-      + '<textarea class="inp" data-dc-key="' + it.key + '" rows="' + rows + '" data-no-upper>' + escapeHtml(v) + '</textarea></div>';
+      + '<textarea class="inp" data-dc-key="' + it.key + '" rows="' + rows + '"' + ph + ' data-no-upper>' + escapeHtml(v) + '</textarea></div>';
   }
   return '';
+}
+
+// FASE 3.3: muestra/oculta el campo motivo N/A según si hay items en N/A.
+function updateDcNaReasonVisibility() {
+  var anyNa = false;
+  CHECKLIST_DOBLE_CONTROL.forEach(function(it){
+    if (!it.allow_na) return;
+    var rad = document.querySelector('#m-dc-body input[name="dc_' + it.key + '"]:checked');
+    if (rad && rad.value === 'N/A') anyNa = true;
+  });
+  var wrap = document.querySelector('#m-dc-body [data-dc-na-reason="1"]');
+  if (wrap) wrap.style.display = anyNa ? '' : 'none';
 }
 
 async function saveDoubleCheck() {
@@ -10240,13 +10300,24 @@ async function saveDoubleCheck() {
     return;
   }
 
+  // FASE 3.3: items con allow_na soportan tri-estado (Sí / No / N/A).
+  // Si algún item queda en N/A, dc_na_reason pasa a ser obligatorio.
+
   var data = {};
+  var anyNa = false;
   for (var i = 0; i < CHECKLIST_DOBLE_CONTROL.length; i++) {
     var it = CHECKLIST_DOBLE_CONTROL[i];
     var val;
     if (it.type === 'bool') {
       var rad = document.querySelector('#m-dc-body input[name="dc_' + it.key + '"]:checked');
-      val = rad ? rad.value === 'true' : null;
+      if (!rad) {
+        val = null;
+      } else if (rad.value === 'N/A') {
+        val = 'N/A';
+        anyNa = true;
+      } else {
+        val = rad.value === 'true';
+      }
     } else if (it.type === 'textarea') {
       var ta = document.querySelector('#m-dc-body textarea[data-dc-key="' + it.key + '"]');
       val = ta ? (ta.value || '').trim() : '';
@@ -10254,19 +10325,36 @@ async function saveDoubleCheck() {
       var inp = document.querySelector('#m-dc-body [data-dc-key="' + it.key + '"]');
       val = inp ? (inp.value === '' ? null : (it.type === 'number' ? Number(inp.value) : inp.value)) : null;
     }
-    if (it.required && (val == null || (it.type === 'bool' && val !== true && val !== false))) {
-      err.textContent = 'Falta: ' + it.label;
-      err.style.display = 'block';
-      return;
+    // required normal: val no debe ser null (bool sin selección, number vacío, etc.)
+    // 'N/A' cuenta como respuesta válida para items con allow_na.
+    if (it.required) {
+      var missing = (val == null);
+      if (it.type === 'bool' && val !== true && val !== false && val !== 'N/A') missing = true;
+      if (missing) {
+        err.textContent = 'Falta: ' + it.label;
+        err.style.display = 'block';
+        return;
+      }
     }
     // FASE 3.0: regla de calidad — si algún ítem bool obligatorio está en NO,
     // no permitir cierre. El doble control debe quedar 100% conforme.
+    // (N/A no cuenta como No: significa que el item no aplica a este servicio.)
     if (it.required && it.type === 'bool' && val === false) {
       err.textContent = 'No puedes cerrar el doble control con "No" en: ' + it.label + '. Corrige antes de cerrar.';
       err.style.display = 'block';
       return;
     }
     data[it.key] = val;
+  }
+  // FASE 3.3: si algún item está en N/A, el motivo es obligatorio.
+  if (anyNa) {
+    var reason = (data.dc_na_reason || '').trim();
+    if (!reason) {
+      err.textContent = 'Indica el motivo de la no aplicación (N/A). Ej: cliente excluyó cambio de aceite, reparación general sin aceite, etc.';
+      err.style.display = 'block';
+      return;
+    }
+    data.dc_na_reason = reason;
   }
   var btn = document.getElementById('m-dc-btn');
   btn.innerHTML = '<span class="spin"></span> Guardando...'; btn.disabled = true;
@@ -10773,10 +10861,20 @@ async function openVisadoModal(otId) {
         + ' · ' + (dcMeta.completed_at ? new Date(dcMeta.completed_at).toLocaleString('es-CL') : (cd.double_check_completed_at ? new Date(cd.double_check_completed_at).toLocaleString('es-CL') : '?'))
         + '</div>';
     }
+    // FASE 3.3: alerta si un servicio que NORMALMENTE incluye aceite cerró con items en N/A.
+    // Esto le da al visador un check de calidad explícito ("¿de verdad el cliente excluyó el aceite?").
+    if (hasOilNa(cd.double_check) && serviceExpectsOil(o.service_classification)) {
+      html += '<div style="margin:6px 0 10px;padding:8px;background:#fff4e5;border-left:3px solid #f59e0b;border-radius:3px;font-size:11px;line-height:1.5;color:#7a4a00">'
+        + '<b>⚠ Atención:</b> este servicio (' + escapeHtml(srvLabel) + ') normalmente incluye cambio de aceite, pero cerró con items en <b>N/A</b>. Verifica con el cliente o el gestor antes de aprobar.'
+        + '</div>';
+    }
     CHECKLIST_DOBLE_CONTROL.forEach(function(it) {
       var val = cd.double_check[it.key];
+      // FASE 3.3: ocultar el campo motivo si no hay N/A en el cierre.
+      if (it.required_if_na && (val == null || val === '')) return;
       var displayVal = val === true ? '<span style="color:var(--green);font-weight:700">✓ SÍ</span>'
                      : val === false ? '<span style="color:var(--red);font-weight:700">✗ NO</span>'
+                     : val === 'N/A' ? '<span style="color:#7a4a00;font-weight:700;background:#fff4e5;padding:1px 6px;border-radius:3px">N/A</span>'
                      : (val != null && val !== '' ? '<b>' + escapeHtml(String(val)) + '</b>' : '<span style="color:var(--wh4)">—</span>');
       html += '<div style="font-size:11px;color:var(--wh2);padding:3px 0;border-bottom:1px dotted #eee"><span style="color:var(--wh3)">' + escapeHtml(it.label) + ':</span> ' + displayVal + '</div>';
     });
@@ -11257,8 +11355,11 @@ async function openVisadoHistDetail(otId) {
     html += '<div style="border-top:2px solid var(--gold);margin-top:12px;padding-top:8px"><div style="font-size:12px;font-weight:700;color:#111;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">Doble control de cierre</div>';
     CHECKLIST_DOBLE_CONTROL.forEach(function(it) {
       var val = cd.double_check[it.key];
+      // FASE 3.3: ocultar el campo motivo si no hay N/A en el cierre.
+      if (it.required_if_na && (val == null || val === '')) return;
       var displayVal = val === true ? '<span style="color:var(--green);font-weight:700">✓ SÍ</span>'
                      : val === false ? '<span style="color:var(--red);font-weight:700">✗ NO</span>'
+                     : val === 'N/A' ? '<span style="color:#7a4a00;font-weight:700;background:#fff4e5;padding:1px 6px;border-radius:3px">N/A</span>'
                      : (val != null ? '<b>' + escapeHtml(String(val)) + '</b>' : '<span style="color:var(--wh4)">—</span>');
       html += '<div style="font-size:11px;color:var(--wh2);padding:3px 0;border-bottom:1px dotted #eee"><span style="color:var(--wh3)">' + escapeHtml(it.label) + ':</span> ' + displayVal + '</div>';
     });
@@ -11855,8 +11956,11 @@ async function viewProtocolosDoubleCheck(otId) {
       + '<div style="border-top:2px solid var(--gold);padding-top:8px;margin-top:8px">';
     CHECKLIST_DOBLE_CONTROL.forEach(function(it) {
       var val = cd.double_check[it.key];
+      // FASE 3.3: ocultar el campo motivo si no hay N/A en el cierre.
+      if (it.required_if_na && (val == null || val === '')) return;
       var displayVal = val === true ? '<span style="color:var(--green);font-weight:700">✓ SÍ</span>'
                      : val === false ? '<span style="color:var(--red);font-weight:700">✗ NO</span>'
+                     : val === 'N/A' ? '<span style="color:#7a4a00;font-weight:700;background:#fff4e5;padding:1px 6px;border-radius:3px">N/A</span>'
                      : (val != null && val !== '' ? '<b>' + escapeHtml(String(val)) + '</b>' : '<span style="color:var(--wh4)">—</span>');
       html += '<div style="font-size:11px;color:var(--wh2);padding:4px 0;border-bottom:1px dotted #eee"><span style="color:var(--wh3)">' + escapeHtml(it.label) + ':</span> ' + displayVal + '</div>';
     });
