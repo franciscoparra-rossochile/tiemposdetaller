@@ -8270,7 +8270,7 @@ function escapeHtml(s) {
   });
 }
 
-async function openClientModal(cid) {
+async function openClientModal(cid, forceVehicleId) {
   if (!hasPerm(CU, 'can_ingresar_clientes')) {
     showGlobalError('No tienes permiso para crear/editar clientes', 4000);
     return;
@@ -8279,6 +8279,8 @@ async function openClientModal(cid) {
   var isCatastro = _clientsViewMode === 'catastro';
   var showsVehicle = isIngreso || isCatastro; // ambos modos muestran el bloque vehículo
   var isIngresoEdit = isIngreso && cid; // FASE 2.2.C-fix: editar el ingreso COMPLETO
+  // FIX abr 2026: si se especifica forceVehicleId, cargar ESE vehiculo (no el "mas reciente").
+  // Esto pasa cuando se entra desde "Editar ingreso" del catastro con un vehiculo concreto seleccionado.
   _editClientId = cid;
   _editVehicleId = null;
   _editWorkOrderId = null;
@@ -8316,7 +8318,14 @@ async function openClientModal(cid) {
     // FASE 2.2.C-fix: en modo INGRESO EDIT, cargar también vehículo + OT más recientes
     if (isIngresoEdit) {
       try {
-        var resV = await sb.from('client_vehicles').select('*').eq('client_id', cid).order('created_at', {ascending:false}).limit(1).maybeSingle();
+        // FIX abr 2026: si vino forceVehicleId desde "Editar ingreso" del catastro, cargar ESE vehiculo.
+        // Si no, fallback al comportamiento original (vehiculo mas reciente del cliente).
+        var resV;
+        if (forceVehicleId) {
+          resV = await sb.from('client_vehicles').select('*').eq('id', forceVehicleId).maybeSingle();
+        } else {
+          resV = await sb.from('client_vehicles').select('*').eq('client_id', cid).order('created_at', {ascending:false}).limit(1).maybeSingle();
+        }
         if (resV.data) {
           var v = resV.data;
           _editVehicleId = v.id;
@@ -9306,9 +9315,10 @@ async function editIngresoForVehicle(vehicleId) {
       showGlobalError('No se pudo localizar el cliente del vehículo.', 4500);
       return;
     }
-    // Reutilizamos el modal de ingreso en modo edición. El modal carga el vehículo más reciente del cliente.
+    // FIX abr 2026: pasamos el vehicleId explicitamente para que el modal cargue ESE vehiculo
+    // y no el "mas reciente" del cliente (bug reportado por Alexandra cuando un cliente tiene varios autos).
     _clientsViewMode = 'ingreso';
-    openClientModal(rv.data.client_id);
+    openClientModal(rv.data.client_id, vehicleId);
   } catch(e) {
     showGlobalError('Error: ' + e.message, 4500);
   }
