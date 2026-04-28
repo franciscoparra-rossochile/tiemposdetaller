@@ -211,6 +211,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     <div class="tab" data-tab="t-alertas" onclick="techTab('t-alertas')">Alertas<span class="ndot" id="tech-ndot"></span></div>
     <div class="tab" data-tab="t-historial" onclick="techTab('t-historial')">Historial</div>
     <div class="tab" data-tab="t-midia" onclick="techTab('t-midia')">Mi dia</div>
+    <div class="tab" data-tab="t-bugs" onclick="techTab('t-bugs')">Reportar bug</div>
   </div>
   <div class="body" id="tech-body"></div>
 </div>
@@ -238,6 +239,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     <div class="tab" data-tab="b-plan" onclick="bossTab('b-plan')">Planificacion</div>
     <div class="tab" data-tab="b-hist" onclick="bossTab('b-hist')">Historial</div>
     <div class="tab" data-tab="b-reportes" onclick="bossTab('b-reportes')">Reportes</div>
+    <div class="tab" data-tab="b-bugs" onclick="bossTab('b-bugs')">Bugs</div>
     <div class="tab" data-tab="b-visado" onclick="bossTab('b-visado')" id="tab-boss-visado" style="display:none">Visado<span class="ndot" id="boss-visado-dot"></span></div>
     <div class="tab" data-tab="b-clientes" onclick="bossTab('b-clientes')" id="tab-clientes" style="display:none">Registro Clientes</div>
     <div class="tab" data-tab="b-users" onclick="bossTab('b-users')" id="tab-users" style="display:none">Usuarios</div>
@@ -3609,6 +3611,7 @@ function techTab(t) {
   else if (t === 't-agenda') renderTechAgenda(body);
   else if (t === 't-alertas') { document.getElementById('tech-ndot').classList.remove('show'); renderTechAlertas(body); }
   else if (t === 't-midia') renderTechMiDia(body);
+  else if (t === 't-bugs') renderBugReports(body);
 }
 
 function bossTab(t) {
@@ -3632,6 +3635,7 @@ function bossTab(t) {
   else if (t === 'b-catastro') renderBossCatastro(body);
   else if (t === 'b-entregados') renderBossEntregados(body);
   else if (t === 'b-visado')   renderVisadoPanel(body);
+  else if (t === 'b-bugs')     renderBugReports(body);
 }
 
 // Helper centralizado: refresca la visibilidad de las pestañas de jefe segun el usuario actual.
@@ -7179,6 +7183,400 @@ async function renderBossUsers(body) {
 // ═══════════════════════════════════════════════
 // BOSS: CONFIG
 // ═══════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
+// BUG REPORTS — formulario simple para reportar errores y panel
+// admin para hacer triage. Todos reportan, solo admin ve listado.
+// ═══════════════════════════════════════════════════════════════
+
+var BUG_AREAS = [
+  {key: 'cronometro',  label: 'Cronómetro / Mis servicios'},
+  {key: 'ingreso',     label: 'Ingreso de vehículos'},
+  {key: 'calendario',  label: 'Calendario / Agenda'},
+  {key: 'ot',          label: 'Órdenes de trabajo (OT)'},
+  {key: 'checklist',   label: 'Checklist técnico'},
+  {key: 'visado',      label: 'Visado / Doble control'},
+  {key: 'historial',   label: 'Historial'},
+  {key: 'reportes',    label: 'Reportes / Estadísticas'},
+  {key: 'clientes',    label: 'Registro de clientes'},
+  {key: 'login',       label: 'Login / Mi cuenta'},
+  {key: 'otro',        label: 'Otro / No sé'}
+];
+
+var BUG_SEVERITIES = [
+  {key: 'bajo',  label: 'Molesto',         desc: 'Funciona, pero algo está raro', color: 'var(--green)'},
+  {key: 'medio', label: 'Me bloquea a veces', desc: 'A veces no puedo seguir', color: 'var(--gold)'},
+  {key: 'alto',  label: 'No puedo trabajar', desc: 'Está roto, urgente',     color: 'var(--red)'}
+];
+
+var BUG_STATUSES = [
+  {key: 'nuevo',        label: 'Nuevo',         color: 'var(--blue)'},
+  {key: 'en_revision',  label: 'En revisión',   color: 'var(--gold)'},
+  {key: 'resuelto',     label: 'Resuelto',      color: 'var(--green)'},
+  {key: 'descartado',   label: 'Descartado',    color: 'var(--wh4)'}
+];
+
+// Estado del formulario en memoria
+var _bugForm = { area: '', severity: '', title: '', steps: '' };
+var _bugAdminFilter = 'pendientes'; // 'pendientes' | 'todos' | 'resueltos'
+
+// Captura contexto técnico automáticamente (sin preguntar al usuario)
+function captureBugContext() {
+  var ctx = {};
+  try {
+    ctx.tab = (typeof curBossTab !== 'undefined' && curBossTab) ? ('boss:' + curBossTab) :
+              (typeof curTechTab !== 'undefined' && curTechTab) ? ('tech:' + curTechTab) : null;
+    ctx.user_agent = navigator.userAgent || '';
+    ctx.viewport = window.innerWidth + 'x' + window.innerHeight;
+    ctx.url = location.href;
+    ctx.lang = navigator.language || '';
+    ctx.timestamp_local = new Date().toString();
+    // Si el usuario está en un servicio activo, capturar patente y OT
+    if (typeof liveData !== 'undefined' && liveData && CU) {
+      var mine = liveData.find(function(s){ return s.username === CU.username; });
+      if (mine) {
+        ctx.active_service = {
+          service: mine.service,
+          plate: mine.plate || null,
+          status: mine.status,
+          work_order_id: mine.work_order_id || null
+        };
+      }
+    }
+  } catch(e) {
+    ctx.capture_error = String(e && e.message || e);
+  }
+  return ctx;
+}
+
+function isBugAdmin() {
+  return CU && CU.role === 'admin';
+}
+
+function renderBugReports(body) {
+  body.innerHTML = '';
+
+  // Card explicativa
+  var intro = mk('div', 'card-accent');
+  intro.innerHTML = '<div class="lbl">Reporte de errores</div>'
+    + '<div style="font-size:12px;color:var(--wh3);line-height:1.45">'
+    + 'Si algo no funciona como esperabas, repórtalo aquí. Mientras más claro, más rápido lo arreglamos. '
+    + 'No te preocupes por los detalles técnicos — los capturamos automáticamente.'
+    + '</div>';
+  body.appendChild(intro);
+
+  // FORMULARIO (todos lo ven)
+  var form = mk('div', 'card');
+  form.innerHTML = ''
+    // Título / qué pasó
+    + '<div class="lbl">¿Qué pasó? <span style="color:var(--red)">*</span></div>'
+    + '<input type="text" class="inp" id="bug-title" maxlength="120" '
+    + 'placeholder="Ej: el botón finalizar no responde" autocomplete="off" data-no-upper '
+    + 'value="' + escapeHtml(_bugForm.title) + '"/>'
+
+    // Área
+    + '<div class="lbl" style="margin-top:6px">¿Dónde estabas? <span style="color:var(--red)">*</span></div>'
+    + '<select class="inp" id="bug-area">'
+    +   '<option value="">— Selecciona —</option>'
+    +   BUG_AREAS.map(function(a){
+          var sel = _bugForm.area === a.key ? 'selected' : '';
+          return '<option value="' + a.key + '" ' + sel + '>' + escapeHtml(a.label) + '</option>';
+        }).join('')
+    + '</select>'
+
+    // Severidad (botones grandes)
+    + '<div class="lbl" style="margin-top:6px">¿Qué tan grave es? <span style="color:var(--red)">*</span></div>'
+    + '<div id="bug-sev-row" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:8px">'
+    +   BUG_SEVERITIES.map(function(s){
+          var on = _bugForm.severity === s.key ? 'on' : '';
+          return '<button type="button" class="sel-btn ' + on + '" data-bug-sev="' + s.key + '" '
+            + 'onclick="pickBugSeverity(\'' + s.key + '\')" '
+            + 'style="min-height:54px;line-height:1.25">'
+            + '<span style="font-weight:700;font-size:12px">' + escapeHtml(s.label) + '</span>'
+            + '<span style="font-size:10px;color:var(--wh3);text-transform:none;font-weight:500;letter-spacing:0">' + escapeHtml(s.desc) + '</span>'
+            + '</button>';
+        }).join('')
+    + '</div>'
+
+    // Pasos (opcional)
+    + '<div class="lbl" style="margin-top:4px">¿Cómo lo reproduzco? <span style="color:var(--wh4);font-weight:500;text-transform:none;letter-spacing:0">(opcional pero ayuda mucho)</span></div>'
+    + '<textarea class="inp" id="bug-steps" rows="3" maxlength="800" data-no-upper '
+    + 'placeholder="Ej: 1) abrí la OT 234, 2) toqué Finalizar, 3) salió error rojo">' + escapeHtml(_bugForm.steps) + '</textarea>'
+
+    // Aviso de captura automática
+    + '<div style="font-size:10px;color:var(--wh4);margin:4px 0 10px;font-family:var(--mono);line-height:1.4">'
+    + '↳ Adjuntamos automáticamente: tu usuario, pestaña actual, navegador y patente activa (si tienes una).'
+    + '</div>'
+
+    // Error / botón
+    + '<div id="bug-err" style="display:none;color:var(--red);font-size:12px;margin-bottom:8px;font-weight:600;padding:8px;background:var(--red4);border-radius:4px"></div>'
+    + '<button class="btn btn-red" id="bug-send-btn" onclick="submitBugReport()">Enviar reporte</button>';
+  body.appendChild(form);
+
+  // LISTADO (solo admin)
+  if (isBugAdmin()) {
+    var listWrap = mk('div', '');
+    listWrap.id = 'bug-list-wrap';
+    listWrap.style.marginTop = '4px';
+    body.appendChild(listWrap);
+    renderBugAdminList();
+  }
+}
+
+function pickBugSeverity(key) {
+  _bugForm.severity = key;
+  document.querySelectorAll('#bug-sev-row [data-bug-sev]').forEach(function(b){
+    b.classList.toggle('on', b.dataset.bugSev === key);
+  });
+}
+
+async function submitBugReport() {
+  var titleEl = document.getElementById('bug-title');
+  var areaEl  = document.getElementById('bug-area');
+  var stepsEl = document.getElementById('bug-steps');
+  var errEl   = document.getElementById('bug-err');
+  var btn     = document.getElementById('bug-send-btn');
+
+  var title = (titleEl && titleEl.value || '').trim();
+  var area  = (areaEl  && areaEl.value  || '').trim();
+  var steps = (stepsEl && stepsEl.value || '').trim();
+  var sev   = _bugForm.severity;
+
+  // Sincronizar al objeto en memoria por si el usuario cambia tab y vuelve
+  _bugForm.title = title;
+  _bugForm.area  = area;
+  _bugForm.steps = steps;
+
+  errEl.style.display = 'none';
+
+  // Validaciones simples
+  if (title.length < 5) {
+    errEl.textContent = 'Cuéntanos qué pasó (mínimo 5 caracteres).';
+    errEl.style.display = 'block'; titleEl && titleEl.focus(); return;
+  }
+  if (!area) {
+    errEl.textContent = 'Indica en qué parte de la app estabas.';
+    errEl.style.display = 'block'; areaEl && areaEl.focus(); return;
+  }
+  if (!sev) {
+    errEl.textContent = 'Selecciona qué tan grave es.';
+    errEl.style.display = 'block'; return;
+  }
+  if (!sb || !CU) {
+    errEl.textContent = 'Sin conexión. Reintenta en unos segundos.';
+    errEl.style.display = 'block'; return;
+  }
+
+  btn.disabled = true; btn.innerHTML = '<span class="spin"></span> Enviando...';
+
+  var payload = {
+    reporter_id: CU.id,
+    reporter_name: CU.name || CU.username || '—',
+    reporter_role: CU.role || null,
+    title: title.slice(0, 120),
+    area: area,
+    severity: sev,
+    steps: steps ? steps.slice(0, 800) : null,
+    context: captureBugContext(),
+    status: 'nuevo'
+  };
+
+  try {
+    var r = await sb.from('bug_reports').insert(payload);
+    if (r.error) {
+      // Detectar si la tabla no existe (migración no aplicada)
+      var msg = (r.error.message || '').toLowerCase();
+      if (msg.indexOf('bug_reports') !== -1 && (msg.indexOf('does not exist') !== -1 || msg.indexOf('not find') !== -1 || msg.indexOf('schema cache') !== -1)) {
+        errEl.innerHTML = 'Falta correr el SQL <b>bug_reports_migration.sql</b> en Supabase. Avisa al admin.';
+      } else {
+        errEl.textContent = 'No se pudo enviar: ' + r.error.message;
+      }
+      errEl.style.display = 'block';
+      btn.disabled = false; btn.textContent = 'Enviar reporte';
+      logR('BUG_REPORT_FAIL', {msg: r.error.message}, 'err');
+      return;
+    }
+    logR('BUG_REPORT_OK', {area: area, severity: sev});
+    // Limpiar formulario
+    _bugForm = { area: '', severity: '', title: '', steps: '' };
+    showGlobalError('✓ Reporte enviado. Gracias!', 3500);
+    // Re-renderizar la pestaña actual para limpiar formulario y refrescar listado si es admin
+    var activeScreen = document.querySelector('.screen.active');
+    var bodyEl = activeScreen ? activeScreen.querySelector('#tech-body, #boss-body') : null;
+    if (bodyEl) renderBugReports(bodyEl);
+  } catch (e) {
+    errEl.textContent = 'Error inesperado: ' + (e && e.message || e);
+    errEl.style.display = 'block';
+    btn.disabled = false; btn.textContent = 'Enviar reporte';
+    logR('BUG_REPORT_THREW', {msg: e.message}, 'err');
+  }
+}
+
+// ── ADMIN: listado y triage ──────────────────────────────────────
+async function renderBugAdminList() {
+  var wrap = document.getElementById('bug-list-wrap');
+  if (!wrap) return;
+
+  // Header con filtros
+  var header = '<hr style="border:none;border-top:1px solid var(--border);margin:14px 0 10px"/>'
+    + '<div class="lbl" style="margin-bottom:6px">Listado de reportes (solo admin)</div>'
+    + '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">'
+    +   [['pendientes','Pendientes'],['todos','Todos'],['resueltos','Resueltos']].map(function(f){
+          var on = _bugAdminFilter === f[0] ? 'on' : '';
+          return '<button class="sel-btn ' + on + '" style="flex:1 1 auto;min-height:36px;min-width:90px" '
+            + 'onclick="setBugAdminFilter(\'' + f[0] + '\')">' + f[1] + '</button>';
+        }).join('')
+    + '</div>';
+
+  wrap.innerHTML = header + '<div id="bug-list-inner"><div class="empty"><span class="spin"></span>Cargando...</div></div>';
+
+  var query = sb.from('bug_reports').select('*').order('created_at', {ascending: false}).limit(80);
+  if (_bugAdminFilter === 'pendientes') {
+    query = query.in('status', ['nuevo', 'en_revision']);
+  } else if (_bugAdminFilter === 'resueltos') {
+    query = query.in('status', ['resuelto', 'descartado']);
+  }
+
+  var inner = document.getElementById('bug-list-inner');
+  try {
+    var {data, error} = await query;
+    if (error) {
+      var em = (error.message || '').toLowerCase();
+      if (em.indexOf('bug_reports') !== -1) {
+        inner.innerHTML = '<div class="card-err" style="font-size:12px"><b>Falta migración SQL.</b><br/>Ejecuta <code>bug_reports_migration.sql</code> en Supabase para activar el listado.</div>';
+      } else {
+        inner.innerHTML = '<div class="card-err" style="font-size:12px">Error: ' + escapeHtml(error.message) + '</div>';
+      }
+      return;
+    }
+    if (!data || !data.length) {
+      inner.innerHTML = '<div class="empty" style="padding:20px;text-align:center;color:var(--wh4)">Sin reportes en este filtro.</div>';
+      return;
+    }
+    inner.innerHTML = data.map(buildBugCardHTML).join('');
+  } catch(e) {
+    inner.innerHTML = '<div class="card-err" style="font-size:12px">Error inesperado: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+function setBugAdminFilter(f) {
+  _bugAdminFilter = f;
+  renderBugAdminList();
+}
+
+function buildBugCardHTML(b) {
+  var sev = BUG_SEVERITIES.find(function(x){ return x.key === b.severity; }) || BUG_SEVERITIES[0];
+  var st  = BUG_STATUSES.find(function(x){ return x.key === b.status; })   || BUG_STATUSES[0];
+  var area = BUG_AREAS.find(function(x){ return x.key === b.area; });
+  var areaLbl = area ? area.label : (b.area || '—');
+
+  var when = b.created_at ? new Date(b.created_at).toLocaleString('es-CL', {day:'2-digit',month:'2-digit', hour:'2-digit', minute:'2-digit'}) : '—';
+
+  var ctxLine = '';
+  if (b.context) {
+    var c = b.context;
+    var bits = [];
+    if (c.tab) bits.push(c.tab);
+    if (c.viewport) bits.push(c.viewport);
+    if (c.active_service && c.active_service.plate) bits.push('patente:' + c.active_service.plate);
+    if (bits.length) ctxLine = '<div style="font-size:10px;color:var(--wh4);font-family:var(--mono);margin-top:6px">↳ ' + escapeHtml(bits.join(' · ')) + '</div>';
+  }
+
+  return '<div class="card" style="border-left:4px solid ' + sev.color + ';margin-bottom:8px;padding:12px">'
+    + '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:6px">'
+    +   '<div style="flex:1;min-width:0">'
+    +     '<div style="font-size:13px;font-weight:700;color:#111;font-family:\'Rajdhani\',sans-serif;line-height:1.3">' + escapeHtml(b.title) + '</div>'
+    +     '<div style="font-size:11px;color:var(--wh3);margin-top:3px">'
+    +       escapeHtml(b.reporter_name) + ' · ' + escapeHtml(areaLbl) + ' · ' + when
+    +     '</div>'
+    +   '</div>'
+    +   '<span class="badge" style="background:' + sev.color + ';color:#fff;flex-shrink:0">' + escapeHtml(sev.label) + '</span>'
+    + '</div>'
+    + (b.steps ? '<div style="font-size:12px;color:var(--wh2);background:var(--bg3);padding:8px;border-radius:4px;margin-top:6px;white-space:pre-wrap;line-height:1.4">' + escapeHtml(b.steps) + '</div>' : '')
+    + ctxLine
+    + '<div style="display:flex;gap:6px;align-items:center;margin-top:10px;flex-wrap:wrap">'
+    +   '<span class="badge" style="background:' + st.color + ';color:#fff">' + escapeHtml(st.label) + '</span>'
+    +   '<select class="inp" style="flex:1;min-width:130px;margin-bottom:0;padding:6px 8px;font-size:11px" '
+    +     'onchange="updateBugStatus(\'' + b.id + '\', this.value)">'
+    +     BUG_STATUSES.map(function(s){
+            return '<option value="' + s.key + '" ' + (s.key === b.status ? 'selected' : '') + '>Marcar: ' + escapeHtml(s.label) + '</option>';
+          }).join('')
+    +   '</select>'
+    +   '<button class="btn-sm" onclick="openBugDetail(\'' + b.id + '\')">Ver detalle</button>'
+    + '</div>'
+    + '</div>';
+}
+
+async function updateBugStatus(bugId, newStatus) {
+  if (!sb || !CU) return;
+  var update = { status: newStatus };
+  if (newStatus === 'resuelto' || newStatus === 'descartado') {
+    update.resolved_at = new Date().toISOString();
+    update.resolved_by = CU.id;
+  } else {
+    update.resolved_at = null;
+    update.resolved_by = null;
+  }
+  var r = await sb.from('bug_reports').update(update).eq('id', bugId);
+  if (r.error) {
+    showGlobalError('No se pudo actualizar: ' + r.error.message, 5000);
+    return;
+  }
+  logR('BUG_STATUS_UPDATE', {id: bugId, status: newStatus});
+  showGlobalError('✓ Estado actualizado', 1800);
+  renderBugAdminList();
+}
+
+async function openBugDetail(bugId) {
+  if (!sb) return;
+  var r = await sb.from('bug_reports').select('*').eq('id', bugId).maybeSingle();
+  if (r.error || !r.data) { showGlobalError('No se pudo cargar el reporte', 4000); return; }
+  var b = r.data;
+  var sev = BUG_SEVERITIES.find(function(x){ return x.key === b.severity; }) || BUG_SEVERITIES[0];
+  var area = BUG_AREAS.find(function(x){ return x.key === b.area; });
+  var areaLbl = area ? area.label : (b.area || '—');
+
+  // Modal inline
+  var existing = document.getElementById('m-bug-detail');
+  if (existing) existing.remove();
+  var ov = document.createElement('div');
+  ov.className = 'overlay'; ov.id = 'm-bug-detail'; ov.style.display = 'flex';
+
+  var ctxJson = b.context ? JSON.stringify(b.context, null, 2) : '{}';
+
+  ov.innerHTML = '<div class="modal" style="max-width:520px;max-height:92vh;overflow-y:auto">'
+    + '<div class="modal-t">' + escapeHtml(b.title) + '</div>'
+    + '<div class="modal-s">' + escapeHtml(b.reporter_name) + ' · ' + escapeHtml(areaLbl) + ' · ' + new Date(b.created_at).toLocaleString('es-CL') + '</div>'
+    + '<div style="margin:12px 0">'
+    +   '<span class="badge" style="background:' + sev.color + ';color:#fff;margin-right:6px">Severidad: ' + escapeHtml(sev.label) + '</span>'
+    +   '<span class="badge" style="background:var(--wh3);color:#fff">Rol: ' + escapeHtml(b.reporter_role || '—') + '</span>'
+    + '</div>'
+    + (b.steps ? '<div class="lbl">Pasos para reproducir</div><div style="background:var(--bg3);padding:10px;border-radius:4px;font-size:12px;white-space:pre-wrap;line-height:1.5;margin-bottom:12px">' + escapeHtml(b.steps) + '</div>' : '')
+    + '<div class="lbl">Contexto técnico capturado</div>'
+    + '<pre style="background:#111;color:#0f0;padding:10px;border-radius:4px;font-size:10px;font-family:var(--mono);overflow-x:auto;line-height:1.4;max-height:220px;overflow-y:auto">' + escapeHtml(ctxJson) + '</pre>'
+    + '<div class="lbl" style="margin-top:12px">Notas internas (admin)</div>'
+    + '<textarea class="inp" id="bug-admin-notes" rows="3" placeholder="Notas internas, hallazgos, decisión...">' + escapeHtml(b.admin_notes || '') + '</textarea>'
+    + '<button class="btn btn-red" onclick="saveBugAdminNotes(\'' + b.id + '\')" style="margin-top:6px">Guardar notas</button>'
+    + '<button class="btn btn-out" onclick="closeBugDetail()" style="margin-top:8px">Cerrar</button>'
+    + '</div>';
+  document.body.appendChild(ov);
+}
+
+function closeBugDetail() {
+  var ov = document.getElementById('m-bug-detail');
+  if (ov) ov.remove();
+}
+
+async function saveBugAdminNotes(bugId) {
+  var ta = document.getElementById('bug-admin-notes');
+  if (!ta || !sb) return;
+  var notes = ta.value.trim();
+  var r = await sb.from('bug_reports').update({admin_notes: notes || null}).eq('id', bugId);
+  if (r.error) { showGlobalError('Error: ' + r.error.message, 5000); return; }
+  showGlobalError('✓ Notas guardadas', 2000);
+  closeBugDetail();
+  renderBugAdminList();
+}
+
 function renderBossCfg(body) {
   var card = mk('div','card');
   card.innerHTML = '<div class="lbl">Tiempos objetivo</div>'
