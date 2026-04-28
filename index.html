@@ -1129,6 +1129,210 @@ window.syncServiceStateByPlate = syncServiceStateByPlate;
 window.logServiceEvent = logServiceEvent;
 window.normalizePlate = normalizePlate;
 
+// ═══════════════════════════════════════════════════════════════
+// FASE 3.2 — MOTOR DE JORNADA LABORAL + PAUSAS EFECTIVAS
+// ═══════════════════════════════════════════════════════════════
+// Problema histórico:
+//   Antes una pausa que iba de Mié 18:50 → Jue 08:10 sumaba ~13 horas
+//   porque se calculaba (resumed_at - paused_at) directo. Eso incluía
+//   la noche, lo cual infla `accumulated_paused_ms` y rompe los KPIs.
+//
+// Solución:
+//   Toda la app pasa por effectivePauseMsBetween(a, b), que devuelve
+//   solo los milisegundos de la intersección entre [a,b] y los bloques
+//   horarios laborales del taller.
+//
+// Jornada Rosso (zona horaria local):
+//   Lun, Mar, Mié:  08:00-13:00 + 15:00-19:00  (9h/día)
+//   Jue:            08:00-13:00 + 15:00-18:00  (8h/día)
+//   Vie:            08:00-13:00 + 15:00-17:00  (7h/día)
+//   Sáb, Dom:       sin operación
+//   Total semanal:  42h
+//
+// IMPORTANTE: se trabaja en hora LOCAL del navegador (Chile/Talca).
+// No usamos UTC porque la jornada se define en hora pared del taller.
+// ═══════════════════════════════════════════════════════════════
+
+// WORK_HOURS — bloques laborales por día de la semana.
+// getDay(): 0=domingo, 1=lunes, ..., 6=sábado
+var WORK_HOURS = {
+  1: [[ 8*60,  13*60], [15*60, 19*60]], // Lunes
+  2: [[ 8*60,  13*60], [15*60, 19*60]], // Martes
+  3: [[ 8*60,  13*60], [15*60, 19*60]], // Miércoles
+  4: [[ 8*60,  13*60], [15*60, 18*60]], // Jueves
+  5: [[ 8*60,  13*60], [15*60, 17*60]]  // Viernes
+  // 0 (Dom) y 6 (Sáb) → sin bloques: cero tiempo laboral.
+};
+
+// _localStartOfDay(d) — devuelve un Date a las 00:00:00.000 del mismo día
+// en hora local (no UTC). Se usa como ancla para construir bloques.
+function _localStartOfDay(d) {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);
+}
+
+// getWorkingIntervals(date) — devuelve los bloques laborales del día
+// recibido como pares [startMs, endMs] (timestamps absolutos).
+// Si el día no tiene jornada, devuelve [].
+function getWorkingIntervals(date) {
+  var d = (date instanceof Date) ? date : new Date(date);
+  var dow = d.getDay();
+  var blocks = WORK_HOURS[dow];
+  if (!blocks || !blocks.length) return [];
+  var base = _localStartOfDay(d).getTime();
+  return blocks.map(function(b){
+    return [ base + b[0]*60000, base + b[1]*60000 ];
+  });
+}
+
+// effectivePauseMsBetween(start, end) — milisegundos de la intersección
+// entre el rango [start, end] y los bloques laborales del taller.
+// Acepta Date, number (ms), o ISO string. Si end < start, devuelve 0.
+//
+// Ejemplo (caso de la spec):
+//   start = Miércoles 18:50 local
+//   end   = Jueves    08:10 local
+//   → Mié 18:50–19:00 = 10 min (intersecta con bloque tarde miércoles)
+//   → Jue 08:00–08:10 = 10 min (intersecta con bloque mañana jueves)
+//   → total 20 minutos = 1_200_000 ms
+//
+// Algoritmo: itera día a día desde start hasta end, recolecta bloques
+// laborales de cada día, acumula intersecciones. Cota el rango total
+// a 31 días para evitar loops descontrolados con timestamps corruptos.
+function effectivePauseMsBetween(start, end) {
+  var a, b;
+  if (start instanceof Date) a = start.getTime();
+  else if (typeof start === 'number') a = start;
+  else if (typeof start === 'string') a = new Date(start).getTime();
+  else return 0;
+  if (end instanceof Date) b = end.getTime();
+  else if (typeof end === 'number') b = end;
+  else if (typeof end === 'string') b = new Date(end).getTime();
+  else return 0;
+  if (!isFinite(a) || !isFinite(b) || b <= a) return 0;
+  // Cota defensiva: una pausa que dure más de 31 días es síntoma de bug,
+  // no la sumamos completa. Truncamos al inicio del día 31.
+  var MAX_SPAN = 31 * 24 * 3600 * 1000;
+  if (b - a > MAX_SPAN) b = a + MAX_SPAN;
+
+  var total = 0;
+  var cursor = _localStartOfDay(new Date(a));
+  var endDayStart = _localStartOfDay(new Date(b)).getTime();
+  while (cursor.getTime() <= endDayStart) {
+    var blocks = getWorkingIntervals(cursor);
+    for (var i = 0; i < blocks.length; i++) {
+      var bs = blocks[i][0], be = blocks[i][1];
+      var lo = a > bs ? a : bs;
+      var hi = b < be ? b : be;
+      if (hi > lo) total += (hi - lo);
+    }
+    // avanzar 1 día (no usar +24h por DST: agregamos día calendario)
+    cursor = new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate() + 1, 0, 0, 0, 0);
+  }
+  return total;
+}
+
+// effectivePauseSecBetween — wrapper en segundos para conveniencia.
+function effectivePauseSecBetween(start, end) {
+  return Math.round(effectivePauseMsBetween(start, end) / 1000);
+}
+
+// computeAccumulatedEffectivePauseMs(sess) — recalcula el total de pausas
+// efectivas de una sesión a partir de su array `pauses` (que tiene
+// paused_at + resumed_at por cada pausa). Si una pausa no tiene
+// resumed_at (pausa actualmente abierta), se ignora aquí (la maneja
+// liveSecondsNow). Si una pausa solo tiene `duration_ms` legacy y NO
+// tiene timestamps utilizables, se respeta tal cual viene (legado).
+function computeAccumulatedEffectivePauseMs(sess) {
+  if (!sess) return 0;
+  var pauses = sess.pauses || [];
+  var total = 0;
+  for (var i = 0; i < pauses.length; i++) {
+    var p = pauses[i];
+    if (p && p.paused_at && p.resumed_at) {
+      total += effectivePauseMsBetween(p.paused_at, p.resumed_at);
+    } else if (p && typeof p.duration_ms === 'number' && !p.paused_at) {
+      // Pausa legacy sin timestamps: solo aporta su valor crudo.
+      // No es ideal pero no podemos recalcular sin los anclajes.
+      total += p.duration_ms;
+    }
+    // Pausa abierta (paused_at sin resumed_at): NO se suma aquí.
+  }
+  return total;
+}
+
+// Exponer para debugging en consola.
+window.WORK_HOURS = WORK_HOURS;
+window.getWorkingIntervals = getWorkingIntervals;
+window.effectivePauseMsBetween = effectivePauseMsBetween;
+window.effectivePauseSecBetween = effectivePauseSecBetween;
+window.computeAccumulatedEffectivePauseMs = computeAccumulatedEffectivePauseMs;
+
+// ═══════════════════════════════════════════════════════════════
+// FASE 3.2 — ESTADO CANÓNICO DEL SERVICIO
+// ═══════════════════════════════════════════════════════════════
+// Un servicio (patente + OT + técnico + tipo) tiene EXACTAMENTE uno
+// de estos siete estados, calculado dinámicamente:
+//
+//   'sin_registro'           — agendado pero nadie tocó el cronómetro
+//   'en_proceso'             — sesión running ahora mismo
+//   'pausado'                — sesión paused ahora mismo
+//   'checklist_pendiente'    — cronómetro cerrado, falta checklist técnico
+//   'doble_control_pendiente'— checklist OK, falta doble control
+//   'visado_pendiente'       — doble control OK, falta visado
+//   'completado'             — visado aprobado, OT cerrada
+//
+// Recibe un "contexto" con piezas conocidas (todas opcionales):
+//   { liveSession, workOrder, hasHistory, scheduled }
+// y devuelve { status, label, color }.
+//
+// REGLA OPERACIONAL (FASE 3.2):
+//   Una OT NO puede ir directo a 'visado_pendiente' saltándose el doble
+//   control. La progresión es checklist → doble control → visado → cierre.
+// ═══════════════════════════════════════════════════════════════
+function computeServiceState(ctx) {
+  ctx = ctx || {};
+  var live = ctx.liveSession || null;
+  var ot = ctx.workOrder || null;
+  var hasHist = !!ctx.hasHistory;
+
+  // Live session manda sobre todo (es lo que está pasando ahora).
+  if (live) {
+    if (live.status === 'running')        return {status:'en_proceso',  label:'EN PROCESO',  color:'var(--green)'};
+    if (live.status === 'paused')         return {status:'pausado',     label:'PAUSADO',     color:'var(--gold)'};
+    if (live.status === 'checklist_pending') return {status:'checklist_pendiente', label:'CHECKLIST PENDIENTE', color:'var(--blue)'};
+  }
+
+  // Sin sesión activa: usar estado de OT si existe.
+  if (ot) {
+    var s = ot.status;
+    if (s === 'closed' || s === 'cancelled')     return {status:'completado',           label:'COMPLETADO',           color:'var(--blue)'};
+    if (s === 'pending_visado')                  return {status:'visado_pendiente',     label:'VISADO PENDIENTE',     color:'var(--gold)'};
+    if (s === 'pending_double_check')            return {status:'doble_control_pendiente', label:'DOBLE CONTROL PENDIENTE', color:'var(--gold)'};
+    var cd = ot.checklist_data || {};
+    // Si tiene checklist técnico completo pero la OT está en in_progress,
+    // se considera doble_control_pendiente.
+    if (cd.tech_completed_at && !cd.double_check_completed_at) {
+      return {status:'doble_control_pendiente', label:'DOBLE CONTROL PENDIENTE', color:'var(--gold)'};
+    }
+    if (cd.double_check_completed_at && !cd.visado_at) {
+      return {status:'visado_pendiente', label:'VISADO PENDIENTE', color:'var(--gold)'};
+    }
+    if (s === 'in_progress' || s === 'open' || s === 'assigned') {
+      // Está en in_progress sin checklist técnico aún → checklist pendiente
+      // (a menos que haya history, lo que indica que ya cerraron pero falta llenar).
+      if (hasHist) return {status:'checklist_pendiente', label:'CHECKLIST PENDIENTE', color:'var(--blue)'};
+      return {status:'sin_registro', label:'SIN REGISTRO', color:'var(--wh3)'};
+    }
+  }
+
+  // Sin OT, sin live: si hay history, completado de facto (servicio sin OT formal).
+  if (hasHist) return {status:'completado', label:'COMPLETADO', color:'var(--blue)'};
+
+  return {status:'sin_registro', label:'SIN REGISTRO', color:'var(--wh3)'};
+}
+
+window.computeServiceState = computeServiceState;
+
 // QA-STABLE: stubs para handlers legacy del HTML que nunca llegaron a implementarse.
 // Sin estos, el click producía "X is not defined" y rompía la app.
 window.pickRadioD = window.pickRadioD || function(){ showGlobalError('Modal antiguo no disponible.', 4000); };
@@ -1504,7 +1708,7 @@ const CHECKLIST_VISADO = [
   {key:'vs_electrico',       label:'6. Sistema eléctrico operativo',                       type:'bool', required:true},
   {key:'vs_luces',           label:'7. Luces (altas, bajas, freno, intermitentes)',        type:'bool', required:true},
   {key:'vs_alineacion',      label:'8. Alineación (volante centrado / sin tirones)',       type:'bool', required:true},
-  {key:'vs_prueba_final',    label:'9. Prueba final realizada conforme',                   type:'bool', required:true},
+  {key:'vs_prueba_ruta',     label:'9. Prueba de ruta realizada conforme',                 type:'bool', required:true},
   {key:'vs_cierre',          label:'10. Cierre — vehículo limpio, llaves y documentos OK', type:'bool', required:true},
   {key:'vs_observations',    label:'Observaciones del visador (opcional)',                 type:'textarea', required:false, rows:2}
 ];
@@ -3284,10 +3488,17 @@ function liveSecondsNow(s) {
   if (isNaN(started)) return s.seconds || 0;
 
   var now = Date.now();
-  var elapsedMs = now - started;
+  // FASE 3.2: tiempo productivo = duración laboral entre `started_at` y `now`
+  // MENOS pausas efectivas (también medidas en horario laboral).
+  // Antes: (now - started) sumaba la noche completa; (acc_paused_ms) era
+  // tiempo crudo. Ambos se cancelaban parcialmente pero el resultado era
+  // sensible al instante exacto del polling. Ahora todo es laboral.
+  var elapsedMs = effectivePauseMsBetween(started, now);
 
-  // Restar pausas ya cerradas
-  elapsedMs -= (s.accumulated_paused_ms || 0);
+  // Pausas cerradas: usar el recálculo efectivo (no el `accumulated_paused_ms`
+  // legacy de BD, que está contaminado con tiempo no laboral).
+  var pausedClosedMs = computeAccumulatedEffectivePauseMs(s);
+  elapsedMs -= pausedClosedMs;
 
   // FASE 2.6 SANITY: si la BD dice que la sesion esta pausada pero falta paused_at,
   // usar updated_at como referencia para no contar tiempo libre como activo.
@@ -3297,10 +3508,11 @@ function liveSecondsNow(s) {
   }
 
   // Si esta pausado ahora, restar tambien el tiempo desde que empezo la pausa actual
+  // (ahora también en horario laboral).
   if (s.status === 'paused') {
     var pausedAt = s.paused_at ? new Date(s.paused_at).getTime() : inferredPause;
     if (pausedAt && !isNaN(pausedAt)) {
-      elapsedMs -= (now - pausedAt);
+      elapsedMs -= effectivePauseMsBetween(pausedAt, now);
     }
   }
 
@@ -3978,24 +4190,40 @@ async function doResume() {
     T.plate = mine.plate || '';
     logR('RESUME_RECOVERED_STATE', {key: T.sessionKey, sec: T.sec});
   }
-  // Calcular duracion de la pausa actual y cerrarla
+  // FASE 3.2: la pausa que se está cerrando se mide en HORARIO LABORAL.
+  // Antes: (Date.now() - paused_at) sumaba noches completas y rompía KPIs.
+  // Ahora: solo el tiempo efectivo que el taller estuvo abierto.
   var sess = liveData.find(function(s) { return s.session_key === T.sessionKey; }) || {};
   var extraPausedMs = 0;
+  var extraPausedRawMs = 0; // duración cruda solo para auditoría/debug
+  var resumedAtISO = new Date().toISOString();
   if (sess.paused_at) {
-    extraPausedMs = Date.now() - new Date(sess.paused_at).getTime();
+    var pausedAtMs = new Date(sess.paused_at).getTime();
+    var nowMs = Date.now();
+    extraPausedMs = effectivePauseMsBetween(pausedAtMs, nowMs);
+    extraPausedRawMs = nowMs - pausedAtMs;
     if (extraPausedMs < 0) extraPausedMs = 0;
-    // Cerrar ultima pausa en T.pauses con duracion real
+    // Cerrar ultima pausa en T.pauses con duracion EFECTIVA (laboral).
+    // Conservamos también `duration_raw_ms` para auditoría.
     if (T.pauses.length > 0) {
       var last = T.pauses[T.pauses.length - 1];
       if (!last.resumed_at) {
-        last.resumed_at = new Date().toISOString();
-        last.duration_ms = extraPausedMs;
+        last.resumed_at = resumedAtISO;
+        last.duration_ms = extraPausedMs;        // efectiva (laboral)
+        last.duration_raw_ms = extraPausedRawMs; // cruda (para debug/auditoría)
+        last._eff = true;                        // marca que ya se calculó con FASE 3.2
       }
     }
   }
-  var newAccum = (sess.accumulated_paused_ms || 0) + extraPausedMs;
+  // FASE 3.2: `accumulated_paused_ms` que se persiste = recálculo efectivo
+  // del array completo de pausas, NO suma incremental sobre el campo viejo.
+  // Esto autocorrige sesiones que tenían el legacy contaminado.
+  var newAccum = computeAccumulatedEffectivePauseMs({
+    pauses: T.pauses,
+    accumulated_paused_ms: sess.accumulated_paused_ms || 0
+  });
   T.running = true;
-  logR('RESUME_ATTEMPT', {key: T.sessionKey, extraPausedMs: extraPausedMs, newAccum: newAccum});
+  logR('RESUME_ATTEMPT', {key: T.sessionKey, extraPausedMsEff: extraPausedMs, extraPausedRawMs: extraPausedRawMs, newAccumEff: newAccum});
   var {error} = await sb.from('active_sessions').update({
     running: true,
     status: 'running',
@@ -4041,21 +4269,28 @@ async function resumeSession(sessionKey) {
   T.plate = sess.plate || '';
   T.comments = sess.comments || [];
   T.running = true;
-  // Calcular duracion de la pausa actual y cerrarla
+  // FASE 3.2: cerrar pausa actual con tiempo efectivo (laboral).
   var extraPausedMs = 0;
+  var extraPausedRawMs = 0;
   if (sess.paused_at) {
-    extraPausedMs = Date.now() - new Date(sess.paused_at).getTime();
+    var pausedAtMs2 = new Date(sess.paused_at).getTime();
+    var nowMs2 = Date.now();
+    extraPausedMs = effectivePauseMsBetween(pausedAtMs2, nowMs2);
+    extraPausedRawMs = nowMs2 - pausedAtMs2;
     if (extraPausedMs < 0) extraPausedMs = 0;
     if (T.pauses.length > 0) {
       var last = T.pauses[T.pauses.length - 1];
       if (!last.resumed_at) {
         last.resumed_at = new Date().toISOString();
         last.duration_ms = extraPausedMs;
+        last.duration_raw_ms = extraPausedRawMs;
+        last._eff = true;
       }
     }
   }
-  var newAccum = (sess.accumulated_paused_ms || 0) + extraPausedMs;
-  logR('RESUME_SESSION', {key: sessionKey, extraPausedMs: extraPausedMs, newAccum: newAccum});
+  // Recálculo efectivo total
+  var newAccum = computeAccumulatedEffectivePauseMs({pauses: T.pauses});
+  logR('RESUME_SESSION', {key: sessionKey, extraPausedMsEff: extraPausedMs, extraPausedRawMs: extraPausedRawMs, newAccumEff: newAccum});
 
   // FASE 2.6: si la sesión estaba en modo asistencia, cerrar el tramo abierto
   // en service_time_entries para sumar el tiempo a la OT asistida.
@@ -4518,27 +4753,34 @@ async function renderMisServicios(body) {
       var dt = new Date(a.scheduled_at);
       var dm = Math.round((dt - now) / 60000);
       var past = dm < 0; var soon = dm >= 0 && dm <= 60;
-      // Cruce por patente — el estado derivado vence al "past"
+      // FASE 3.2: estado canónico vía computeServiceState (no más lógica
+      // duplicada). Construimos un mock de liveSession con el status que
+      // tenemos por patente para que la función central decida.
       var pNorm = a.plate ? normalizePlate(a.plate) : '';
       var liveSt = pNorm ? liveByPlate[pNorm] : null;
       var hasHist = pNorm ? !!histByPlate[pNorm] : false;
+      var canon = computeServiceState({
+        liveSession: liveSt ? {status: liveSt} : null,
+        hasHistory: hasHist
+      });
+      // Mapeo a banderas legacy para no romper la UI restante.
       var derivedStatus = null;
-      if (liveSt === 'running') derivedStatus = 'en_curso';
-      else if (liveSt === 'paused') derivedStatus = 'pausado';
-      else if (hasHist) derivedStatus = 'completado';
+      if (canon.status === 'en_proceso') derivedStatus = 'en_proceso';
+      else if (canon.status === 'pausado') derivedStatus = 'pausado';
+      else if (canon.status === 'completado' && hasHist) derivedStatus = 'completado';
       else if (a.status === 'en_proceso') derivedStatus = 'en_proceso';
-      // bc: color del borde
+      // bc: color del borde — viene del estado canónico cuando existe.
       var bc;
-      if (derivedStatus === 'en_curso' || derivedStatus === 'en_proceso') bc = 'var(--green)';
+      if (derivedStatus === 'en_proceso') bc = 'var(--green)';
       else if (derivedStatus === 'pausado') bc = 'var(--gold)';
       else if (derivedStatus === 'completado') bc = 'var(--blue)';
       else if (past) bc = 'var(--red)';
       else if (soon) bc = 'var(--gold)';
       else bc = 'var(--blue)';
       var card = mk('div','card'); card.style.borderLeft = '4px solid ' + bc;
-      // Badge: usa el estado derivado real cuando existe
+      // Badge: idem
       var badge;
-      if (derivedStatus === 'en_curso' || derivedStatus === 'en_proceso') badge = '<span class="badge b-run">EN CURSO</span>';
+      if (derivedStatus === 'en_proceso') badge = '<span class="badge b-run">EN PROCESO</span>';
       else if (derivedStatus === 'pausado') badge = '<span class="badge b-pau">PAUSADO</span>';
       else if (derivedStatus === 'completado') badge = '<span class="badge b-done">COMPLETADO</span>';
       else if (past) badge = '<span class="badge b-over">Atrasado</span>';
@@ -5154,9 +5396,12 @@ async function resolveContingency(sessionKey, techUsername, techName, resolution
     updated_at: new Date().toISOString()
   };
   if (sess && sess.paused_at) {
-    var extraPausedMs = Date.now() - new Date(sess.paused_at).getTime();
+    // FASE 3.2: pausa efectiva (laboral)
+    var pausedAtMsR = new Date(sess.paused_at).getTime();
+    var nowMsR = Date.now();
+    var extraPausedMs = effectivePauseMsBetween(pausedAtMsR, nowMsR);
+    var extraPausedRawMs = nowMsR - pausedAtMsR;
     if (extraPausedMs < 0) extraPausedMs = 0;
-    updates.accumulated_paused_ms = (sess.accumulated_paused_ms || 0) + extraPausedMs;
     // Tambien cerrar la ultima pausa con resumed_at + duration_ms + resolution
     if (sess.pauses && sess.pauses.length > 0) {
       var pauses = sess.pauses.slice();
@@ -5164,12 +5409,16 @@ async function resolveContingency(sessionKey, techUsername, techName, resolution
       if (!last.resumed_at) {
         last = Object.assign({}, last, {
           resumed_at: new Date().toISOString(),
-          duration_ms: extraPausedMs,
-          resolution: resolutionDetail || null,   // detalle de como se resolvio
-          resolved_by: CU.name                    // quien la resolvio
+          duration_ms: extraPausedMs,           // efectiva
+          duration_raw_ms: extraPausedRawMs,    // cruda
+          _eff: true,
+          resolution: resolutionDetail || null,
+          resolved_by: CU.name
         });
         pauses[pauses.length - 1] = last;
         updates.pauses = pauses;
+        // FASE 3.2: persistir total efectivo recalculado
+        updates.accumulated_paused_ms = computeAccumulatedEffectivePauseMs({pauses: pauses});
       }
     }
   }
@@ -5303,13 +5552,17 @@ async function adminForceFinish(sessionKey, techName, serviceLabel, plate) {
   var finSec = liveSecondsNow(sess) || sess.seconds || 1;
   if (finSec < 1) finSec = 1;
 
-  // Si estaba pausada, cerrar la ultima pausa
+  // FASE 3.2: si estaba pausada, cerrar la última pausa con tiempo efectivo.
   var pauses = (sess.pauses || []).slice();
   if (sess.status === 'paused' && sess.paused_at && pauses.length > 0) {
     var last = pauses[pauses.length - 1];
     if (!last.resumed_at) {
-      last.resumed_at = new Date().toISOString();
-      last.duration_ms = Date.now() - new Date(sess.paused_at).getTime();
+      var nowEnd = Date.now();
+      var pausedAtEnd = new Date(sess.paused_at).getTime();
+      last.resumed_at = new Date(nowEnd).toISOString();
+      last.duration_ms = effectivePauseMsBetween(pausedAtEnd, nowEnd);
+      last.duration_raw_ms = nowEnd - pausedAtEnd;
+      last._eff = true;
       pauses[pauses.length - 1] = last;
     }
   }
@@ -5964,14 +6217,20 @@ async function renderBossPlan(body) {
     }
     events.forEach(function(e){
       if (!e.plate) return;
-      // Normalizar la patente del evento para matchear bien
-      var ep = (e.plate || '').toUpperCase().replace(/[^A-Z0-9]/g,'');
+      // FASE 3.2: estado canónico por patente. Antes había dos copias de la
+      // misma lógica con criterios distintos (técnico vs boss). Ahora ambas
+      // pasan por computeServiceState — fuente única de verdad.
+      var ep = normalizePlate(e.plate || '');
       var liveSt = liveByPlate[ep];
-      if (liveSt === 'running' || liveSt === 'paused') {
-        e._derived_status = liveSt === 'running' ? 'en_proceso' : 'pausado';
-      } else if (histByPlate[ep]) {
-        e._derived_status = 'completado';
-      }
+      var hasHist = !!histByPlate[ep];
+      var canon = computeServiceState({
+        liveSession: liveSt ? {status: liveSt} : null,
+        hasHistory: hasHist
+      });
+      if (canon.status === 'en_proceso')      e._derived_status = 'en_proceso';
+      else if (canon.status === 'pausado')    e._derived_status = 'pausado';
+      else if (canon.status === 'completado' && hasHist) e._derived_status = 'completado';
+      // (en otro caso no seteamos _derived_status, dejamos que prevalezca e.status de BD)
     });
     logR('PLAN_LIVE_CROSS', {events: events.length, live_keys: Object.keys(liveByPlate).length, hist_keys: Object.keys(histByPlate).length});
   } catch(e){ logR('PLAN_CROSS_ERR', {msg: e.message}, 'warn'); }
@@ -6001,11 +6260,11 @@ async function renderBossPlan(body) {
       var dt = new Date(e.scheduled_at);
       var dm = Math.round((dt-now)/60000);
       var past=dm<0; var soon=dm>=0&&dm<=60;
-      // FASE 2.6: prioridad: estado derivado (live/history) > BD
+      // FASE 3.2: estado derivado (live/history) > BD; labels alineados con spec.
       var st = e._derived_status || e.status || 'pendiente';
       var stClass = 'b-pend';
       var stLabel = st;
-      if (st === 'en_proceso') { stClass = 'b-run'; stLabel = 'EN CURSO'; }
+      if (st === 'en_proceso') { stClass = 'b-run'; stLabel = 'EN PROCESO'; }
       else if (st === 'pausado') { stClass = 'b-pau'; stLabel = 'PAUSADO'; }
       else if (st === 'completado') { stClass = 'b-done'; stLabel = 'COMPLETADO'; }
       else if (st === 'cancelado') { stClass = 'b-over'; stLabel = 'CANCELADO'; }
@@ -6632,15 +6891,15 @@ function computeKPIs(rows) {
         } else if (typeof p.duration_seconds === 'number') {
           ps = p.duration_seconds;
         }
-        // Pausa sin reanudar en servicio finalizado: calcular desde paused_at hasta ended_at
+        // FASE 3.2: pausas abiertas calculadas con tiempo EFECTIVO (laboral),
+        // no real. Antes una pausa abierta sumaba la noche o el fin de semana.
+        // Pausa sin reanudar en servicio finalizado: paused_at → ended_at, laboral.
         if (ps === 0 && p.paused_at && !p.resumed_at && r.ended_at && !r._is_active) {
-          var ms = new Date(r.ended_at).getTime() - new Date(p.paused_at).getTime();
-          if (ms > 0) ps = Math.round(ms / 1000);
+          ps = effectivePauseSecBetween(p.paused_at, r.ended_at);
         }
-        // Pausa actualmente activa en servicio pausado: calcular desde paused_at hasta ahora
+        // Pausa actualmente activa en servicio pausado: paused_at → ahora, laboral.
         if (ps === 0 && p.paused_at && !p.resumed_at && r._is_active && r._status === 'paused') {
-          var ms2 = Date.now() - new Date(p.paused_at).getTime();
-          if (ms2 > 0) ps = Math.round(ms2 / 1000);
+          ps = effectivePauseSecBetween(p.paused_at, Date.now());
         }
         pause += ps;
         var key = p.reason || 'Sin motivo';
@@ -8780,23 +9039,34 @@ async function openMyOTDetail(otId) {
     +   (c ? '<div style="font-size:12px">' + escapeHtml(c.name) + ' · ' + escapeHtml(c.rut || c.phone || '') + '</div>' : '<div style="font-size:11px;color:var(--wh4)">cliente no disponible</div>')
     + '</div>'
     + (o.client_notes ? '<div style="margin-bottom:10px"><div class="lbl">Requerimientos del cliente</div><div style="font-size:12px;color:var(--wh2);background:#f8f8f8;padding:6px 8px;border-radius:3px">' + escapeHtml(o.client_notes) + '</div></div>' : '')
-    // Estado de checklist
+    // FASE 3.2: barra de progreso de los 3 pasos obligatorios + visado
     + '<div style="border-top:2px solid var(--gold);padding-top:10px;margin-top:14px">'
     +   '<div class="lbl">Progreso de cierre</div>'
     +   '<div style="display:flex;flex-direction:column;gap:5px;font-size:12px">'
-    +     '<div style="display:flex;align-items:center;gap:8px"><span style="width:18px;text-align:center">' + (techDone ? '✅' : '⬜') + '</span> Checklist técnico ' + (techDone ? '<span style="color:var(--green);font-size:10px">(completado ' + new Date(cd.tech_completed_at).toLocaleString('es-CL') + ')</span>' : '') + '</div>'
-    +     '<div style="display:flex;align-items:center;gap:8px"><span style="width:18px;text-align:center">' + (dcDone ? '✅' : '⬜') + '</span> Doble control ' + (dcDone ? '<span style="color:var(--green);font-size:10px">(completado ' + new Date(cd.double_check_completed_at).toLocaleString('es-CL') + ')</span>' : '') + '</div>'
-    +     '<div style="display:flex;align-items:center;gap:8px"><span style="width:18px;text-align:center">⬜</span> Visado <span style="font-size:10px;color:var(--wh4)">(disponible en próxima fase)</span></div>'
+    +     '<div style="display:flex;align-items:center;gap:8px"><span style="width:18px;text-align:center">' + (techDone ? '✅' : '⬜') + '</span> 1. Checklist técnico ' + (techDone ? '<span style="color:var(--green);font-size:10px">(completado ' + new Date(cd.tech_completed_at).toLocaleString('es-CL') + ')</span>' : '') + '</div>'
+    +     '<div style="display:flex;align-items:center;gap:8px"><span style="width:18px;text-align:center">' + (dcDone ? '✅' : '⬜') + '</span> 2. Doble control ' + (dcDone ? '<span style="color:var(--green);font-size:10px">(completado ' + new Date(cd.double_check_completed_at).toLocaleString('es-CL') + ')</span>' : techDone ? '<span style="color:var(--gold3);font-size:10px;font-weight:700">— pendiente, requerido para visar</span>' : '<span style="color:var(--wh4);font-size:10px">(esperando checklist)</span>') + '</div>'
+    +     (function(){
+            var visadoApproved = cd.visado_approved === true && cd.visado_at;
+            if (visadoApproved) {
+              return '<div style="display:flex;align-items:center;gap:8px"><span style="width:18px;text-align:center">✅</span> 3. Visado <span style="color:var(--green);font-size:10px">(aprobado por ' + escapeHtml(cd.visado_by_name || '?') + ' · ' + new Date(cd.visado_at).toLocaleString('es-CL') + ')</span></div>';
+            }
+            if (o.status === 'pending_visado') {
+              return '<div style="display:flex;align-items:center;gap:8px"><span style="width:18px;text-align:center">⏳</span> 3. Visado <span style="color:var(--gold3);font-size:10px;font-weight:700">(pendiente — visador asignado revisará)</span></div>';
+            }
+            return '<div style="display:flex;align-items:center;gap:8px"><span style="width:18px;text-align:center">⬜</span> 3. Visado <span style="font-size:10px;color:var(--wh4)">(después del doble control)</span></div>';
+          })()
     +   '</div>'
     + '</div>'
-    // Botones de acción
+    // FASE 3.2: botones encadenados — doble control bloqueado hasta cerrar checklist técnico.
     + '<div style="display:flex;flex-direction:column;gap:6px;margin-top:14px">'
     +   (hasChecklist
-        ? '<button class="btn btn-red" onclick="openTechChecklist(\'' + o.id + '\')">' + (techDone ? '✏️ Editar checklist técnico' : '📝 Llenar checklist técnico') + '</button>'
-        : '<div style="font-size:11px;color:var(--wh4);text-align:center;padding:8px;background:#f8f8f8;border-radius:3px">Checklist técnico para este tipo de servicio aún no implementado (Fase 2.4.B)</div>')
+        ? '<button class="btn btn-red" onclick="openTechChecklist(\'' + o.id + '\')">' + (techDone ? '✏️ Editar checklist técnico' : '📝 1. Llenar checklist técnico') + '</button>'
+        : '<div style="font-size:11px;color:var(--wh4);text-align:center;padding:8px;background:#f8f8f8;border-radius:3px">Checklist técnico para este tipo de servicio aún no implementado</div>')
     +   (hasChecklist && techDone
-        ? '<button class="btn btn-gold" onclick="openDoubleCheck(\'' + o.id + '\')">' + (dcDone ? '✏️ Editar doble control' : '✅ Doble control de cierre') + '</button>'
-        : '')
+        ? '<button class="btn btn-gold" onclick="openDoubleCheck(\'' + o.id + '\')">' + (dcDone ? '✏️ Editar doble control' : '✅ 2. Doble control de cierre') + '</button>'
+        : (hasChecklist
+            ? '<button class="btn" disabled style="opacity:.4;cursor:not-allowed" title="Completa el checklist técnico primero">🔒 2. Doble control (cerrar checklist primero)</button>'
+            : ''))
     + '</div>';
   openModal('m-my-ot');
 }
@@ -8958,10 +9228,17 @@ async function saveTechChecklist() {
     tech_completed_by: CU ? CU.id : null,
     tech_completed_by_name: CU ? CU.name : null
   });
-  // FASE 2.7: Después de completar el checklist técnico, la OT pasa DIRECTO a
-  // pending_visado (saltando pending_double_check). El doble control sigue
-  // disponible como paso opcional pero no bloquea el visado.
-  var newStatus = (o.status === 'pending_visado' || o.status === 'closed') ? o.status : 'pending_visado';
+  // FASE 3.2: el flujo correcto exige doble control ANTES de visado.
+  // Antes (FASE 2.7): saltaba directo a pending_visado, lo que dejaba el
+  // doble control como paso opcional. La spec actual lo declara obligatorio:
+  // ningún servicio puede cerrar sin doble control completo.
+  // Progresión: checklist técnico → pending_double_check → pending_visado → closed
+  var newStatus;
+  if (o.status === 'closed' || o.status === 'pending_visado') {
+    newStatus = o.status; // ya avanzó, no retroceder
+  } else {
+    newStatus = 'pending_double_check';
+  }
 
   try {
     var r = await sb.from('work_orders').update({
@@ -8981,7 +9258,8 @@ async function saveTechChecklist() {
 
   btn.innerHTML = 'Guardar checklist'; btn.disabled = false;
   closeModal('m-tech-checklist');
-  showGlobalError('✓ Checklist guardado. La OT quedó pendiente de visado.', 4000);
+  // FASE 3.2: tras checklist técnico, queda PENDIENTE doble control (no visado).
+  showGlobalError('✓ Checklist técnico guardado. Ahora completa el doble control de cierre.', 4500);
 
   // FASE 3.0: sincronización por patente al completar checklist técnico
   try {
@@ -8998,20 +9276,9 @@ async function saveTechChecklist() {
     });
   } catch(_){}
 
-  // FASE 2.7: notificar a los visadores que tienen una OT nueva esperándolos
-  try {
-    var visadores = getUsersWithExplicitPerm('can_visar') || [];
-    for (var iv = 0; iv < visadores.length; iv++) {
-      var u = visadores[iv];
-      await sb.from('notifications').insert({
-        type: 'visado',
-        title: 'Nueva OT pendiente de visado',
-        sub: 'OT-' + (o.ot_number || '?') + ' · ' + (o.service_classification || '?') + ' por ' + (CU ? CU.name : 'técnico'),
-        target_user_id: u.id,
-        work_order_id: o.id
-      });
-    }
-  } catch(_){}
+  // FASE 3.2: la notificación a visadores se DESPLAZA al cierre del doble
+  // control (saveDoubleCheck), no al cierre del checklist técnico. Antes
+  // los visadores recibían avisos de OTs incompletas.
 
   // Refrescar lista
   if (curTechTab === 't-misot') await loadMyOTs();
@@ -9077,6 +9344,16 @@ async function saveDoubleCheck() {
   var o = _activeOT.ot;
   var err = document.getElementById('m-dc-err');
   err.style.display = 'none';
+
+  // FASE 3.2: el doble control no puede cerrarse si NO hay checklist técnico
+  // previo. La progresión es checklist → doble control → visado, sin atajos.
+  var cdPrev = o.checklist_data || {};
+  if (!cdPrev.tech_completed_at) {
+    err.textContent = 'No puedes cerrar el doble control sin haber completado primero el checklist técnico.';
+    err.style.display = 'block';
+    return;
+  }
+
   var data = {};
   for (var i = 0; i < CHECKLIST_DOBLE_CONTROL.length; i++) {
     var it = CHECKLIST_DOBLE_CONTROL[i];
@@ -9157,6 +9434,25 @@ async function saveDoubleCheck() {
   btn.innerHTML = 'Cerrar doble control'; btn.disabled = false;
   closeModal('m-double-check');
   showGlobalError('Doble control completado. La OT queda pendiente de visado.', 4000);
+
+  // FASE 3.2: notificar a visadores AHORA (no antes en el checklist técnico).
+  // Garantiza que los visadores solo reciben OTs ya cerradas con doble control.
+  try {
+    var visadoresList = (typeof getUsersWithExplicitPerm === 'function')
+      ? (getUsersWithExplicitPerm('can_visar') || [])
+      : [];
+    for (var iv = 0; iv < visadoresList.length; iv++) {
+      var uV = visadoresList[iv];
+      await sb.from('notifications').insert({
+        type: 'visado',
+        title: 'Nueva OT pendiente de visado',
+        sub: 'OT-' + (o.ot_number || '?') + ' · ' + (o.service_classification || '?') + ' por ' + (CU ? CU.name : 'técnico'),
+        target_user_id: uV.id,
+        work_order_id: o.id
+      });
+    }
+  } catch(_){}
+
   if (curTechTab === 't-misot') await loadMyOTs();
 }
 
@@ -9679,6 +9975,31 @@ function showRejectionForm() {
 async function approveVisado() {
   if (!_activeVisadoOT) return;
   var o = _activeVisadoOT.ot;
+
+  // FASE 3.2: el visado NO puede aprobarse si la OT no completó el doble
+  // control de cierre. Esto ataja el bug donde un visador podía cerrar
+  // una OT que el técnico todavía no había auto-verificado.
+  var cdAtVisado = o.checklist_data || {};
+  if (!cdAtVisado.tech_completed_at) {
+    var eb0 = document.getElementById('m-visado-chk-err');
+    if (eb0) {
+      eb0.textContent = 'No puedes visar: la OT no tiene checklist técnico cerrado por el técnico.';
+      eb0.style.display = 'block';
+    } else {
+      showGlobalError('No puedes visar sin checklist técnico cerrado.', 5000);
+    }
+    return;
+  }
+  if (!cdAtVisado.double_check_completed_at) {
+    var eb1 = document.getElementById('m-visado-chk-err');
+    if (eb1) {
+      eb1.textContent = 'No puedes visar: el técnico aún no completó el doble control de cierre.';
+      eb1.style.display = 'block';
+    } else {
+      showGlobalError('No puedes visar sin doble control completo.', 5000);
+    }
+    return;
+  }
 
   // FASE 3.0 FIX CRÍTICO: validar el checklist de visado ANTES de aprobar.
   // No se permite aprobación sin que el visador haya marcado todos los items.
