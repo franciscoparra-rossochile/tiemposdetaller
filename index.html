@@ -72,8 +72,32 @@ html[data-textsize="xl"] .card-accent{font-size:17px}
 .tab-bar::-webkit-scrollbar{display:none}
 .tab{flex:0 0 auto;padding:12px 14px;text-align:center;font-size:12px;font-weight:700;color:#777;cursor:pointer;border-bottom:3px solid transparent;white-space:nowrap;letter-spacing:.06em;text-transform:uppercase;font-family:var(--head);touch-action:manipulation;user-select:none;margin-bottom:-2px;position:relative}
 .tab.active{color:#ff4444;border-bottom-color:#ff4444}
+/* Pestaña Alertas: pegada al extremo derecho con separador visual */
+.tab-alertas{margin-left:auto;border-left:1px solid #333;padding:12px 16px;display:flex;align-items:center;justify-content:center;min-width:54px}
+.tab-alertas:hover{background:#1a1a1a}
+.tab-alertas.active{background:#1a1a1a}
+/* Handle drag-and-drop reordenar pestañas */
+.tab-reorder{padding:12px 8px;color:#555;font-size:14px;letter-spacing:0;cursor:pointer;flex:0 0 auto;border-left:1px solid #2a2a2a;line-height:1}
+.tab-reorder:hover{color:#aaa;background:#1a1a1a}
+/* Estado dragging para reordenar */
+.tab.dragging{opacity:.4;background:#222}
+.tab.drag-over{border-left:3px solid var(--red);padding-left:11px}
 .ndot{position:absolute;top:6px;right:4px;width:7px;height:7px;background:var(--red);border-radius:50%;display:none}
 .ndot.show{display:block}
+/* Sub-tabs dentro del modal de Configuración */
+.cfg-tab{flex:1;padding:8px 10px;background:transparent;border:none;border-bottom:3px solid transparent;font-size:11px;font-weight:700;color:#777;cursor:pointer;text-transform:uppercase;letter-spacing:.05em;font-family:var(--head);margin-bottom:-2px}
+.cfg-tab:hover{color:#333}
+.cfg-tab-active{color:var(--red);border-bottom-color:var(--red)}
+/* Cards del Dashboard */
+.dash-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:14px}
+.dash-kpi{background:#fff;border:1px solid var(--border);border-radius:6px;padding:12px;border-left:4px solid var(--red)}
+.dash-kpi-label{font-size:10px;color:var(--wh3);text-transform:uppercase;letter-spacing:.05em;font-family:var(--head);font-weight:700;margin-bottom:4px}
+.dash-kpi-value{font-size:24px;font-weight:800;color:#111;font-family:var(--head);line-height:1}
+.dash-kpi-sub{font-size:10px;color:var(--wh3);margin-top:4px;font-family:var(--mono)}
+.dash-kpi.green{border-left-color:var(--green)}
+.dash-kpi.gold{border-left-color:var(--gold)}
+.dash-kpi.blue{border-left-color:var(--blue)}
+.dash-kpi.red{border-left-color:var(--red)}
 .body{padding:12px;flex:1;display:flex;flex-direction:column;gap:10px;overflow-y:auto}
 .card{background:#fff;border:1px solid var(--border);border-radius:6px;padding:14px;box-shadow:0 1px 4px rgba(0,0,0,.06)}
 .card-accent{background:#fff;border:1px solid var(--border);border-radius:6px;padding:14px;border-left:4px solid var(--red)}
@@ -225,26 +249,32 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     <div class="hdr-right">
       <span class="badge b-over" id="boss-badge" style="display:none"></span>
       <button class="btn-sm" id="btn-to-tech" onclick="enterTechMode()" style="display:none">Modo tecnico</button>
+      <button class="btn-sm" id="btn-boss-config" onclick="openConfigModal()" style="display:none">⚙️ Configuración</button>
       <button class="btn-sm" onclick="showMiCuenta()">Cuenta</button>
       <button class="btn-sm" onclick="doLogout()">Salir</button>
     </div>
   </div>
   <div class="tab-bar" id="boss-tabbar">
+    <div class="tab" data-tab="b-dashboard" onclick="bossTab('b-dashboard')" id="tab-dashboard" style="display:none">Dashboard</div>
     <div class="tab" data-tab="b-ingreso" onclick="bossTab('b-ingreso')" id="tab-ingreso" style="display:none">Ingreso Taller</div>
     <div class="tab" data-tab="b-catastro" onclick="bossTab('b-catastro')" id="tab-catastro" style="display:none">Catastro Vehículos</div>
     <div class="tab" data-tab="b-entregados" onclick="bossTab('b-entregados')" id="tab-entregados" style="display:none">Entregados</div>
-    <div class="tab active" data-tab="b-online" onclick="bossTab('b-online')">En curso</div>
-    <div class="tab" data-tab="b-alertas" onclick="bossTab('b-alertas')">Alertas<span class="ndot" id="boss-ndot"></span></div>
-    <div class="tab" data-tab="b-calendario" onclick="bossTab('b-calendario')">Calendario</div>
-    <div class="tab" data-tab="b-plan" onclick="bossTab('b-plan')">Planificacion</div>
-    <div class="tab" data-tab="b-hist" onclick="bossTab('b-hist')">Historial</div>
-    <div class="tab" data-tab="b-reportes" onclick="bossTab('b-reportes')">Reportes</div>
-    <div class="tab" data-tab="b-bugs" onclick="bossTab('b-bugs')">Bugs</div>
+    <div class="tab active" data-tab="b-online" onclick="bossTab('b-online')" id="tab-online">En curso</div>
+    <div class="tab" data-tab="b-calendario" onclick="bossTab('b-calendario')" id="tab-calendario">Calendario</div>
+    <div class="tab" data-tab="b-plan" onclick="bossTab('b-plan')" id="tab-plan">Planificacion</div>
+    <div class="tab" data-tab="b-hist" onclick="bossTab('b-hist')" id="tab-hist">Historial</div>
+    <div class="tab" data-tab="b-reportes" onclick="bossTab('b-reportes')" id="tab-reportes">Reportes</div>
+    <div class="tab" data-tab="b-bugs" onclick="bossTab('b-bugs')" id="tab-bugs">Bugs</div>
     <div class="tab" data-tab="b-protocolos" onclick="bossTab('b-protocolos')" id="tab-protocolos" style="display:none">Protocolos de Seguridad<span class="ndot" id="boss-protocolos-dot"></span></div>
     <div class="tab" data-tab="b-visado" onclick="bossTab('b-visado')" id="tab-boss-visado" style="display:none">Visado<span class="ndot" id="boss-visado-dot"></span></div>
     <div class="tab" data-tab="b-clientes" onclick="bossTab('b-clientes')" id="tab-clientes" style="display:none">Registro Clientes</div>
-    <div class="tab" data-tab="b-users" onclick="bossTab('b-users')" id="tab-users" style="display:none">Usuarios</div>
-    <div class="tab" data-tab="b-cfg" onclick="bossTab('b-cfg')" id="tab-cfg" style="display:none">Config</div>
+    <!-- Botón flotante reordenar (al final, antes de alertas) -->
+    <div class="tab tab-reorder" onclick="openReorderTabsModal()" id="tab-reorder" title="Reordenar pestañas">⋮⋮</div>
+    <!-- Pestaña Alertas, separada visualmente, al extremo derecho -->
+    <div class="tab tab-alertas" data-tab="b-alertas" onclick="bossTab('b-alertas')" id="tab-alertas" title="Alertas">
+      <span style="font-size:18px;line-height:1">🔔</span>
+      <span class="ndot" id="boss-ndot"></span>
+    </div>
   </div>
   <div class="body" id="boss-body"></div>
 </div>
@@ -684,6 +714,50 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
   <div class="modal" style="max-height:94vh;overflow-y:auto;max-width:560px">
     <div id="m-protocolos-veh-body"></div>
     <button class="btn btn-out" onclick="closeModal('m-protocolos-veh')" style="margin-top:12px">Cerrar</button>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     CONFIGURACIÓN — modal admin que reemplaza las pestañas Config y Usuarios
+     Contiene tabs internos: Tiempos objetivo, Usuarios, Sistema
+     ═══════════════════════════════════════════════════════════════ -->
+<div class="overlay" id="m-config" style="display:none">
+  <div class="modal" style="max-height:94vh;overflow-y:auto;max-width:640px">
+    <div class="modal-t">⚙️ Configuración</div>
+    <div class="modal-s">Panel de administración del sistema</div>
+    <div id="m-cfg-tabs" style="display:flex;gap:4px;border-bottom:2px solid var(--border);margin:14px 0 12px">
+      <button class="cfg-tab cfg-tab-active" data-cfg="tiempos" onclick="switchConfigTab('tiempos')">Tiempos objetivo</button>
+      <button class="cfg-tab" data-cfg="usuarios" onclick="switchConfigTab('usuarios')">Usuarios</button>
+      <button class="cfg-tab" data-cfg="sistema" onclick="switchConfigTab('sistema')">Sistema</button>
+    </div>
+    <div id="m-cfg-body" style="min-height:200px"></div>
+    <button class="btn btn-out" onclick="closeModal('m-config')" style="margin-top:14px">Cerrar</button>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     REORDENAR PESTAÑAS — modal con lista drag-and-drop + flechas
+     ═══════════════════════════════════════════════════════════════ -->
+<div class="overlay" id="m-reorder-tabs" style="display:none">
+  <div class="modal" style="max-height:90vh;overflow-y:auto;max-width:420px">
+    <div class="modal-t">🔀 Reordenar pestañas</div>
+    <div class="modal-s">Arrastra para reordenar o usa las flechas. La pestaña Alertas siempre queda al final.</div>
+    <div id="m-reorder-list" style="margin-top:14px;display:flex;flex-direction:column;gap:6px"></div>
+    <div style="display:flex;gap:6px;margin-top:14px">
+      <button class="btn btn-red" onclick="saveTabsOrder()" style="flex:1">Guardar orden</button>
+      <button class="btn btn-out" onclick="resetTabsOrder()" style="flex:1">Restablecer</button>
+    </div>
+    <button class="btn btn-out" onclick="closeModal('m-reorder-tabs')" style="margin-top:8px">Cancelar</button>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     DETALLE DE ALERTA — modal expandido al tocar una alerta
+     ═══════════════════════════════════════════════════════════════ -->
+<div class="overlay" id="m-alert-detail" style="display:none">
+  <div class="modal" style="max-height:90vh;overflow-y:auto;max-width:460px">
+    <div id="m-alert-detail-body"></div>
+    <button class="btn btn-out" onclick="closeModal('m-alert-detail')" style="margin-top:12px">Cerrar</button>
   </div>
 </div>
 
@@ -2862,10 +2936,7 @@ async function doLogin() {
   } else {
     document.getElementById('boss-name').textContent = CU.name;
     document.getElementById('boss-role').textContent = CU.role === 'admin' ? 'Administrador' : 'Jefatura';
-    if (CU.role === 'admin') {
-      document.getElementById('tab-users').style.display = '';
-      document.getElementById('tab-cfg').style.display = '';
-    }
+    refreshBossTabsVisibility();
     // Mostrar el boton "Modo tecnico" solo si el usuario esta habilitado
     document.getElementById('btn-to-tech').style.display = CU.can_tech === true ? '' : 'none';
     showScreen('s-boss');
@@ -2934,6 +3005,7 @@ function exitTechMode() {
   document.getElementById('boss-name').textContent = CU.name;
   document.getElementById('boss-role').textContent = CU.role === 'admin' ? 'Administrador' : 'Jefatura';
   document.getElementById('btn-to-tech').style.display = '';
+  refreshBossTabsVisibility();
   showScreen('s-boss');
   bossTab('b-online');
 }
@@ -3642,8 +3714,7 @@ function bossTab(t) {
   else if (t === 'b-plan') renderBossPlan(body);
   else if (t === 'b-hist') renderBossHist(body);
   else if (t === 'b-reportes') renderBossReportes(body);
-  else if (t === 'b-users') renderBossUsers(body);
-  else if (t === 'b-cfg') renderBossCfg(body);
+  else if (t === 'b-dashboard') renderBossDashboard(body);
   else if (t === 'b-clientes') renderBossClientes(body, 'registro');
   else if (t === 'b-ingreso')  renderBossClientes(body, 'ingreso');
   else if (t === 'b-catastro') renderBossCatastro(body);
@@ -3676,10 +3747,14 @@ function refreshBossTabsVisibility() {
   if (elBossVisado) elBossVisado.style.display = isVisador ? '' : 'none';
   var elTechVisado = document.getElementById('tab-tech-visado');
   if (elTechVisado) elTechVisado.style.display = isVisador ? '' : 'none';
-  var elUsers = document.getElementById('tab-users');
-  if (elUsers) elUsers.style.display = (CU.role === 'admin') ? '' : 'none';
-  var elCfg = document.getElementById('tab-cfg');
-  if (elCfg) elCfg.style.display = (CU.role === 'admin') ? '' : 'none';
+  // Dashboard: solo admin
+  var elDash = document.getElementById('tab-dashboard');
+  if (elDash) elDash.style.display = (CU.role === 'admin') ? '' : 'none';
+  // Botón Configuración en header: solo admin
+  var btnCfg = document.getElementById('btn-boss-config');
+  if (btnCfg) btnCfg.style.display = (CU.role === 'admin') ? '' : 'none';
+  // Aplicar el orden personalizado de pestañas guardado en localStorage
+  applySavedTabsOrder();
 }
 
 // FASE 2.4.C: helper análogo para pantalla técnica (visadores con rol tech ven la tab Visado)
@@ -5778,7 +5853,8 @@ async function adminDeleteHistory(historyId, techName, serviceLabel, plate, dura
 async function renderBossAlertas(body) {
   body.innerHTML = '<div class="empty"><span class="spin"></span>Cargando...</div>';
   var {data} = await sb.from('notifications').select('*').order('created_at',{ascending:false}).limit(60);
-  body.innerHTML = '<div class="lbl">Todas las alertas</div>';
+  body.innerHTML = '<div class="lbl">Todas las alertas</div>'
+    + '<div style="font-size:11px;color:var(--wh3);margin-bottom:10px;line-height:1.4">Toca cualquier alerta para ver más información y acceder al contexto (OT, vehículo, cliente).</div>';
   if (!data || !data.length) { body.innerHTML += '<div class="empty">Sin alertas</div>'; return; }
   // Filtro: la jefatura/admin NO ve notificaciones tipo 'assign' dirigidas a otros usuarios
   // (ya reciben la notificacion global 'cal' con la misma info; evita duplicados y el mensaje
@@ -5795,6 +5871,8 @@ async function renderBossAlertas(body) {
     var isCancelled = n.cancelled === true;
     card.style.borderLeft = '4px solid ' + (isCancelled ? 'var(--border2)' : accent);
     card.style.marginBottom = '6px';
+    card.style.cursor = 'pointer';
+    card.onclick = function(){ openAlertDetail(n.id); };
     if (isCancelled) { card.style.opacity = '0.55'; card.style.background = '#f5f5f5'; }
     var titleStyle = isCancelled
       ? 'font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;color:#888;text-decoration:line-through'
@@ -5805,10 +5883,15 @@ async function renderBossAlertas(body) {
     var cancelBadge = isCancelled
       ? '<div style="display:inline-block;background:#eee;color:#666;font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;margin-top:4px;letter-spacing:.06em;text-transform:uppercase;font-family:\'Rajdhani\',sans-serif">Cancelado</div>'
       : '';
-    card.innerHTML = '<div style="' + titleStyle + '">' + n.title + '</div>'
-      + '<div style="' + subStyle + '">' + n.sub + '</div>'
-      + cancelBadge
-      + '<div style="font-size:10px;color:#aaa;margin-top:4px">' + fmtD(n.created_at) + '</div>';
+    card.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">'
+      +   '<div style="flex:1">'
+      +     '<div style="' + titleStyle + '">' + n.title + '</div>'
+      +     '<div style="' + subStyle + '">' + n.sub + '</div>'
+      +     cancelBadge
+      +     '<div style="font-size:10px;color:#aaa;margin-top:4px">' + fmtD(n.created_at) + '</div>'
+      +   '</div>'
+      +   '<div style="font-size:11px;color:var(--wh4);align-self:center">›</div>'
+      + '</div>';
     body.appendChild(card);
   });
 }
@@ -7783,7 +7866,10 @@ async function saveUser() {
   // Refrescar cache de avatares para que los cambios aparezcan en En Curso, Historial, etc.
   await refreshAvatarsCache();
   closeModal('m-create-user');
-  if (curBossTab === 'b-users') renderBossUsers(document.getElementById('boss-body'));
+  // Si el modal de Configuración está abierto en pestaña Usuarios, refrescar su lista
+  if (document.getElementById('m-config').style.display !== 'none' && _curConfigTab === 'usuarios') {
+    renderConfigUsuarios(document.getElementById('m-cfg-body'));
+  }
 }
 
 async function deleteUser() {
@@ -7804,7 +7890,9 @@ async function _doDeleteUser() {
   }
   await refreshAvatarsCache();
   closeModal('m-create-user');
-  if (curBossTab === 'b-users') renderBossUsers(document.getElementById('boss-body'));
+  if (document.getElementById('m-config').style.display !== 'none' && _curConfigTab === 'usuarios') {
+    renderConfigUsuarios(document.getElementById('m-cfg-body'));
+  }
   showGlobalError('Usuario eliminado', 2500);
 }
 
@@ -11622,6 +11710,611 @@ async function viewProtocolosDoubleCheck(otId) {
       + '<div style="margin-top:14px"><button class="btn btn-out" onclick="closeModal(\'m-visado-hist\')">Cerrar</button></div>';
     openModal('m-visado-hist');
   } catch(e) { showGlobalError('Error: ' + e.message, 4000); }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// MODAL CONFIGURACIÓN (admin) — reemplaza pestañas Config y Usuarios
+// Sub-tabs internos: Tiempos objetivo, Usuarios, Sistema
+// ═══════════════════════════════════════════════════════════════
+var _curConfigTab = 'tiempos';
+
+function openConfigModal() {
+  if (!CU || CU.role !== 'admin') {
+    showGlobalError('Solo administradores pueden acceder a Configuración', 3500);
+    return;
+  }
+  _curConfigTab = 'tiempos';
+  switchConfigTab('tiempos');
+  openModal('m-config');
+}
+
+function switchConfigTab(tab) {
+  _curConfigTab = tab;
+  // Actualizar visual de los sub-tabs
+  document.querySelectorAll('#m-cfg-tabs .cfg-tab').forEach(function(el) {
+    el.classList.toggle('cfg-tab-active', el.dataset.cfg === tab);
+  });
+  var body = document.getElementById('m-cfg-body');
+  if (!body) return;
+  body.innerHTML = '<div style="text-align:center;padding:30px;color:var(--wh3)"><span class="spin"></span> Cargando...</div>';
+  if (tab === 'tiempos') renderConfigTiempos(body);
+  else if (tab === 'usuarios') renderConfigUsuarios(body);
+  else if (tab === 'sistema') renderConfigSistema(body);
+}
+
+function renderConfigTiempos(body) {
+  body.innerHTML = '<div style="font-size:11px;color:var(--wh3);margin-bottom:10px;line-height:1.4">Tiempos objetivo en minutos para cada tipo de servicio. Estos tiempos se usan en las alertas de "tiempo excedido" y reportes de productividad.</div>'
+    + SRVS.filter(function(s){return s.goal;}).map(function(s) {
+      return '<div class="row" style="padding:8px 0;border-bottom:1px solid #f0f0f0">'
+        + '<span style="font-size:13px;color:#333;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;flex:1">' + s.name + '</span>'
+        + '<span style="font-family:var(--mono);color:var(--red);font-weight:700;font-size:13px">' + s.goal + ' min</span>'
+        + '</div>';
+    }).join('');
+}
+
+async function renderConfigUsuarios(body) {
+  body.innerHTML = '<div style="text-align:center;padding:20px;color:var(--wh3)"><span class="spin"></span> Cargando usuarios...</div>';
+  try {
+    var r = await sb.from('users').select('*').order('role').order('name');
+    if (r.error) { body.innerHTML = '<div style="color:var(--red);padding:14px">Error: ' + r.error.message + '</div>'; return; }
+    var data = r.data || [];
+    body.innerHTML = '';
+    var addBtn = mk('button','btn btn-red');
+    addBtn.textContent = '+ Nuevo usuario';
+    addBtn.style.marginBottom = '12px';
+    addBtn.onclick = function() { closeModal('m-config'); openUserModal(null); };
+    body.appendChild(addBtn);
+    var card = mk('div','');
+    var roleO = {admin:0,jefatura:1,tech:2};
+    data.sort(function(a,b){return (roleO[a.role]||9)-(roleO[b.role]||9)||a.name.localeCompare(b.name);}).forEach(function(u) {
+      var init = u.name.split(' ').map(function(x){return x[0];}).join('').slice(0,2);
+      var avc = u.role==='admin'?'av-adm':u.role==='jefatura'?'av-jef':'av-tech';
+      var row = mk('div','row');
+      row.style.cssText = 'padding:8px 0;border-bottom:1px solid #f0f0f0';
+      var av = '<div class="av ' + avc + '" style="margin-right:8px">' + (u.avatar_url ? '<img src="' + u.avatar_url + '" style="width:100%;height:100%;object-fit:cover;border-radius:2px"/>' : init) + '</div>';
+      row.innerHTML = av
+        + '<div style="flex:1">'
+        + '<div style="font-size:13px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.03em;color:#111">' + escapeHtml(u.name) + '</div>'
+        + '<div style="font-size:11px;color:#666">@' + escapeHtml(u.username) + (u.cargo?' - '+escapeHtml(u.cargo):'') + '</div>'
+        + '<span class="badge ' + (u.role==='admin'?'b-cal':u.role==='jefatura'?'b-run':'b-pend') + '">' + u.role + '</span>'
+        + '</div>'
+        + '<button class="btn-sm" onclick="closeModal(\'m-config\');openUserModal(\'' + u.id + '\')">Editar</button>';
+      card.appendChild(row);
+    });
+    body.appendChild(card);
+  } catch(e) {
+    body.innerHTML = '<div style="color:var(--red);padding:14px">Error: ' + e.message + '</div>';
+  }
+}
+
+function renderConfigSistema(body) {
+  // Información del sistema y herramientas administrativas
+  var html = '<div style="font-size:11px;color:var(--wh3);margin-bottom:10px;line-height:1.4">Información del sistema y herramientas de administración.</div>'
+    + '<div style="background:#f8f8f8;border-radius:4px;padding:10px;margin-bottom:10px">'
+    +   '<div class="lbl">Usuario actual</div>'
+    +   '<div style="font-size:12px"><b>' + escapeHtml(CU ? CU.name : '?') + '</b> · ' + escapeHtml(CU ? CU.role : '?') + '</div>'
+    + '</div>'
+    + '<div style="background:#f8f8f8;border-radius:4px;padding:10px;margin-bottom:10px">'
+    +   '<div class="lbl">Sesión</div>'
+    +   '<div style="font-size:11px;color:var(--wh3);font-family:var(--mono)">Estado de conexión: ' + (typeof connStatusText === 'function' ? escapeHtml(connStatusText()) : 'OK') + '</div>'
+    + '</div>'
+    + '<div style="background:#f8f8f8;border-radius:4px;padding:10px;margin-bottom:10px">'
+    +   '<div class="lbl">Restablecer pestañas</div>'
+    +   '<div style="font-size:11px;color:var(--wh3);margin-bottom:6px">Restablece el orden de las pestañas a su valor por defecto.</div>'
+    +   '<button class="btn-sm" onclick="resetTabsOrder();showGlobalError(\'Orden de pestañas restablecido\', 2500);">Restablecer orden</button>'
+    + '</div>';
+  body.innerHTML = html;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// REORDENAR PESTAÑAS — drag and drop + flechas, persistente en localStorage
+// Cualquier usuario puede personalizar SU propio orden.
+// La pestaña Alertas y el botón de reordenar siempre quedan al final.
+// ═══════════════════════════════════════════════════════════════
+
+// IDs de pestañas que NO se pueden reordenar (siempre al final, en este orden)
+var PINNED_TAB_IDS = ['tab-reorder', 'tab-alertas'];
+
+function _getReorderableTabs() {
+  // Devuelve array de elementos de pestaña visibles y reordenables
+  var bar = document.getElementById('boss-tabbar');
+  if (!bar) return [];
+  var all = Array.from(bar.querySelectorAll('.tab'));
+  return all.filter(function(el){
+    return PINNED_TAB_IDS.indexOf(el.id) === -1;
+  });
+}
+
+function _saveTabsOrderToStorage(orderedIds) {
+  try {
+    if (!CU) return;
+    localStorage.setItem('rosso_tabs_order_' + CU.username, JSON.stringify(orderedIds));
+  } catch(e) {}
+}
+
+function _loadTabsOrderFromStorage() {
+  try {
+    if (!CU) return null;
+    var raw = localStorage.getItem('rosso_tabs_order_' + CU.username);
+    return raw ? JSON.parse(raw) : null;
+  } catch(e) { return null; }
+}
+
+// Aplica el orden guardado (si existe) sin tocar las pinned
+function applySavedTabsOrder() {
+  var order = _loadTabsOrderFromStorage();
+  if (!order || !Array.isArray(order)) return;
+  var bar = document.getElementById('boss-tabbar');
+  if (!bar) return;
+  // Reubicar cada pestaña según el orden guardado.
+  // Los nuevos IDs (no presentes en el storage) quedan al final, antes de las pinned.
+  var pinned = PINNED_TAB_IDS.map(function(id){return document.getElementById(id);}).filter(Boolean);
+  var allReorderable = _getReorderableTabs();
+  var byId = {};
+  allReorderable.forEach(function(el){ byId[el.id] = el; });
+
+  // Primero: agregar en el orden guardado
+  order.forEach(function(id) {
+    if (byId[id]) {
+      bar.appendChild(byId[id]);
+      delete byId[id];
+    }
+  });
+  // Luego: el resto que no estaba en el orden (nuevos) en su orden original
+  Object.keys(byId).forEach(function(id) {
+    bar.appendChild(byId[id]);
+  });
+  // Finalmente: las pinned al final, en su orden definido
+  pinned.forEach(function(el){ bar.appendChild(el); });
+}
+
+// Estado del modal de reordenar
+var _reorderState = []; // array de {id, label, hidden}
+
+function openReorderTabsModal() {
+  // Construir lista actual de pestañas reordenables
+  var reorderable = _getReorderableTabs();
+  _reorderState = reorderable.map(function(el) {
+    // Tomar texto del tab, sacando los dots de notificación
+    var clone = el.cloneNode(true);
+    Array.from(clone.querySelectorAll('.ndot')).forEach(function(d){d.remove();});
+    var label = (clone.textContent || '').trim();
+    return {
+      id: el.id,
+      label: label || el.dataset.tab || '?',
+      hidden: el.style.display === 'none'
+    };
+  });
+  _renderReorderList();
+  openModal('m-reorder-tabs');
+}
+
+function _renderReorderList() {
+  var list = document.getElementById('m-reorder-list');
+  if (!list) return;
+  list.innerHTML = _reorderState.map(function(item, idx) {
+    var visibleNote = item.hidden ? ' <span style="font-size:9px;color:var(--wh4);text-transform:uppercase;letter-spacing:.04em">(no visible para ti)</span>' : '';
+    return '<div draggable="true" data-idx="' + idx + '" class="reorder-row" '
+      + 'ondragstart="onReorderDragStart(event, ' + idx + ')" '
+      + 'ondragover="onReorderDragOver(event)" '
+      + 'ondrop="onReorderDrop(event, ' + idx + ')" '
+      + 'ondragend="onReorderDragEnd(event)" '
+      + 'style="display:flex;align-items:center;gap:8px;padding:9px 10px;background:' + (item.hidden ? '#f5f5f5' : '#fff') + ';border:1px solid var(--border);border-radius:4px;cursor:move' + (item.hidden ? ';opacity:.6' : '') + '">'
+      + '<span style="color:#999;font-size:14px;cursor:grab" title="Arrastra para reordenar">⋮⋮</span>'
+      + '<span style="flex:1;font-size:12px;font-weight:600;color:#111;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.03em">' + escapeHtml(item.label) + visibleNote + '</span>'
+      + '<button class="btn-sm" onclick="moveReorderItem(' + idx + ', -1)" ' + (idx === 0 ? 'disabled style="opacity:.3"' : 'style=""') + ' title="Subir">↑</button>'
+      + '<button class="btn-sm" onclick="moveReorderItem(' + idx + ', 1)" ' + (idx === _reorderState.length - 1 ? 'disabled style="opacity:.3"' : 'style=""') + ' title="Bajar">↓</button>'
+      + '</div>';
+  }).join('');
+}
+
+function moveReorderItem(idx, dir) {
+  var newIdx = idx + dir;
+  if (newIdx < 0 || newIdx >= _reorderState.length) return;
+  var [item] = _reorderState.splice(idx, 1);
+  _reorderState.splice(newIdx, 0, item);
+  _renderReorderList();
+}
+
+// Drag and drop
+var _dragSrcIdx = null;
+function onReorderDragStart(e, idx) {
+  _dragSrcIdx = idx;
+  e.dataTransfer.effectAllowed = 'move';
+  try { e.dataTransfer.setData('text/plain', String(idx)); } catch(_) {}
+  e.currentTarget.classList.add('dragging');
+}
+function onReorderDragOver(e) {
+  if (e.preventDefault) e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  return false;
+}
+function onReorderDrop(e, dstIdx) {
+  if (e.stopPropagation) e.stopPropagation();
+  if (e.preventDefault) e.preventDefault();
+  if (_dragSrcIdx == null || _dragSrcIdx === dstIdx) return false;
+  var [item] = _reorderState.splice(_dragSrcIdx, 1);
+  _reorderState.splice(dstIdx, 0, item);
+  _dragSrcIdx = null;
+  _renderReorderList();
+  return false;
+}
+function onReorderDragEnd(e) {
+  e.currentTarget.classList.remove('dragging');
+  _dragSrcIdx = null;
+}
+
+function saveTabsOrder() {
+  var orderedIds = _reorderState.map(function(item){return item.id;});
+  _saveTabsOrderToStorage(orderedIds);
+  applySavedTabsOrder();
+  closeModal('m-reorder-tabs');
+  showGlobalError('Orden de pestañas guardado', 2500);
+}
+
+function resetTabsOrder() {
+  try {
+    if (!CU) return;
+    localStorage.removeItem('rosso_tabs_order_' + CU.username);
+  } catch(_) {}
+  // Recargar la página para restablecer el orden DOM original sería ideal,
+  // pero podemos simplemente cerrar el modal y avisar al usuario.
+  closeModal('m-reorder-tabs');
+  // Como el HTML estático tiene el orden por defecto, recargar reaplica.
+  setTimeout(function(){ location.reload(); }, 400);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// DETALLE DE ALERTA — modal expandido al tocar una alerta
+// ═══════════════════════════════════════════════════════════════
+
+async function openAlertDetail(alertId) {
+  if (!sb) return;
+  var body = document.getElementById('m-alert-detail-body');
+  if (!body) return;
+  body.innerHTML = '<div style="text-align:center;padding:30px;color:var(--wh3)"><span class="spin"></span> Cargando...</div>';
+  openModal('m-alert-detail');
+  try {
+    var r = await sb.from('notifications').select('*').eq('id', alertId).maybeSingle();
+    if (r.error || !r.data) { body.innerHTML = '<div style="color:var(--red);padding:14px">Alerta no encontrada</div>'; return; }
+    var n = r.data;
+    var typeLabels = {
+      'over': {emoji:'🚨', label:'Tiempo excedido', color:'var(--red)'},
+      'pau':  {emoji:'⏸️', label:'Servicio pausado', color:'var(--gold)'},
+      'fin':  {emoji:'✅', label:'Servicio finalizado', color:'var(--green)'},
+      'cal':  {emoji:'📅', label:'Calendario', color:'var(--blue)'},
+      'assign': {emoji:'👤', label:'Asignación', color:'var(--blue)'},
+      'visado': {emoji:'⚖️', label:'Visado', color:'var(--gold3)'},
+      'visado_done': {emoji:'✓', label:'Visado completado', color:'var(--green)'},
+      'visado_rejected': {emoji:'⚠', label:'Visado rechazado', color:'var(--red)'}
+    };
+    var typeInfo = typeLabels[n.type] || {emoji:'🔔', label:n.type || 'Alerta', color:'var(--blue)'};
+    var isCancelled = n.cancelled === true;
+
+    // Cargar OT + vehiculo + cliente si aplica para mostrar contexto enriquecido
+    var ot = null, veh = null, cli = null, sched = null;
+    if (n.work_order_id) {
+      try {
+        var rOT = await sb.from('work_orders').select('*').eq('id', n.work_order_id).maybeSingle();
+        if (rOT && rOT.data) ot = rOT.data;
+      } catch(_) {}
+    }
+    if (ot && ot.vehicle_id) {
+      try {
+        var rv = await sb.from('client_vehicles').select('*').eq('id', ot.vehicle_id).maybeSingle();
+        if (rv && rv.data) veh = rv.data;
+      } catch(_) {}
+    }
+    if (ot && ot.client_id) {
+      try {
+        var rc = await sb.from('clients').select('id,name,rut,phone,email').eq('id', ot.client_id).maybeSingle();
+        if (rc && rc.data) cli = rc.data;
+      } catch(_) {}
+    }
+    if (n.scheduled_service_id) {
+      try {
+        var rs = await sb.from('scheduled_services').select('*').eq('id', n.scheduled_service_id).maybeSingle();
+        if (rs && rs.data) sched = rs.data;
+      } catch(_) {}
+    }
+
+    var html = '<div class="modal-t">' + typeInfo.emoji + ' ' + escapeHtml(n.title || 'Alerta') + '</div>'
+      + '<div class="modal-s">' + escapeHtml(typeInfo.label) + (isCancelled ? ' · CANCELADA' : '') + '</div>'
+      // Banner de tipo
+      + '<div style="background:' + (isCancelled ? '#f5f5f5' : '#fff') + ';border-left:4px solid ' + (isCancelled ? 'var(--wh4)' : typeInfo.color) + ';border-radius:3px;padding:10px;margin:12px 0">'
+      +   '<div style="font-size:13px;color:#111;line-height:1.45' + (isCancelled ? ';text-decoration:line-through' : '') + '">' + escapeHtml(n.sub || '') + '</div>'
+      +   '<div style="font-size:10px;color:var(--wh3);margin-top:6px;font-family:var(--mono)">📅 ' + (n.created_at ? new Date(n.created_at).toLocaleString('es-CL') : '?') + '</div>'
+      + '</div>';
+
+    // Contexto del usuario destinatario
+    if (n.target_user_id) {
+      try {
+        var rU = await sb.from('users').select('name,username,role').eq('id', n.target_user_id).maybeSingle();
+        if (rU && rU.data) {
+          html += '<div style="background:#f8f8f8;border-radius:3px;padding:8px 10px;margin-bottom:10px;font-size:11px">'
+            + '<b>Dirigida a:</b> ' + escapeHtml(rU.data.name) + ' · @' + escapeHtml(rU.data.username) + ' · ' + escapeHtml(rU.data.role)
+            + '</div>';
+        }
+      } catch(_) {}
+    }
+
+    // Contexto OT/vehículo/cliente
+    if (ot) {
+      var srvDef = SERVICES_INGRESO ? SERVICES_INGRESO.find(function(x){return x.key === ot.service_classification;}) : null;
+      var srvLabel = srvDef ? srvDef.label : (ot.service_classification || '?');
+      var statusLabels = {open:'Sin iniciar', assigned:'Asignada', in_progress:'En proceso', pending_double_check:'Pend. doble control', pending_visado:'Pend. visado', closed:'Cerrada', cancelled:'Cancelada'};
+      html += '<div style="border-top:2px solid var(--gold);padding-top:10px;margin-top:10px">'
+        + '<div class="lbl">Orden de trabajo</div>'
+        + '<div style="background:#fff;border:1px solid var(--border);border-radius:3px;padding:9px;font-size:12px;line-height:1.5">'
+        +   '<div style="font-weight:700;font-family:\'Rajdhani\',sans-serif">OT-' + (ot.ot_number || '?') + ' · ' + escapeHtml(srvLabel) + '</div>'
+        +   (ot.service_subtype ? '<div style="font-size:11px;color:var(--wh2)">' + escapeHtml(ot.service_subtype) + '</div>' : '')
+        +   '<div style="font-size:11px;color:var(--wh3);margin-top:3px">Estado: <b>' + (statusLabels[ot.status] || ot.status) + '</b></div>'
+        + '</div></div>';
+    }
+
+    if (veh) {
+      var pv = validatePlate(veh.plate || '');
+      var plateFmt = pv.valid ? pv.formatted : (veh.plate || '?');
+      html += '<div style="margin-top:10px">'
+        + '<div class="lbl">Vehículo</div>'
+        + '<div style="background:#fff;border:1px solid var(--border);border-radius:3px;padding:9px;font-size:12px;line-height:1.5">'
+        +   '<div style="font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase">' + escapeHtml(veh.brand||'') + ' ' + escapeHtml(veh.model||'') + ' <span style="color:var(--red);font-family:var(--mono)">' + plateFmt + '</span></div>'
+        +   '<div style="font-size:11px;color:var(--wh3)">KM ingreso: ' + (veh.km_entry||'?') + '</div>'
+        + '</div></div>';
+    }
+
+    if (cli) {
+      html += '<div style="margin-top:10px">'
+        + '<div class="lbl">Cliente</div>'
+        + '<div style="background:#fff;border:1px solid var(--border);border-radius:3px;padding:9px;font-size:12px;line-height:1.5">'
+        +   '<div style="font-weight:700">' + escapeHtml(cli.name||'') + '</div>'
+        +   '<div style="font-size:11px;color:var(--wh3)">' + escapeHtml(cli.rut || '') + (cli.phone ? ' · ' + escapeHtml(cli.phone) : '') + (cli.email ? ' · ' + escapeHtml(cli.email) : '') + '</div>'
+        + '</div></div>';
+    }
+
+    if (sched) {
+      var schDate = sched.scheduled_at ? new Date(sched.scheduled_at).toLocaleString('es-CL') : '?';
+      html += '<div style="margin-top:10px">'
+        + '<div class="lbl">Servicio agendado</div>'
+        + '<div style="background:#fff;border:1px solid var(--border);border-radius:3px;padding:9px;font-size:12px;line-height:1.5">'
+        +   '<div style="font-weight:700">' + escapeHtml(sched.service || '?') + (sched.subtype ? ' · ' + escapeHtml(sched.subtype) : '') + '</div>'
+        +   '<div style="font-size:11px;color:var(--wh3)">📅 ' + schDate + '</div>'
+        + '</div></div>';
+    }
+
+    // Botones de acción contextual
+    html += '<div style="margin-top:14px;display:flex;flex-direction:column;gap:6px">';
+    if (ot) {
+      html += '<button class="btn-sm" onclick="closeModal(\'m-alert-detail\');editOT(\'' + ot.id + '\')">✏️ Abrir OT</button>';
+    }
+    if (veh && (CU.role === 'admin' || CU.role === 'jefatura')) {
+      html += '<button class="btn-sm" onclick="closeModal(\'m-alert-detail\');openVehicleDetail(\'' + veh.id + '\')">🚗 Ver vehículo</button>';
+    }
+    html += '</div>';
+
+    body.innerHTML = html;
+  } catch(e) {
+    body.innerHTML = '<div style="color:var(--red);padding:14px">Error: ' + e.message + '</div>';
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// DASHBOARD ADMIN — indicadores clave del taller
+// ═══════════════════════════════════════════════════════════════
+
+var _dashCache = null;
+var _dashLoadedAt = null;
+
+async function renderBossDashboard(body) {
+  if (!CU || CU.role !== 'admin') {
+    body.innerHTML = '<div class="card"><div style="text-align:center;color:var(--wh3);padding:18px">Solo administradores tienen acceso al Dashboard.</div></div>';
+    return;
+  }
+  body.innerHTML = '<div class="card-accent">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px">'
+    +   '<div style="font-size:14px;font-weight:700;color:#111;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.04em">📊 Dashboard del taller</div>'
+    +   '<button class="btn-sm" id="dash-refresh" onclick="loadDashboardData(true)">↻ Actualizar</button>'
+    + '</div>'
+    + '<div style="font-size:11px;color:var(--wh3);margin-bottom:12px;line-height:1.4">Indicadores clave del estado del taller. Datos actualizados en tiempo real.</div>'
+    + '<div id="dash-meta" style="font-size:10px;color:var(--wh4);font-family:var(--mono);margin-bottom:8px">Cargando...</div>'
+    + '<div id="dash-content"></div>'
+    + '</div>';
+  await loadDashboardData(false);
+}
+
+async function loadDashboardData(forceRefresh) {
+  if (!sb) return;
+  var meta = document.getElementById('dash-meta');
+  var content = document.getElementById('dash-content');
+  if (!content) return;
+  if (meta) meta.textContent = 'Cargando datos...';
+  content.innerHTML = '<div style="text-align:center;padding:30px;color:var(--wh3)"><span class="spin"></span> Calculando indicadores...</div>';
+
+  try {
+    var now = new Date();
+    var todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+    var weekAgo = new Date(now.getTime() - 7*24*3600*1000).toISOString();
+    var monthAgo = new Date(now.getTime() - 30*24*3600*1000).toISOString();
+
+    // Queries paralelas para minimizar latencia
+    var [rWO, rUsers, rVeh, rSched, rNotif] = await Promise.all([
+      sb.from('work_orders').select('id, status, service_classification, created_at, updated_at, checklist_data, vehicle_id').gte('created_at', monthAgo),
+      sb.from('users').select('id, role, can_tech, name, username'),
+      sb.from('client_vehicles').select('id, plate, created_at, archived').or('archived.is.null,archived.eq.false').limit(2000),
+      sb.from('scheduled_services').select('id, scheduled_at, service, technician_id').gte('scheduled_at', weekAgo).lte('scheduled_at', new Date(now.getTime() + 7*24*3600*1000).toISOString()),
+      sb.from('notifications').select('id, type, created_at, cancelled').gte('created_at', weekAgo).limit(500)
+    ]);
+
+    if (rWO.error) throw new Error('OTs: ' + rWO.error.message);
+    if (rUsers.error) throw new Error('Usuarios: ' + rUsers.error.message);
+
+    var ots = rWO.data || [];
+    var users = rUsers.data || [];
+    var vehs = (rVeh && rVeh.data) || [];
+    var sched = (rSched && rSched.data) || [];
+    var notifs = (rNotif && rNotif.data) || [];
+
+    // ─── Calcular KPIs ───
+    var k = {
+      total_ots_30d: ots.length,
+      ots_active: ots.filter(function(o){return ['open','assigned','in_progress','pending_double_check','pending_visado'].indexOf(o.status) !== -1;}).length,
+      ots_in_progress: ots.filter(function(o){return o.status === 'in_progress';}).length,
+      ots_pending_dc: ots.filter(function(o){return o.status === 'pending_double_check';}).length,
+      ots_pending_visado: ots.filter(function(o){return o.status === 'pending_visado';}).length,
+      ots_closed_30d: ots.filter(function(o){return o.status === 'closed';}).length,
+      ots_closed_today: ots.filter(function(o){return o.status === 'closed' && o.updated_at >= todayStart;}).length,
+      ots_closed_week: ots.filter(function(o){return o.status === 'closed' && o.updated_at >= weekAgo;}).length,
+      ots_cancelled_30d: ots.filter(function(o){return o.status === 'cancelled';}).length,
+      total_users: users.length,
+      admins: users.filter(function(u){return u.role === 'admin';}).length,
+      jefes: users.filter(function(u){return u.role === 'jefatura';}).length,
+      techs: users.filter(function(u){return u.role === 'tech';}).length,
+      tech_capable: users.filter(function(u){return u.can_tech === true || u.role === 'tech';}).length,
+      total_vehs: vehs.length,
+      vehs_new_week: vehs.filter(function(v){return v.created_at && v.created_at >= weekAgo;}).length,
+      vehs_new_month: vehs.filter(function(v){return v.created_at && v.created_at >= monthAgo;}).length,
+      sched_today: sched.filter(function(s){return s.scheduled_at >= todayStart && s.scheduled_at < new Date(now.getTime() + 24*3600*1000).toISOString();}).length,
+      sched_week_ahead: sched.filter(function(s){return s.scheduled_at >= now.toISOString();}).length,
+      alerts_week: notifs.filter(function(n){return !n.cancelled;}).length,
+      alerts_overtime_week: notifs.filter(function(n){return n.type === 'over' && !n.cancelled;}).length
+    };
+
+    // Cumplimiento de visado: OTs cerradas con visado_approved en últimos 30d
+    var closedWithVisado = 0, closedTotal = k.ots_closed_30d;
+    ots.forEach(function(o) {
+      if (o.status === 'closed') {
+        var cd = o.checklist_data || {};
+        if (cd.visado_approved === true) closedWithVisado++;
+      }
+    });
+    k.visado_compliance = closedTotal > 0 ? Math.round((closedWithVisado / closedTotal) * 100) : 100;
+
+    // Visados promedio de espera (h) - OTs pending_visado con doble_check_completed_at
+    var waitTimes = [];
+    ots.forEach(function(o) {
+      if (o.status === 'pending_visado') {
+        var cd = o.checklist_data || {};
+        if (cd.double_check_completed_at) {
+          var ms = Date.now() - new Date(cd.double_check_completed_at).getTime();
+          waitTimes.push(ms / 3600000);
+        }
+      }
+    });
+    k.avg_visado_wait_h = waitTimes.length > 0 ? Math.round((waitTimes.reduce(function(a,b){return a+b;}, 0) / waitTimes.length) * 10) / 10 : 0;
+    k.max_visado_wait_h = waitTimes.length > 0 ? Math.round(Math.max.apply(null, waitTimes) * 10) / 10 : 0;
+
+    // Top 3 servicios del mes
+    var srvCount = {};
+    ots.forEach(function(o) {
+      if (!o.service_classification) return;
+      srvCount[o.service_classification] = (srvCount[o.service_classification] || 0) + 1;
+    });
+    var topServices = Object.keys(srvCount).map(function(k){
+      var def = SERVICES_INGRESO.find(function(s){return s.key === k;});
+      return {key:k, label: def ? def.label : k, count: srvCount[k]};
+    }).sort(function(a,b){return b.count - a.count;}).slice(0, 5);
+
+    _dashCache = {kpis: k, topServices: topServices, ots: ots, users: users, sched: sched};
+    _dashLoadedAt = new Date();
+    if (meta) meta.textContent = 'Última actualización: ' + _dashLoadedAt.toLocaleTimeString('es-CL') + ' · Datos: últimos 30 días';
+
+    _renderDashboardContent();
+  } catch(e) {
+    if (meta) meta.textContent = 'Error al cargar';
+    content.innerHTML = '<div style="color:var(--red);padding:14px;background:var(--red4);border-radius:4px">Error: ' + e.message + '</div>';
+  }
+}
+
+function _renderDashboardContent() {
+  var content = document.getElementById('dash-content');
+  if (!content || !_dashCache) return;
+  var k = _dashCache.kpis;
+
+  function kpi(label, value, sub, color) {
+    return '<div class="dash-kpi ' + (color||'') + '">'
+      + '<div class="dash-kpi-label">' + label + '</div>'
+      + '<div class="dash-kpi-value">' + value + '</div>'
+      + (sub ? '<div class="dash-kpi-sub">' + sub + '</div>' : '')
+      + '</div>';
+  }
+
+  var html = '';
+
+  // ─── SECCIÓN 1: Estado actual del taller ───
+  html += '<div style="font-size:11px;font-weight:700;color:var(--red);text-transform:uppercase;letter-spacing:.05em;font-family:var(--head);margin-bottom:8px">⚙️ Estado actual</div>'
+    + '<div class="dash-grid">'
+    +   kpi('OTs activas', k.ots_active, 'En proceso ahora', 'red')
+    +   kpi('En proceso', k.ots_in_progress, 'Con técnico trabajando', 'blue')
+    +   kpi('Pend. doble control', k.ots_pending_dc, 'Esperan al técnico', 'gold')
+    +   kpi('Pend. visado', k.ots_pending_visado, k.avg_visado_wait_h ? 'Esp. promedio: ' + k.avg_visado_wait_h + 'h' : 'Sin pendientes', k.ots_pending_visado > 0 ? 'gold' : 'green')
+    + '</div>';
+
+  // ─── SECCIÓN 2: Productividad ───
+  html += '<div style="font-size:11px;font-weight:700;color:var(--red);text-transform:uppercase;letter-spacing:.05em;font-family:var(--head);margin-bottom:8px;margin-top:14px">📈 Productividad</div>'
+    + '<div class="dash-grid">'
+    +   kpi('OTs cerradas hoy', k.ots_closed_today, 'Hoy', 'green')
+    +   kpi('OTs cerradas (7d)', k.ots_closed_week, 'Última semana', 'green')
+    +   kpi('OTs cerradas (30d)', k.ots_closed_30d, 'Último mes', 'green')
+    +   kpi('Total OTs (30d)', k.total_ots_30d, 'Activas + cerradas', 'blue')
+    + '</div>';
+
+  // ─── SECCIÓN 3: Calidad y cumplimiento ───
+  var qcColor = k.visado_compliance >= 95 ? 'green' : k.visado_compliance >= 85 ? 'gold' : 'red';
+  html += '<div style="font-size:11px;font-weight:700;color:var(--red);text-transform:uppercase;letter-spacing:.05em;font-family:var(--head);margin-bottom:8px;margin-top:14px">⚖️ Calidad y cumplimiento</div>'
+    + '<div class="dash-grid">'
+    +   kpi('% Visado OK (30d)', k.visado_compliance + '%', 'OTs aprobadas', qcColor)
+    +   kpi('Espera máx. visado', k.max_visado_wait_h + 'h', 'OT más antigua sin visar', k.max_visado_wait_h > 4 ? 'red' : k.max_visado_wait_h > 2 ? 'gold' : 'green')
+    +   kpi('OTs canceladas (30d)', k.ots_cancelled_30d, 'En último mes', k.ots_cancelled_30d > 5 ? 'red' : '')
+    +   kpi('Alertas tiempo (7d)', k.alerts_overtime_week, 'Servicios excedidos', k.alerts_overtime_week > 10 ? 'red' : k.alerts_overtime_week > 3 ? 'gold' : 'green')
+    + '</div>';
+
+  // ─── SECCIÓN 4: Equipo y agendamiento ───
+  html += '<div style="font-size:11px;font-weight:700;color:var(--red);text-transform:uppercase;letter-spacing:.05em;font-family:var(--head);margin-bottom:8px;margin-top:14px">👥 Equipo y agenda</div>'
+    + '<div class="dash-grid">'
+    +   kpi('Personal total', k.total_users, k.admins + ' admin · ' + k.jefes + ' jefe · ' + k.techs + ' téc.')
+    +   kpi('Habilitados técnicos', k.tech_capable, 'Pueden hacer servicios', 'blue')
+    +   kpi('Agenda hoy', k.sched_today, 'Servicios programados', 'blue')
+    +   kpi('Agenda 7d', k.sched_week_ahead, 'Próximos servicios', 'blue')
+    + '</div>';
+
+  // ─── SECCIÓN 5: Catastro ───
+  html += '<div style="font-size:11px;font-weight:700;color:var(--red);text-transform:uppercase;letter-spacing:.05em;font-family:var(--head);margin-bottom:8px;margin-top:14px">🚗 Catastro</div>'
+    + '<div class="dash-grid">'
+    +   kpi('Vehículos activos', k.total_vehs, 'En catastro')
+    +   kpi('Nuevos (7d)', k.vehs_new_week, 'Última semana', 'blue')
+    +   kpi('Nuevos (30d)', k.vehs_new_month, 'Último mes', 'blue')
+    + '</div>';
+
+  // ─── SECCIÓN 6: Top servicios del mes ───
+  if (_dashCache.topServices && _dashCache.topServices.length > 0) {
+    html += '<div style="font-size:11px;font-weight:700;color:var(--red);text-transform:uppercase;letter-spacing:.05em;font-family:var(--head);margin-bottom:8px;margin-top:14px">🏆 Top servicios (30d)</div>'
+      + '<div style="background:#fff;border:1px solid var(--border);border-radius:6px;padding:10px">';
+    var maxCount = _dashCache.topServices[0].count || 1;
+    _dashCache.topServices.forEach(function(s, idx) {
+      var pct = Math.round((s.count / maxCount) * 100);
+      html += '<div style="margin-bottom:8px">'
+        + '<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;margin-bottom:3px">'
+        +   '<span style="font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;font-weight:600">' + (idx+1) + '. ' + escapeHtml(s.label) + '</span>'
+        +   '<span style="font-family:var(--mono);color:var(--red);font-weight:700">' + s.count + '</span>'
+        + '</div>'
+        + '<div style="background:#f0f0f0;height:6px;border-radius:3px;overflow:hidden"><div style="background:var(--red);height:100%;width:' + pct + '%;transition:width .3s"></div></div>'
+        + '</div>';
+    });
+    html += '</div>';
+  }
+
+  // ─── SECCIÓN 7: Acciones rápidas ───
+  html += '<div style="font-size:11px;font-weight:700;color:var(--red);text-transform:uppercase;letter-spacing:.05em;font-family:var(--head);margin-bottom:8px;margin-top:14px">⚡ Acceso rápido</div>'
+    + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px">';
+  if (k.ots_pending_visado > 0) {
+    html += '<button class="btn-sm" onclick="bossTab(\'b-protocolos\')" style="text-align:left;padding:10px;background:var(--gold);color:#fff;border-color:var(--gold)">⚖️ Visar ' + k.ots_pending_visado + ' OT' + (k.ots_pending_visado===1?'':'s') + '</button>';
+  }
+  html += '<button class="btn-sm" onclick="bossTab(\'b-online\')" style="text-align:left;padding:10px">📊 Ver en curso</button>'
+    + '<button class="btn-sm" onclick="bossTab(\'b-calendario\')" style="text-align:left;padding:10px">📅 Calendario</button>'
+    + '<button class="btn-sm" onclick="bossTab(\'b-reportes\')" style="text-align:left;padding:10px">📈 Reportes</button>'
+    + '</div>';
+
+  content.innerHTML = html;
 }
 
 // FASE 2.4.D-fix: agendar OT manualmente desde la lista de OTs sin servicio agendado.
