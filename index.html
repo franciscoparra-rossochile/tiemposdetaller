@@ -5567,6 +5567,13 @@ async function adminForceFinish(sessionKey, techName, serviceLabel, plate) {
     }
   }
 
+  // FASE 3.2-hotfix: el payload solo incluye columnas que EXISTEN en `history`.
+  // Antes incluía km_start, km_end, odometer_photo_start, odometer_photo_end
+  // que no están en el esquema y rompían el insert con error
+  // "Could not find the 'km_end' column of 'history' in the schema cache".
+  // Esos datos ya NO se persisten en history (no estaban antes tampoco —
+  // el doFinish normal nunca los enviaba). Si en el futuro se agregan a la BD,
+  // descomentar las 4 líneas marcadas.
   var histPayload = {
     technician: sess.technician,
     username: sess.username,
@@ -5577,15 +5584,19 @@ async function adminForceFinish(sessionKey, techName, serviceLabel, plate) {
     goal_minutes: sess.goal_minutes,
     pauses: pauses,
     checklist: { forced_finish: true, forced_by: CU.name, forced_at: new Date().toISOString() },
-    ended_at: new Date().toISOString(),
-    odometer_photo_start: sess.odometer_photo_start || null,
-    odometer_photo_end: null,
-    km_start: sess.km_start || null,
-    km_end: null
+    ended_at: new Date().toISOString()
+    // odometer_photo_start: sess.odometer_photo_start || null,  // columna no existe en history
+    // odometer_photo_end: null,                                  // columna no existe en history
+    // km_start: sess.km_start || null,                           // columna no existe en history
+    // km_end: null                                                // columna no existe en history
   };
 
   var {error: hErr} = await sb.from('history').insert(histPayload);
-  if (hErr) { showGlobalError('Error al guardar historial: ' + hErr.message, 5000); return; }
+  if (hErr) {
+    logR('ADMIN_FINISH_HIST_ERR', {err: hErr.message, payload_keys: Object.keys(histPayload)}, 'err');
+    showGlobalError('Error al guardar historial: ' + hErr.message + '\n\nLa sesión NO fue borrada — puedes reintentar.', 6000);
+    return;
+  }
 
   var {error: dErr} = await sb.from('active_sessions').delete().eq('session_key', sessionKey);
   if (dErr) logR('ADMIN_FINISH_DELETE_ERR', {err: dErr.message}, 'warn');
