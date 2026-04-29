@@ -15067,28 +15067,46 @@ function generatePDFGestion() {
 
 // Logo Rosso (PNG transparente, ~600px ancho). Se carga 1 sola vez al
 // generar PDF para evitar re-leer en cada llamada.
+//
+// FIX: jsPDF + PNG con canal alfa renderizaba un cuadro gris detrás del
+// logo en algunos visores. Solución: pre-procesamos el PNG dibujándolo
+// sobre un canvas con fondo blanco (mismo color del informe) y exportamos
+// como JPEG. Resultado: el logo se ve limpio sin "caja" detrás.
 var INFORME_LOGO_DATA_URL = null;
 async function getInformeLogoDataUrl() {
   if (INFORME_LOGO_DATA_URL) return INFORME_LOGO_DATA_URL;
-  // Cargar SIEMPRE el archivo oficial del logo Rosso (rojo, sin "OPS").
-  // Antes tomábamos cualquier <img> grande del DOM, lo que terminaba
-  // agarrando el logo "Rosso OPS" del header de la app — incorrecto
-  // para informes que se entregan al cliente.
   try {
     var resp = await fetch('rosso_logo_transparent_600w.png');
-    if (resp.ok) {
-      var blob = await resp.blob();
-      var reader = new FileReader();
-      return await new Promise(function(resolve){
-        reader.onloadend = function(){
-          INFORME_LOGO_DATA_URL = reader.result;
-          resolve(INFORME_LOGO_DATA_URL);
-        };
-        reader.readAsDataURL(blob);
-      });
-    }
-  } catch(e) {}
-  return null;
+    if (!resp.ok) return null;
+    var blob = await resp.blob();
+    // Cargar la imagen en memoria para poder pintarla en un canvas
+    var rawDataUrl = await new Promise(function(resolve, reject){
+      var rd = new FileReader();
+      rd.onloadend = function(){ resolve(rd.result); };
+      rd.onerror = reject;
+      rd.readAsDataURL(blob);
+    });
+    var img = await new Promise(function(resolve, reject){
+      var im = new Image();
+      im.onload = function(){ resolve(im); };
+      im.onerror = reject;
+      im.src = rawDataUrl;
+    });
+    // Canvas con fondo blanco — aplana el alpha contra el papel del informe
+    var canvas = document.createElement('canvas');
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    var ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0);
+    // JPEG calidad alta → archivo pequeño y sin canal alfa "fantasma"
+    INFORME_LOGO_DATA_URL = canvas.toDataURL('image/jpeg', 0.92);
+    return INFORME_LOGO_DATA_URL;
+  } catch(e) {
+    console.error('[INFORME_LOGO_ERR]', e);
+    return null;
+  }
 }
 
 // Helper: convertir valor crudo del checklist a etiqueta legible
@@ -15214,8 +15232,12 @@ async function generateInformePdf(woId) {
     try {
       var logoUrl = await getInformeLogoDataUrl();
       if (logoUrl) {
-        // Logo en tamaño moderado a la izquierda
-        doc.addImage(logoUrl, 'PNG', marginX, y, 28, 12);
+        // Logo Rosso 600x143 px → ratio ~4.2:1. Renderizamos a 36mm
+        // de ancho manteniendo proporción para que no se vea estirado.
+        var logoW = 36, logoH = logoW * (143/600); // ≈ 8.6mm
+        // 'JPEG' porque getInformeLogoDataUrl ya lo aplanó sobre fondo
+        // blanco — esto evita que jsPDF dibuje un cuadro gris detrás.
+        doc.addImage(logoUrl, 'JPEG', marginX, y, logoW, logoH, undefined, 'FAST');
       }
     } catch(e) { /* si falla, seguimos sin logo */ }
     doc.setFont('helvetica', 'bold');
@@ -15437,8 +15459,14 @@ async function generateInformePdf(woId) {
     }
     y += 4;
 
-    // 7) Observaciones del técnico (si existen)
-    var techObs = tc.tech_observations || tc.observaciones || tc.obs || null;
+    // 7) Observaciones del técnico
+    //    Si el usuario editó observaciones desde "Editar informe", esas
+    //    sobreescriben las originales del checklist. Las originales
+    //    siguen guardadas en tc.tech_observations (no se pierden).
+    var extras = cd.report_extras || {};
+    var techObs = (extras.edited_observations && String(extras.edited_observations).trim())
+      ? extras.edited_observations
+      : (tc.tech_observations || tc.observaciones || tc.obs || null);
     if (techObs) {
       if (y > pageH - 30) { doc.addPage(); y = 18; }
       doc.setFont('helvetica', 'bold');
@@ -15455,6 +15483,32 @@ async function generateInformePdf(woId) {
         y += 5;
       });
       y += 3;
+    }
+
+    // 7b) Hallazgos adicionales agregados desde "Editar informe"
+    var extraFindings = (extras.extra_findings && extras.extra_findings.length)
+      ? extras.extra_findings.filter(function(f){ return f && String(f).trim(); })
+      : [];
+    if (extraFindings.length) {
+      if (y > pageH - 30) { doc.addPage(); y = 18; }
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(11);
+      doc.setTextColor(20, 20, 20);
+      doc.text('Hallazgos adicionales', marginX, y);
+      y += 5;
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(10);
+      doc.setTextColor(40, 40, 40);
+      extraFindings.forEach(function(f){
+        var lines = doc.splitTextToSize('• ' + String(f).trim(), contentW);
+        lines.forEach(function(ln){
+          if (y > pageH - 20) { doc.addPage(); y = 18; }
+          doc.text(ln, marginX, y);
+          y += 5;
+        });
+        y += 1;
+      });
+      y += 2;
     }
 
     // 8) Pie con firma/visado
@@ -15481,6 +15535,178 @@ async function generateInformePdf(woId) {
       }
     }
 
+    // 8b) Imágenes anexas (subidas desde "Editar informe")
+    var attachedImages = (extras.images && extras.images.length) ? extras.images : [];
+    if (attachedImages.length) {
+      doc.addPage();
+      y = 18;
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(13);
+      doc.setTextColor(20, 20, 20);
+      doc.text('IMÁGENES ANEXAS', marginX, y);
+      y += 4;
+      doc.setDrawColor(180, 180, 180);
+      doc.line(marginX, y, pageW - marginX, y);
+      y += 6;
+
+      // Ancho útil: 2 imágenes por fila (con padding) o 1 si quedan grandes
+      for (var ii = 0; ii < attachedImages.length; ii++) {
+        var img = attachedImages[ii];
+        if (!img || !img.dataUrl) continue;
+        try {
+          // Cargamos la imagen para conocer dimensiones reales
+          var meta = await new Promise(function(resolve){
+            var im = new Image();
+            im.onload = function(){ resolve({w: im.naturalWidth, h: im.naturalHeight}); };
+            im.onerror = function(){ resolve(null); };
+            im.src = img.dataUrl;
+          });
+          if (!meta) continue;
+          // Caja máxima: ancho del contenido, alto = mitad de página
+          var maxW = contentW;
+          var maxH = pageH - y - 22; // dejar espacio para footer y caption
+          if (maxH < 60) { doc.addPage(); y = 18; maxH = pageH - y - 22; }
+          var ratio = meta.w / meta.h;
+          var drawW = maxW;
+          var drawH = drawW / ratio;
+          if (drawH > maxH) {
+            drawH = maxH;
+            drawW = drawH * ratio;
+          }
+          // Detectar formato (png vs jpeg) por el data URL
+          var fmt = (img.dataUrl.indexOf('data:image/png') === 0) ? 'PNG' : 'JPEG';
+          doc.addImage(img.dataUrl, fmt, marginX, y, drawW, drawH, undefined, 'FAST');
+          y += drawH + 2;
+          // Caption con nombre/descripción
+          doc.setFont('helvetica', 'italic');
+          doc.setFontSize(8);
+          doc.setTextColor(120, 120, 120);
+          var cap = 'Imagen ' + (ii+1) + (img.name ? ' — ' + img.name : '');
+          if (img.caption) cap += ' · ' + img.caption;
+          doc.splitTextToSize(cap, contentW).forEach(function(ln){
+            doc.text(ln, marginX, y);
+            y += 4;
+          });
+          y += 4;
+          // Si queda poco espacio para la próxima, abrimos página nueva
+          if (ii < attachedImages.length - 1 && y > pageH - 80) {
+            doc.addPage();
+            y = 18;
+          }
+        } catch(eImg) {
+          console.error('[INFORME_IMG_ERR]', eImg);
+        }
+      }
+    }
+
+    // 8c) Documentos PDF anexos (escáner) — rasterizados con pdf.js
+    var attachedPdfs = (extras.pdfs && extras.pdfs.length) ? extras.pdfs : [];
+    if (attachedPdfs.length) {
+      // Cargar pdf.js bajo demanda solo si hay PDFs adjuntos
+      try {
+        await ensurePdfJsLoaded();
+      } catch(ePdfLib) {
+        console.error('[PDFJS_LOAD_ERR]', ePdfLib);
+      }
+      var pdfjsLib = window['pdfjsLib'] || window.pdfjsLib;
+      if (pdfjsLib) {
+        for (var pi = 0; pi < attachedPdfs.length; pi++) {
+          var pdfDoc = attachedPdfs[pi];
+          if (!pdfDoc || !pdfDoc.dataUrl) continue;
+          try {
+            // Convertir dataURL a Uint8Array
+            var b64 = pdfDoc.dataUrl.split(',')[1];
+            var binary = atob(b64);
+            var bytes = new Uint8Array(binary.length);
+            for (var bi = 0; bi < binary.length; bi++) bytes[bi] = binary.charCodeAt(bi);
+            var loadingTask = pdfjsLib.getDocument({data: bytes});
+            var srcPdf = await loadingTask.promise;
+            // Portada del documento adjunto
+            doc.addPage();
+            y = 18;
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(13);
+            doc.setTextColor(20, 20, 20);
+            doc.text('DOCUMENTO ANEXO ' + (pi+1), marginX, y);
+            y += 4;
+            doc.setDrawColor(180, 180, 180);
+            doc.line(marginX, y, pageW - marginX, y);
+            y += 6;
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(10);
+            doc.setTextColor(60, 60, 60);
+            doc.text((pdfDoc.name || 'Documento') + ' (' + srcPdf.numPages + ' págs.)', marginX, y);
+            y += 6;
+            // Renderizar cada página como imagen y embeberla
+            for (var pn = 1; pn <= srcPdf.numPages; pn++) {
+              var page = await srcPdf.getPage(pn);
+              // Escala adecuada: ~150 DPI equivalente para que se lea sin
+              // hinchar el archivo de salida
+              var viewport = page.getViewport({scale: 2.0});
+              var canvas2 = document.createElement('canvas');
+              canvas2.width = viewport.width;
+              canvas2.height = viewport.height;
+              var ctx2 = canvas2.getContext('2d');
+              // Fondo blanco por si la página tiene transparencias
+              ctx2.fillStyle = '#ffffff';
+              ctx2.fillRect(0, 0, canvas2.width, canvas2.height);
+              await page.render({canvasContext: ctx2, viewport: viewport}).promise;
+              var pageImg = canvas2.toDataURL('image/jpeg', 0.85);
+              // Cada página adjunta va en su propia página del informe
+              if (pn > 1 || y > 30) { doc.addPage(); y = 18; }
+              var ratio2 = canvas2.width / canvas2.height;
+              var maxW2 = contentW;
+              var maxH2 = pageH - y - 14;
+              var dW = maxW2, dH = dW / ratio2;
+              if (dH > maxH2) { dH = maxH2; dW = dH * ratio2; }
+              var xOff = marginX + (contentW - dW) / 2;
+              doc.addImage(pageImg, 'JPEG', xOff, y, dW, dH, undefined, 'FAST');
+              // Pie con número de página del documento adjunto
+              doc.setFont('helvetica', 'italic');
+              doc.setFontSize(7);
+              doc.setTextColor(140, 140, 140);
+              doc.text((pdfDoc.name || 'Documento') + ' · pág. ' + pn + '/' + srcPdf.numPages,
+                       pageW/2, pageH - 12, {align: 'center'});
+            }
+          } catch(ePdfRender) {
+            console.error('[INFORME_PDF_ATTACH_ERR]', ePdfRender);
+            // Si falla un PDF, lo señalamos en el informe pero seguimos
+            doc.addPage();
+            y = 18;
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(11);
+            doc.setTextColor(180, 30, 30);
+            doc.text('No fue posible incrustar el documento "' + (pdfDoc.name || 'adjunto') + '"', marginX, y);
+            y += 6;
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(9);
+            doc.setTextColor(80, 80, 80);
+            doc.text('El archivo se mantiene almacenado en el sistema y puede descargarse desde la pestaña Informes.', marginX, y);
+          }
+        }
+      } else if (attachedPdfs.length) {
+        // pdf.js no se pudo cargar: dejamos al menos la nota
+        doc.addPage();
+        y = 18;
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(13);
+        doc.setTextColor(20, 20, 20);
+        doc.text('DOCUMENTOS ANEXOS', marginX, y);
+        y += 8;
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(10);
+        doc.setTextColor(60, 60, 60);
+        doc.text('Hay ' + attachedPdfs.length + ' documento(s) PDF anexo(s) que no pudieron incrustarse en este archivo.', marginX, y);
+        y += 5;
+        doc.text('Se conservan en el sistema y pueden consultarse desde la pestaña Informes.', marginX, y);
+        y += 6;
+        attachedPdfs.forEach(function(pd, idx){
+          doc.text('• ' + (pd.name || ('Documento ' + (idx+1))), marginX, y);
+          y += 5;
+        });
+      }
+    }
+
     // 9) Footer en todas las páginas con número
     var totalPages = doc.internal.getNumberOfPages();
     for (var p = 1; p <= totalPages; p++) {
@@ -15504,6 +15730,430 @@ async function generateInformePdf(woId) {
   } catch(e) {
     console.error('[INFORME_PDF_ERR]', e);
     showGlobalError('Error generando informe: ' + (e.message || e), 6000);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// EDITOR DE INFORMES — observaciones editables, hallazgos extra,
+// imágenes adjuntas y documentos PDF anexos (escáner)
+// ═══════════════════════════════════════════════════════════════
+// Todo se persiste en work_orders.checklist_data.report_extras:
+//   {
+//     edited_observations: string,       // sobreescribe tech_observations
+//     extra_findings:      string[],     // hallazgos manuales
+//     images:              [{name, dataUrl, caption}],
+//     pdfs:                [{name, dataUrl, size}]
+//   }
+// Los archivos se guardan como dataURL base64 dentro del JSON. Es
+// suficiente para informes de servicio: se mantiene la simplicidad de
+// no requerir bucket dedicado y todo se entrega junto con el PDF.
+// ═══════════════════════════════════════════════════════════════
+
+// Cargar pdf.js bajo demanda (~1MB) — solo se descarga cuando hay PDFs
+// adjuntos que rasterizar para meter al informe.
+var _PDFJS_LOADING_PROMISE = null;
+function ensurePdfJsLoaded() {
+  if (window.pdfjsLib && window.pdfjsLib.getDocument) return Promise.resolve();
+  if (_PDFJS_LOADING_PROMISE) return _PDFJS_LOADING_PROMISE;
+  _PDFJS_LOADING_PROMISE = new Promise(function(resolve, reject){
+    var s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    s.onload = function(){
+      try {
+        if (window.pdfjsLib) {
+          window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+            'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+          resolve();
+        } else { reject(new Error('pdfjsLib no expuesto')); }
+      } catch(e) { reject(e); }
+    };
+    s.onerror = function(){ reject(new Error('No se pudo cargar pdf.js')); };
+    document.head.appendChild(s);
+  });
+  return _PDFJS_LOADING_PROMISE;
+}
+
+// Reducir una imagen del input a un dataURL razonable (max 1600px de
+// lado largo, JPEG 85%). Esto baja peso del JSON sin sacrificar
+// legibilidad para fotos de escáner / fallas / repuestos.
+function compressImageFile(file) {
+  return new Promise(function(resolve, reject){
+    if (!file || !file.type || file.type.indexOf('image/') !== 0) {
+      reject(new Error('No es una imagen válida'));
+      return;
+    }
+    var reader = new FileReader();
+    reader.onload = function(){
+      var im = new Image();
+      im.onload = function(){
+        var maxSide = 1600;
+        var w = im.naturalWidth, h = im.naturalHeight;
+        if (w > maxSide || h > maxSide) {
+          if (w >= h) { h = Math.round(h * maxSide / w); w = maxSide; }
+          else { w = Math.round(w * maxSide / h); h = maxSide; }
+        }
+        var cv = document.createElement('canvas');
+        cv.width = w; cv.height = h;
+        var cx = cv.getContext('2d');
+        cx.fillStyle = '#fff';
+        cx.fillRect(0,0,w,h);
+        cx.drawImage(im, 0, 0, w, h);
+        // PNG si es captura/diagrama (poco peso), JPEG si es foto
+        var isPng = (file.type === 'image/png' && file.size < 400 * 1024);
+        var out = isPng ? cv.toDataURL('image/png') : cv.toDataURL('image/jpeg', 0.85);
+        resolve({dataUrl: out, w: w, h: h});
+      };
+      im.onerror = function(){ reject(new Error('No se pudo leer la imagen')); };
+      im.src = reader.result;
+    };
+    reader.onerror = function(){ reject(new Error('Error leyendo archivo')); };
+    reader.readAsDataURL(file);
+  });
+}
+
+// Leer un PDF como dataURL (no se procesa al subirlo; se rasteriza al
+// generar el informe final). Validamos tamaño máximo razonable.
+function readPdfAsDataUrl(file) {
+  return new Promise(function(resolve, reject){
+    if (!file) { reject(new Error('Archivo vacío')); return; }
+    if (file.type !== 'application/pdf' && !/\.pdf$/i.test(file.name)) {
+      reject(new Error('No es un PDF'));
+      return;
+    }
+    // Aviso si es muy pesado: 12MB es tope sano. Más arriba puede
+    // colapsar el JSON del work_order.
+    if (file.size > 12 * 1024 * 1024) {
+      reject(new Error('PDF demasiado pesado (máx. 12MB). Reduce calidad del escáner.'));
+      return;
+    }
+    var reader = new FileReader();
+    reader.onload = function(){
+      resolve({dataUrl: reader.result, size: file.size, name: file.name});
+    };
+    reader.onerror = function(){ reject(new Error('Error leyendo PDF')); };
+    reader.readAsDataURL(file);
+  });
+}
+
+// Cargar y guardar los extras en checklist_data.report_extras
+async function loadInformeExtras(woId) {
+  var r = await sb.from('work_orders').select('checklist_data').eq('id', woId).maybeSingle();
+  if (r.error || !r.data) throw new Error('OT no encontrada');
+  var cd = r.data.checklist_data || {};
+  var ex = cd.report_extras || {};
+  return {
+    checklist_data: cd,
+    extras: {
+      edited_observations: ex.edited_observations || '',
+      extra_findings: Array.isArray(ex.extra_findings) ? ex.extra_findings.slice() : [],
+      images: Array.isArray(ex.images) ? ex.images.slice() : [],
+      pdfs: Array.isArray(ex.pdfs) ? ex.pdfs.slice() : []
+    }
+  };
+}
+
+async function saveInformeExtras(woId, extras) {
+  var r = await sb.from('work_orders').select('checklist_data').eq('id', woId).maybeSingle();
+  if (r.error || !r.data) throw new Error('OT no encontrada');
+  var cd = r.data.checklist_data || {};
+  cd.report_extras = {
+    edited_observations: extras.edited_observations || '',
+    extra_findings: (extras.extra_findings || []).filter(function(f){ return f && String(f).trim(); }),
+    images: extras.images || [],
+    pdfs: extras.pdfs || [],
+    last_edited_at: new Date().toISOString(),
+    last_edited_by: (CU && CU.name) ? CU.name : null
+  };
+  var u = await sb.from('work_orders').update({checklist_data: cd}).eq('id', woId);
+  if (u.error) throw new Error(u.error.message || 'Error guardando');
+  return cd.report_extras;
+}
+
+// Estado en memoria del editor (solo durante la sesión del modal)
+var _INFORME_EDITOR_STATE = null;
+
+// Modal principal: editor de informe
+async function openInformeEditor(woId) {
+  // Cerrar editor anterior si quedó abierto
+  var existing = document.getElementById('m-inf-editor');
+  if (existing) existing.remove();
+
+  var ov = document.createElement('div');
+  ov.className = 'overlay'; ov.id = 'm-inf-editor'; ov.style.display = 'flex';
+  ov.innerHTML =
+    '<div class="modal" style="max-width:680px;max-height:92vh;overflow-y:auto">'
+    + '<div class="modal-t">Editar informe</div>'
+    + '<div class="modal-s">Edita observaciones, agrega hallazgos, fotos y documentos escaneados.</div>'
+    + '<div id="inf-edit-body" style="margin-top:12px"><span class="spin"></span> Cargando...</div>'
+    + '</div>';
+  document.body.appendChild(ov);
+
+  try {
+    var loaded = await loadInformeExtras(woId);
+    var rOT = await sb.from('work_orders').select('id,ot_number,plate,service_classification,checklist_data').eq('id', woId).maybeSingle();
+    var o = rOT && rOT.data ? rOT.data : {};
+    var cd = o.checklist_data || {};
+    var tc = cd.tech_checklist || {};
+    var origObs = tc.tech_observations || tc.observaciones || tc.obs || '';
+
+    _INFORME_EDITOR_STATE = {
+      woId: woId,
+      otNumber: o.ot_number || '',
+      origObs: origObs,
+      extras: loaded.extras
+    };
+    renderInformeEditorBody();
+  } catch(e) {
+    var bodyEl = document.getElementById('inf-edit-body');
+    if (bodyEl) bodyEl.innerHTML = '<div style="color:#c00;padding:8px">Error: ' + escapeHtml(e.message || String(e)) + '</div>';
+  }
+}
+
+// (Re)render del cuerpo del editor — se llama al cambiar items
+function renderInformeEditorBody() {
+  var st = _INFORME_EDITOR_STATE;
+  if (!st) return;
+  var body = document.getElementById('inf-edit-body');
+  if (!body) return;
+  var ex = st.extras;
+  var html = '';
+
+  // 1) Observaciones (editables)
+  html += '<div style="margin-bottom:14px">'
+    + '<div style="font-weight:700;font-size:12px;margin-bottom:4px;color:#222">Observaciones del técnico</div>';
+  if (st.origObs && !ex.edited_observations) {
+    html += '<div style="font-size:10px;color:#888;margin-bottom:4px">Texto original del checklist (editable):</div>';
+  } else if (ex.edited_observations) {
+    html += '<div style="font-size:10px;color:#888;margin-bottom:4px">Versión editada — el texto original sigue guardado en el checklist.</div>';
+  }
+  html += '<textarea id="inf-edit-obs" class="inp" rows="4" style="width:100%;font-size:13px;line-height:1.45" placeholder="Observaciones del servicio...">'
+    + escapeHtml(ex.edited_observations || st.origObs || '')
+    + '</textarea>';
+  if (ex.edited_observations) {
+    html += '<button class="btn-sm" style="margin-top:4px;font-size:10px" onclick="resetInformeEditedObs()">↺ Restaurar texto original</button>';
+  }
+  html += '</div>';
+
+  // 2) Hallazgos adicionales
+  html += '<div style="margin-bottom:14px;border-top:1px solid #eee;padding-top:12px">'
+    + '<div style="font-weight:700;font-size:12px;margin-bottom:6px;color:#222">Hallazgos adicionales</div>'
+    + '<div style="font-size:10px;color:#888;margin-bottom:6px">Hallazgos que no estaban en el checklist y que deben quedar en el informe.</div>';
+  if (!ex.extra_findings.length) {
+    html += '<div style="font-size:11px;color:#aaa;font-style:italic;padding:6px 0">Sin hallazgos adicionales registrados.</div>';
+  } else {
+    ex.extra_findings.forEach(function(f, idx){
+      html += '<div style="display:flex;gap:6px;align-items:flex-start;margin-bottom:6px">'
+        + '<textarea class="inp" rows="2" data-finding-idx="' + idx + '" style="flex:1;font-size:12px" oninput="updateInformeFinding(' + idx + ', this.value)">'
+        + escapeHtml(f) + '</textarea>'
+        + '<button class="btn-sm" style="border-color:#c00;color:#c00;font-size:11px" onclick="removeInformeFinding(' + idx + ')">×</button>'
+        + '</div>';
+    });
+  }
+  html += '<button class="btn-sm" style="margin-top:4px;font-size:11px;border-color:var(--red);color:var(--red)" onclick="addInformeFinding()">+ Agregar hallazgo</button>'
+    + '</div>';
+
+  // 3) Imágenes adjuntas
+  html += '<div style="margin-bottom:14px;border-top:1px solid #eee;padding-top:12px">'
+    + '<div style="font-weight:700;font-size:12px;margin-bottom:6px;color:#222">Imágenes anexas</div>'
+    + '<div style="font-size:10px;color:#888;margin-bottom:6px">Fotos del vehículo, repuestos, fallas, etc. Se redimensionan a máx. 1600px.</div>';
+  if (ex.images.length) {
+    html += '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px">';
+    ex.images.forEach(function(img, idx){
+      html += '<div style="position:relative;width:104px">'
+        + '<img src="' + img.dataUrl + '" style="width:100px;height:100px;object-fit:cover;border:1px solid #ccc;border-radius:4px;background:#f8f8f8" />'
+        + '<button class="btn-sm" style="position:absolute;top:-6px;right:-6px;width:22px;height:22px;padding:0;border-radius:50%;background:#c00;color:#fff;border:none;font-size:13px;line-height:1;cursor:pointer" onclick="removeInformeImage(' + idx + ')">×</button>'
+        + '<input type="text" class="inp" placeholder="Descripción" data-img-idx="' + idx + '" oninput="updateInformeImageCaption(' + idx + ', this.value)" value="' + escapeHtml(img.caption || '') + '" style="width:100px;font-size:10px;padding:3px 4px;margin-top:3px" />'
+        + '</div>';
+    });
+    html += '</div>';
+  }
+  html += '<input type="file" id="inf-edit-img-input" accept="image/*" multiple capture="environment" style="display:none" />'
+    + '<button class="btn-sm" style="font-size:11px;border-color:var(--red);color:var(--red)" onclick="document.getElementById(\'inf-edit-img-input\').click()">+ Agregar imágenes</button>'
+    + '<span id="inf-edit-img-status" style="margin-left:8px;font-size:10px;color:#888"></span>'
+    + '</div>';
+
+  // 4) PDFs adjuntos
+  html += '<div style="margin-bottom:14px;border-top:1px solid #eee;padding-top:12px">'
+    + '<div style="font-weight:700;font-size:12px;margin-bottom:6px;color:#222">Documentos anexos (PDF / escáner)</div>'
+    + '<div style="font-size:10px;color:#888;margin-bottom:6px">Hojas de inspección, presupuestos firmados, fichas técnicas. Máx. 12MB por archivo.</div>';
+  if (ex.pdfs.length) {
+    ex.pdfs.forEach(function(pd, idx){
+      var sizeKb = pd.size ? Math.round(pd.size / 1024) : 0;
+      var sizeLbl = sizeKb >= 1024 ? (Math.round(sizeKb/102.4)/10 + ' MB') : (sizeKb + ' KB');
+      html += '<div style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:#f8f8f8;border:1px solid #e4e4e4;border-radius:4px;margin-bottom:4px">'
+        + '<span style="font-size:18px">📄</span>'
+        + '<div style="flex:1;min-width:0">'
+        +   '<div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(pd.name || ('Documento ' + (idx+1))) + '</div>'
+        +   '<div style="font-size:10px;color:#888">' + sizeLbl + '</div>'
+        + '</div>'
+        + '<button class="btn-sm" style="border-color:#c00;color:#c00;font-size:11px" onclick="removeInformePdf(' + idx + ')">Quitar</button>'
+        + '</div>';
+    });
+  } else {
+    html += '<div style="font-size:11px;color:#aaa;font-style:italic;padding:4px 0 8px 0">Sin documentos PDF anexos.</div>';
+  }
+  html += '<input type="file" id="inf-edit-pdf-input" accept="application/pdf,.pdf" style="display:none" />'
+    + '<button class="btn-sm" style="font-size:11px;border-color:var(--red);color:var(--red)" onclick="document.getElementById(\'inf-edit-pdf-input\').click()">+ Adjuntar PDF</button>'
+    + '<span id="inf-edit-pdf-status" style="margin-left:8px;font-size:10px;color:#888"></span>'
+    + '</div>';
+
+  // 5) Botones acción
+  html += '<div style="display:flex;gap:8px;margin-top:16px;border-top:1px solid #eee;padding-top:12px">'
+    + '<button class="btn btn-red" id="inf-edit-save" style="flex:1" onclick="saveAndCloseInformeEditor()">💾 Guardar cambios</button>'
+    + '<button class="btn btn-red" id="inf-edit-save-pdf" style="flex:1" onclick="saveInformeEditorAndGenerate()">💾 Guardar y generar PDF</button>'
+    + '<button class="btn btn-out" onclick="closeInformeEditor()">Cancelar</button>'
+    + '</div>';
+
+  body.innerHTML = html;
+
+  // Hooks de inputs file (no se pueden colocar como onclick inline porque
+  // el evento es change, no click)
+  var imgInput = document.getElementById('inf-edit-img-input');
+  if (imgInput) imgInput.onchange = handleInformeImageInput;
+  var pdfInput = document.getElementById('inf-edit-pdf-input');
+  if (pdfInput) pdfInput.onchange = handleInformePdfInput;
+
+  // Sincronizar textarea de observaciones cuando se modifica
+  var obsTa = document.getElementById('inf-edit-obs');
+  if (obsTa) {
+    obsTa.oninput = function(){
+      _INFORME_EDITOR_STATE.extras.edited_observations = this.value;
+    };
+  }
+}
+
+function resetInformeEditedObs() {
+  if (!_INFORME_EDITOR_STATE) return;
+  _INFORME_EDITOR_STATE.extras.edited_observations = '';
+  renderInformeEditorBody();
+}
+
+function addInformeFinding() {
+  if (!_INFORME_EDITOR_STATE) return;
+  _INFORME_EDITOR_STATE.extras.extra_findings.push('');
+  renderInformeEditorBody();
+  // Foco al último textarea
+  setTimeout(function(){
+    var tas = document.querySelectorAll('[data-finding-idx]');
+    if (tas.length) tas[tas.length - 1].focus();
+  }, 50);
+}
+
+function updateInformeFinding(idx, val) {
+  if (!_INFORME_EDITOR_STATE) return;
+  _INFORME_EDITOR_STATE.extras.extra_findings[idx] = val;
+}
+
+function removeInformeFinding(idx) {
+  if (!_INFORME_EDITOR_STATE) return;
+  _INFORME_EDITOR_STATE.extras.extra_findings.splice(idx, 1);
+  renderInformeEditorBody();
+}
+
+async function handleInformeImageInput(e) {
+  if (!_INFORME_EDITOR_STATE) return;
+  var files = e.target.files;
+  if (!files || !files.length) return;
+  var status = document.getElementById('inf-edit-img-status');
+  if (status) status.textContent = 'Procesando ' + files.length + ' imagen(es)...';
+  var added = 0, errs = 0;
+  for (var i = 0; i < files.length; i++) {
+    try {
+      var res = await compressImageFile(files[i]);
+      _INFORME_EDITOR_STATE.extras.images.push({
+        name: files[i].name,
+        dataUrl: res.dataUrl,
+        caption: ''
+      });
+      added++;
+    } catch(err) { errs++; }
+  }
+  e.target.value = ''; // permite reusar mismo archivo
+  if (status) status.textContent = added + ' agregada(s)' + (errs ? ' · ' + errs + ' error(es)' : '');
+  renderInformeEditorBody();
+}
+
+function updateInformeImageCaption(idx, val) {
+  if (!_INFORME_EDITOR_STATE) return;
+  if (!_INFORME_EDITOR_STATE.extras.images[idx]) return;
+  _INFORME_EDITOR_STATE.extras.images[idx].caption = val;
+}
+
+function removeInformeImage(idx) {
+  if (!_INFORME_EDITOR_STATE) return;
+  _INFORME_EDITOR_STATE.extras.images.splice(idx, 1);
+  renderInformeEditorBody();
+}
+
+async function handleInformePdfInput(e) {
+  if (!_INFORME_EDITOR_STATE) return;
+  var files = e.target.files;
+  if (!files || !files.length) return;
+  var status = document.getElementById('inf-edit-pdf-status');
+  if (status) status.textContent = 'Leyendo PDF...';
+  try {
+    var res = await readPdfAsDataUrl(files[0]);
+    _INFORME_EDITOR_STATE.extras.pdfs.push(res);
+    if (status) status.textContent = 'Adjuntado.';
+  } catch(err) {
+    if (status) {
+      status.textContent = err.message || 'Error';
+      status.style.color = '#c00';
+    }
+  }
+  e.target.value = '';
+  renderInformeEditorBody();
+}
+
+function removeInformePdf(idx) {
+  if (!_INFORME_EDITOR_STATE) return;
+  _INFORME_EDITOR_STATE.extras.pdfs.splice(idx, 1);
+  renderInformeEditorBody();
+}
+
+function closeInformeEditor() {
+  var m = document.getElementById('m-inf-editor');
+  if (m) m.remove();
+  _INFORME_EDITOR_STATE = null;
+}
+
+async function saveAndCloseInformeEditor() {
+  if (!_INFORME_EDITOR_STATE) return;
+  var btn = document.getElementById('inf-edit-save');
+  if (btn) { btn.disabled = true; btn.textContent = 'Guardando...'; }
+  try {
+    // Antes de guardar, sincronizar lo que esté en el textarea de obs
+    var obsTa = document.getElementById('inf-edit-obs');
+    if (obsTa) _INFORME_EDITOR_STATE.extras.edited_observations = obsTa.value;
+    await saveInformeExtras(_INFORME_EDITOR_STATE.woId, _INFORME_EDITOR_STATE.extras);
+    showGlobalError('Cambios guardados.', 2500);
+    var woId = _INFORME_EDITOR_STATE.woId;
+    closeInformeEditor();
+    // Si la vista previa estaba abierta, refrescarla
+    if (document.getElementById('m-inf-preview')) {
+      document.getElementById('m-inf-preview').remove();
+      openInformePreview(woId);
+    }
+  } catch(e) {
+    showGlobalError('Error guardando: ' + (e.message || e), 5000);
+    if (btn) { btn.disabled = false; btn.textContent = '💾 Guardar cambios'; }
+  }
+}
+
+async function saveInformeEditorAndGenerate() {
+  if (!_INFORME_EDITOR_STATE) return;
+  var btn = document.getElementById('inf-edit-save-pdf');
+  if (btn) { btn.disabled = true; btn.textContent = 'Guardando...'; }
+  try {
+    var obsTa = document.getElementById('inf-edit-obs');
+    if (obsTa) _INFORME_EDITOR_STATE.extras.edited_observations = obsTa.value;
+    await saveInformeExtras(_INFORME_EDITOR_STATE.woId, _INFORME_EDITOR_STATE.extras);
+    var woId = _INFORME_EDITOR_STATE.woId;
+    closeInformeEditor();
+    await generateInformePdf(woId);
+  } catch(e) {
+    showGlobalError('Error: ' + (e.message || e), 5000);
+    if (btn) { btn.disabled = false; btn.textContent = '💾 Guardar y generar PDF'; }
   }
 }
 
@@ -15666,6 +16316,12 @@ function renderInformesList(body, clientsMap, vehiclesMap) {
     // Hallazgos críticos (cuenta) para mostrar badge
     var techDef = (typeof CHECKLISTS_TECH !== 'undefined') ? CHECKLISTS_TECH[o.service_classification] : null;
     var concerns = informeCollectConcerns(techDef, cd.tech_checklist || {});
+    // Extras editados/anexados (si existen)
+    var rExtras = cd.report_extras || {};
+    var extrasCount = ((rExtras.extra_findings || []).filter(function(f){return f && String(f).trim();}).length)
+      + ((rExtras.images || []).length)
+      + ((rExtras.pdfs || []).length)
+      + (rExtras.edited_observations ? 1 : 0);
 
     var row = mk('div', 'card');
     row.style.cssText = 'padding:12px;margin-bottom:8px;cursor:pointer;display:flex;gap:10px;align-items:flex-start';
@@ -15690,13 +16346,17 @@ function renderInformesList(body, clientsMap, vehiclesMap) {
       +   (o.ot_number ? 'OT-' + escapeHtml(o.ot_number) + ' · ' : '')
       +   escapeHtml(fechaStr)
       +   ' · <span style="color:' + stateColor + ';font-weight:600">' + escapeHtml(stateBadge) + '</span>'
+      +   (extrasCount ? ' · <span style="color:#1f6fbf;font-weight:600">📎 ' + extrasCount + ' extra(s)</span>' : '')
       + '</div>'
       + '</div>'
-      + '<div style="text-align:right;flex-shrink:0">'
+      + '<div style="text-align:right;flex-shrink:0;display:flex;flex-direction:column;align-items:flex-end;gap:4px">'
       + (concerns.length
-          ? '<div style="font-size:10px;background:#fde7e7;color:#b00;padding:3px 8px;border-radius:10px;font-weight:700;margin-bottom:4px">⚠ ' + concerns.length + ' hallazgo(s)</div>'
-          : '<div style="font-size:10px;background:#e6f4e6;color:#2a7a2a;padding:3px 8px;border-radius:10px;font-weight:700;margin-bottom:4px">✓ Conforme</div>')
-      + '<button class="btn-sm" style="border-color:var(--red);color:var(--red);font-size:10px" onclick="event.stopPropagation();generateInformePdf(\'' + o.id + '\')">⬇ PDF</button>'
+          ? '<div style="font-size:10px;background:#fde7e7;color:#b00;padding:3px 8px;border-radius:10px;font-weight:700">⚠ ' + concerns.length + ' hallazgo(s)</div>'
+          : '<div style="font-size:10px;background:#e6f4e6;color:#2a7a2a;padding:3px 8px;border-radius:10px;font-weight:700">✓ Conforme</div>')
+      + '<div style="display:flex;gap:4px">'
+      +   '<button class="btn-sm" style="border-color:#1f6fbf;color:#1f6fbf;font-size:10px;padding:3px 6px" onclick="event.stopPropagation();openInformeEditor(\'' + o.id + '\')">✏ Editar</button>'
+      +   '<button class="btn-sm" style="border-color:var(--red);color:var(--red);font-size:10px;padding:3px 6px" onclick="event.stopPropagation();generateInformePdf(\'' + o.id + '\')">⬇ PDF</button>'
+      + '</div>'
       + '</div>';
     listDiv.appendChild(row);
   });
@@ -15775,9 +16435,41 @@ async function openInformePreview(woId) {
     }
     html += '</div>';
 
-    html += '<div style="margin-top:14px;display:flex;gap:8px">';
-    html += '<button class="btn btn-red" onclick="generateInformePdf(\'' + o.id + '\')" style="flex:1">⬇ Descargar PDF</button>';
-    html += '<button class="btn btn-out" onclick="closeModal(\'m-inf-preview\');document.getElementById(\'m-inf-preview\').remove();">Cerrar</button>';
+    // Mostrar contenido editado/anexado si existe
+    var extras = cd.report_extras || {};
+    var extraFindings = (extras.extra_findings || []).filter(function(f){return f && String(f).trim();});
+    var imagesCnt = (extras.images || []).length;
+    var pdfsCnt = (extras.pdfs || []).length;
+    var hasAnyExtras = !!(extras.edited_observations || extraFindings.length || imagesCnt || pdfsCnt);
+    if (hasAnyExtras) {
+      html += '<div style="margin-top:10px;padding:10px;background:#f4f9ff;border-left:3px solid #1f6fbf;border-radius:4px">';
+      html += '<div style="font-weight:700;font-size:12px;margin-bottom:6px;color:#1f6fbf">CONTENIDO EDITADO / ANEXADO</div>';
+      if (extras.edited_observations) {
+        html += '<div style="font-size:11px;color:#333;margin-bottom:4px"><b>Observaciones editadas:</b> '
+          + escapeHtml(String(extras.edited_observations).slice(0, 140)) + (extras.edited_observations.length > 140 ? '…' : '') + '</div>';
+      }
+      if (extraFindings.length) {
+        html += '<div style="font-size:11px;color:#333;margin-bottom:4px"><b>' + extraFindings.length + ' hallazgo(s) adicional(es):</b></div>';
+        html += '<ul style="margin:0 0 4px 0;padding-left:18px;font-size:11px;color:#444">';
+        extraFindings.slice(0,3).forEach(function(f){
+          html += '<li>' + escapeHtml(String(f).slice(0,100)) + (f.length > 100 ? '…' : '') + '</li>';
+        });
+        if (extraFindings.length > 3) html += '<li style="color:#888;font-style:italic">y ' + (extraFindings.length - 3) + ' más…</li>';
+        html += '</ul>';
+      }
+      if (imagesCnt || pdfsCnt) {
+        html += '<div style="font-size:11px;color:#333">';
+        if (imagesCnt) html += '<span style="margin-right:10px">📷 ' + imagesCnt + ' imagen(es)</span>';
+        if (pdfsCnt) html += '<span>📄 ' + pdfsCnt + ' PDF anexo(s)</span>';
+        html += '</div>';
+      }
+      html += '</div>';
+    }
+
+    html += '<div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">';
+    html += '<button class="btn btn-red" onclick="generateInformePdf(\'' + o.id + '\')" style="flex:1;min-width:140px">⬇ Descargar PDF</button>';
+    html += '<button class="btn btn-out" onclick="openInformeEditor(\'' + o.id + '\')" style="flex:1;min-width:140px;border-color:var(--red);color:var(--red)">✏ Editar / anexar</button>';
+    html += '<button class="btn btn-out" onclick="closeModal(\'m-inf-preview\');document.getElementById(\'m-inf-preview\').remove();" style="min-width:90px">Cerrar</button>';
     html += '</div>';
 
     var bodyEl = document.getElementById('inf-prev-body');
