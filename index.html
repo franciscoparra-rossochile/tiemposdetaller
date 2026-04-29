@@ -6865,7 +6865,7 @@ async function renderBossHist(body) {
   var woById = {};  // id -> ot
   var woMap = {};   // plate -> [ot, ...]
   try {
-    var {data: woData} = await sb.from('work_orders')
+    var {data: woData} = await sb.from('work_orders_with_plate')
       .select('id,plate,checklist_data,service_classification,updated_at,status,ot_number')
       .order('updated_at', {ascending: false})
       .limit(600);
@@ -15509,7 +15509,7 @@ async function renderBossInformes(body) {
 
   // Cargar OTs que tengan tech_checklist completo
   // (con tech_completed_at definido o checklist_data.tech_checklist no vacío)
-  var query = sb.from('work_orders')
+  var query = sb.from('work_orders_with_plate')
     .select('id,ot_number,plate,client_id,vehicle_id,service_classification,service_subtype,status,checklist_data,updated_at,created_at')
     .order('updated_at', {ascending: false})
     .limit(500);
