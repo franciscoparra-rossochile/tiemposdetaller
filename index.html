@@ -4926,8 +4926,30 @@ function openChecklist(sessionKey) {
   var srvName = sess ? sess.service : T.srvLabel;
   if (!srvNeedsChecklist(srvName)) {
     logR('NO_CHECKLIST_REQUIRED', {srv: srvName});
-    // Direct finish without checklist - null checklist saved
-    doFinish(null, checklistForKey);
+    // BUG-FIX (abr 2026, bug #2 Jack Medina): cerrar servicios sin checklist
+    // (Lavado, Estandar de taller, Compras, Logística, Movimiento, Cierre)
+    // ahora ESPERA el resultado de doFinish y muestra confirmación o error
+    // visible. Antes era una llamada fire-and-forget: si el INSERT a history
+    // fallaba (timeout, RLS, desconexión), el técnico veía toast verde igual
+    // y se iba pensando que había cerrado, pero la sesión quedaba viva en
+    // active_sessions. Esto provocó pérdidas de tiempo registrado.
+    (async function() {
+      // Capturar duración ANTES de doFinish (que llama a resetT al final).
+      var durLabel = sess ? fmtT(liveSecondsNow(sess) || sess.seconds || 0) : '';
+      var ok = await doFinish(null, checklistForKey);
+      if (ok) {
+        // Confirmación explícita: el técnico ve "FINALIZADO" en pantalla,
+        // no solo el redirect silencioso. Antes había ambigüedad — si el
+        // INSERT fallaba, el técnico veía toast verde igual desde el push.
+        showToast('fin', '✓ Servicio finalizado',
+          srvName + (durLabel ? ' · ' + durLabel : ''));
+      } else {
+        // doFinish ya mostró su error específico via showGlobalError.
+        // Aquí solo logueamos para que en consola quede claro que el cierre
+        // sin-checklist falló y el técnico debe reintentar.
+        logR('FINISH_NOCHECK_FAILED', {key: checklistForKey, srv: srvName}, 'err');
+      }
+    })();
     return;
   }
   radioState = {};
@@ -5148,6 +5170,12 @@ async function doFinish(checklist, sessionKey) {
       var msgLower = (hErr.message || '').toLowerCase();
       var optionalCols = ['work_order_id', 'started_at'];
       var missingCol = optionalCols.find(function(c){ return msgLower.indexOf(c) !== -1; });
+      // BUG-FIX (abr 2026, bug #2 Jack Medina): mensaje de error más explícito
+      // y duración 15s (antes 5s). El error de "no se guardó" era demasiado
+      // breve y se confundía con notificaciones verdes que aparecían después,
+      // dando la falsa impresión de que el cierre fue exitoso.
+      var errMsgPrefix = '⚠ EL SERVICIO NO SE CERRÓ.\n\nError al guardar historial: ';
+      var errMsgSuffix = '\n\nLa sesión sigue activa. Toca FINALIZAR de nuevo cuando tengas conexión.';
       if (missingCol) {
         logR('HIST_MISSING_COL', {col: missingCol, msg: hErr.message}, 'warn');
         delete histPayload[missingCol];
@@ -5161,16 +5189,16 @@ async function doFinish(checklist, sessionKey) {
             delete histPayload[missingCol2];
             var {error: hErr3} = await sb.from('history').insert(histPayload);
             if (hErr3) {
-              showGlobalError('Error al guardar historial: ' + hErr3.message + '\n\nReintenta tocando Finalizar de nuevo.', 5000);
+              showGlobalError(errMsgPrefix + hErr3.message + errMsgSuffix, 15000);
               return false;
             }
           } else {
-            showGlobalError('Error al guardar historial: ' + hErr2.message + '\n\nReintenta tocando Finalizar de nuevo.', 5000);
+            showGlobalError(errMsgPrefix + hErr2.message + errMsgSuffix, 15000);
             return false;
           }
         }
       } else {
-        showGlobalError('Error al guardar historial: ' + hErr.message + '\n\nReintenta tocando Finalizar de nuevo.', 5000);
+        showGlobalError(errMsgPrefix + hErr.message + errMsgSuffix, 15000);
         return false;
       }
     }
@@ -5251,6 +5279,33 @@ async function doFinish(checklist, sessionKey) {
 
     var {error: dErr} = await sb.from('active_sessions').delete().eq('session_key', useKey);
     logR('FINISH_DELETE_SESSION', {key: useKey, error: dErr ? dErr.message : null});
+    // BUG-FIX (abr 2026, bug #2 Jack Medina): si el delete falla DESPUÉS de
+    // que history ya guardó, queda una sesión zombie en active_sessions que
+    // confunde al técnico al día siguiente. Antes solo se logueaba.
+    // Estrategia:
+    //   1) Reintentar el delete una vez (puede ser timeout de red transitorio).
+    //   2) Si vuelve a fallar, avisar al técnico Y a admin (pushNotif tipo 'err'),
+    //      pero NO retornar false: history ya está guardado, el tiempo no se
+    //      perdió. La sesión zombie es molesta pero un admin la limpia.
+    if (dErr) {
+      logR('FINISH_DELETE_RETRY', {key: useKey, prevErr: dErr.message}, 'warn');
+      var dErr2 = null;
+      try {
+        var r2 = await sb.from('active_sessions').delete().eq('session_key', useKey);
+        dErr2 = r2 && r2.error;
+      } catch(e) { dErr2 = {message: e.message}; }
+      if (dErr2) {
+        logR('FINISH_DELETE_FAILED_TWICE', {key: useKey, err: dErr2.message}, 'err');
+        // Avisar visualmente. El servicio SÍ está en history (no se perdió tiempo)
+        // pero la sesión activa quedó pegada y se debe limpiar.
+        showGlobalError(
+          '⚠ Servicio guardado correctamente, pero la sesión activa no se pudo cerrar.\n\n'
+          + 'Tu tiempo está registrado, pero avisá a jefatura: la sesión "'
+          + finSrv + '" puede aparecer como activa hasta que la limpien.',
+          12000
+        );
+      }
+    }
 
     // FASE 3.0: sincronización por patente al finalizar.
     // Si tiene OT con checklist (skipVisado=false) la OT subió a pending_visado.
@@ -5279,7 +5334,11 @@ async function doFinish(checklist, sessionKey) {
     return true;
   } catch (e) {
     logR('FINISH_EXCEPTION', {msg: e.message, stack: e.stack}, 'err');
-    showGlobalError('Error inesperado al finalizar: ' + e.message + '\n\nReintenta o avisa a jefatura.', 5000);
+    // BUG-FIX (abr 2026, bug #2): mensaje más explícito y duración 15s,
+    // para que no se confunda con toasts verdes posteriores.
+    showGlobalError('⚠ EL SERVICIO NO SE CERRÓ.\n\nError inesperado: ' + e.message
+      + '\n\nLa sesión sigue activa. Toca FINALIZAR de nuevo cuando tengas conexión.',
+      15000);
     return false;
   } finally {
     _finishing = false;
