@@ -3923,6 +3923,141 @@ function liveSecondsNow(s) {
   return calculated;
 }
 
+// ═══════════════════════════════════════════════════════════════
+// DESGLOSE DIARIO — para sesiones activas que cruzan varios días
+// ═══════════════════════════════════════════════════════════════
+// Cuando un servicio empezó hace varios días y sigue en curso, el
+// cronómetro grande muestra solo el total acumulado y se pierde la
+// trazabilidad de cuánto se trabajó cada día. Estas funciones generan
+// un desglose día por día reusando proRateRowInRange (la fórmula
+// canónica de prorrateo respetando horario laboral, BUG-FIX 9704d65b).
+//
+// getDailyBreakdown(sess) → [{date, label, productiveSec, isToday}]
+//   omite días sin actividad (fines de semana, días de pausa total, etc.)
+//   tope de 31 días para no degradar el render si hubo bug de duración.
+//
+// renderDailyBreakdownHTML(sess, opts) → string HTML
+//   bloque pequeño con lista de días previos + "Hoy" + "Acumulado".
+//   retorna '' si la sesión es de un solo día (no afecta el layout).
+// ═══════════════════════════════════════════════════════════════
+function getDailyBreakdown(sess) {
+  if (!sess || !sess.started_at) return [];
+  var startedMs = new Date(sess.started_at).getTime();
+  if (!isFinite(startedMs)) return [];
+  var nowMs = Date.now();
+  if (nowMs <= startedMs) return [];
+
+  // Construir una "row" compatible con proRateRowInRange:
+  // - seconds = liveSecondsNow (tiempo productivo total acumulado)
+  // - ended_at = ahora (sesión activa, fin lógico = ahora)
+  var totalSec = liveSecondsNow(sess);
+  var row = {
+    started_at: sess.started_at,
+    ended_at: new Date(nowMs).toISOString(),
+    seconds: totalSec,
+    pauses: sess.pauses || [],
+    _is_active: true,
+    _status: sess.status
+  };
+
+  // Iterar día por día desde la fecha de inicio hasta hoy.
+  // Tope defensivo: 31 días.
+  var startDate = new Date(startedMs);
+  var todayDate = new Date(nowMs);
+  var startDay = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate());
+  var todayDay = new Date(todayDate.getFullYear(), todayDate.getMonth(), todayDate.getDate());
+
+  var msPerDay = 24 * 3600 * 1000;
+  var dayCount = Math.round((todayDay.getTime() - startDay.getTime()) / msPerDay) + 1;
+  if (dayCount <= 1) return []; // sesión de un solo día → sin desglose
+  if (dayCount > 31) dayCount = 31;
+
+  var result = [];
+  for (var i = 0; i < dayCount; i++) {
+    var dayStart = new Date(startDay.getTime() + i * msPerDay);
+    var dayEnd = new Date(dayStart.getFullYear(), dayStart.getMonth(), dayStart.getDate(), 23, 59, 59, 999);
+    // Para el día de hoy, recortar a "ahora" para no contar el resto del día
+    if (i === dayCount - 1) dayEnd = new Date(nowMs);
+
+    var pr = null;
+    try { pr = proRateRowInRange(row, dayStart, dayEnd); }
+    catch(e) { pr = null; }
+    if (!pr || !pr.productiveSec || pr.productiveSec <= 0) continue;
+
+    var isToday = (dayStart.getFullYear() === todayDay.getFullYear()
+      && dayStart.getMonth() === todayDay.getMonth()
+      && dayStart.getDate() === todayDay.getDate());
+    var label;
+    try {
+      label = dayStart.toLocaleDateString('es-CL', {weekday: 'short', day: '2-digit', month: '2-digit'});
+    } catch(e) {
+      label = dayStart.toISOString().slice(0, 10);
+    }
+    result.push({
+      date: dayStart,
+      label: label,
+      productiveSec: pr.productiveSec,
+      isToday: isToday
+    });
+  }
+  return result;
+}
+
+// Render del bloque visual. Estilo discreto: fondo gris claro, texto
+// pequeño en mono. No compite visualmente con el cronómetro grande.
+// Si la sesión es de un solo día retorna '' y no estorba el layout.
+function renderDailyBreakdownHTML(sess, opts) {
+  opts = opts || {};
+  var compact = opts.compact === true;
+  var breakdown = getDailyBreakdown(sess);
+  if (!breakdown.length) return '';
+
+  // Calcular acumulado y separar "hoy" del resto
+  var todayItem = null;
+  var prevItems = [];
+  var totalSec = 0;
+  breakdown.forEach(function(d){
+    totalSec += d.productiveSec;
+    if (d.isToday) todayItem = d;
+    else prevItems.push(d);
+  });
+
+  // Estilos según modo compacto (cronómetro técnico) o normal (tarjeta)
+  var fontSz = compact ? '10px' : '11px';
+  var labelSz = compact ? '9px' : '10px';
+  var pad = compact ? '6px 8px' : '8px 10px';
+  var marginTop = compact ? '8px' : '6px';
+
+  var html = '<div style="background:#f4f4f4;border:1px solid #e0e0e0;border-radius:4px;'
+    + 'padding:' + pad + ';margin-top:' + marginTop + ';font-family:var(--mono)">';
+  html += '<div style="font-size:' + labelSz + ';font-weight:700;color:#666;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;font-family:\'Rajdhani\',sans-serif">Desglose por día</div>';
+
+  // Días previos (si hay)
+  if (prevItems.length) {
+    prevItems.forEach(function(d){
+      html += '<div style="display:flex;justify-content:space-between;font-size:' + fontSz + ';color:#555;padding:1px 0">'
+        + '<span>' + escapeHtml(d.label) + '</span>'
+        + '<span>' + fmtT(d.productiveSec) + '</span>'
+        + '</div>';
+    });
+  }
+  // Hoy
+  if (todayItem) {
+    html += '<div style="display:flex;justify-content:space-between;font-size:' + fontSz + ';color:#111;font-weight:700;padding:1px 0">'
+      + '<span>Hoy</span>'
+      + '<span>' + fmtT(todayItem.productiveSec) + '</span>'
+      + '</div>';
+  }
+  // Total acumulado
+  html += '<div style="display:flex;justify-content:space-between;font-size:' + fontSz + ';color:#111;font-weight:700;padding:3px 0 0;margin-top:3px;border-top:1px dashed #ccc">'
+    + '<span style="text-transform:uppercase">Acumulado</span>'
+    + '<span>' + fmtT(totalSec) + '</span>'
+    + '</div>';
+
+  html += '</div>';
+  return html;
+}
+
 async function fetchLive() {
   const {data, error} = await sb.from('active_sessions').select('*').order('started_at');
   logR('FETCH_LIVE', {count: data ? data.length : 0, error: error ? error.message : null});
@@ -4470,7 +4605,18 @@ function renderTimerCard(body, sess) {
     + '</div>'
     + (lastPause ? '<div style="background:var(--gold2);border:1px solid var(--gold);border-radius:3px;padding:6px 10px;margin-top:8px;font-size:11px;color:var(--gold3);font-weight:600">Motivo: ' + lastPause.reason + '</div>' : '');
   body.appendChild(wrap);
-  
+
+  // Desglose por día (solo si la sesión cruzó al menos un día) — se
+  // inyecta en su propio wrapper para que el cronómetro principal no
+  // se vea afectado.
+  var breakdownHTML = renderDailyBreakdownHTML(sess, {compact: true});
+  if (breakdownHTML) {
+    var bdWrap = mk('div', '');
+    bdWrap.style.cssText = 'margin-bottom:8px';
+    bdWrap.innerHTML = breakdownHTML;
+    body.appendChild(bdWrap);
+  }
+
   if (sess.pauses && sess.pauses.length) {
     var pl = mk('div','card');
     pl.innerHTML = '<div class="lbl">Pausas registradas</div>'
@@ -5384,6 +5530,9 @@ function buildMisServCard(s, status) {
     h += '<div style="font-size:10px;color:#aaa;margin-bottom:6px">Iniciado: ' + fmtD(s.started_at) + '</div>';
   }
 
+  // Desglose por día (solo si la sesión cruzó al menos un día)
+  h += renderDailyBreakdownHTML(s);
+
   // Action buttons
   h += '<div style="display:flex;gap:6px;flex-wrap:wrap">';
 
@@ -5702,6 +5851,9 @@ function buildSessCard(s, isTech) {
   if (s.goal_minutes) h += '<div style="font-size:9px;color:#aaa;text-transform:uppercase">OBJ:' + s.goal_minutes + 'm</div>';
   h += '</div></div>';
   if (pct !== null) h += '<div class="prog-bar" style="margin-top:8px"><div class="prog-fill" style="width:' + pct + '%;background:' + (over?'var(--red)':'var(--green)') + '"></div></div>';
+
+  // Desglose por día (solo si la sesión cruzó al menos un día)
+  h += renderDailyBreakdownHTML(s);
 
   // IMPORTANTE: los botones de accion se agregan DESPUES via event listeners
   // (no como HTML inline) para evitar problemas de escapado con comillas,
@@ -15855,7 +16007,7 @@ async function loadCrearInformeVehicles() {
 
   // 1. Vehículos no archivados del catastro
   var rV = await sb.from('client_vehicles')
-    .select('id,plate,brand,model,year,km_entry,client_id,archived,created_at')
+    .select('id,plate,brand,model,km_entry,client_id,archived,created_at')
     .or('archived.is.null,archived.eq.false')
     .order('created_at', {ascending: false})
     .limit(2000);
@@ -15917,7 +16069,6 @@ async function loadCrearInformeVehicles() {
       plateUp: plateUp,
       brand: v.brand || '',
       model: v.model || '',
-      year: v.year || null,
       km_entry: v.km_entry || null,
       client_id: v.client_id || null,
       client_name: client ? (client.name || '') : '',
