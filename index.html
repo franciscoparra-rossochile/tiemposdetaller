@@ -11057,14 +11057,20 @@ function renderDCItem(it, currentValue) {
     var noCls  = checkedNo  ? ' dc-opt-selected dc-opt-no'  : '';
     var naCls  = checkedNa  ? ' dc-opt-selected dc-opt-na'  : '';
     var naBtn = it.allow_na
-      ? '<label class="dc-opt' + naCls + '" data-dc-opt="N/A" style="display:flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;padding:12px 8px;border:1px solid var(--border);border-radius:3px;background:#fff;font-size:13px;min-height:44px;font-weight:600"><input type="radio" name="dc_' + it.key + '" value="N/A" ' + checkedNa + baseHandler + '/> N/A</label>'
+      ? '<label class="dc-opt' + naCls + '" data-dc-opt="N/A" onclick="dcLabelClick(this, event)" style="display:flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;padding:12px 8px;border:1px solid var(--border);border-radius:3px;background:#fff;font-size:13px;min-height:44px;font-weight:600"><input type="radio" name="dc_' + it.key + '" value="N/A" ' + checkedNa + baseHandler + '/> N/A</label>'
       : '';
     var gridCols = it.allow_na ? 'g3' : 'g2';
+    // FIX 2026-04-29 (bug 5ac1df6d): onclick en el label fuerza la sincronización
+    // del radio antes del onchange. En iOS, cuando el input está envuelto por el
+    // label, el tap a veces dispara `change` en el orden incorrecto o no actualiza
+    // .checked si hay un valor preseleccionado del HTML inicial. Con dcLabelClick
+    // garantizamos que el radio correcto quede como el único .checked = true.
+    var labelHandler = ' onclick="dcLabelClick(this, event)"';
     return '<div style="margin-bottom:12px" data-dc-item-row="' + it.key + '">'
       + '<div class="lbl" style="margin-bottom:6px">' + lbl + '</div>'
       + '<div class="' + gridCols + '" style="gap:8px">'
-      +   '<label class="dc-opt' + yesCls + '" data-dc-opt="true" style="display:flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;padding:12px 8px;border:1px solid var(--border);border-radius:3px;background:#fff;font-size:13px;min-height:44px;font-weight:600"><input type="radio" name="dc_' + it.key + '" value="true" ' + checkedYes + baseHandler + '/> Sí</label>'
-      +   '<label class="dc-opt' + noCls + '" data-dc-opt="false" style="display:flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;padding:12px 8px;border:1px solid var(--border);border-radius:3px;background:#fff;font-size:13px;min-height:44px;font-weight:600"><input type="radio" name="dc_' + it.key + '" value="false" ' + checkedNo + baseHandler + '/> No</label>'
+      +   '<label class="dc-opt' + yesCls + '" data-dc-opt="true"' + labelHandler + ' style="display:flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;padding:12px 8px;border:1px solid var(--border);border-radius:3px;background:#fff;font-size:13px;min-height:44px;font-weight:600"><input type="radio" name="dc_' + it.key + '" value="true" ' + checkedYes + baseHandler + '/> Sí</label>'
+      +   '<label class="dc-opt' + noCls + '" data-dc-opt="false"' + labelHandler + ' style="display:flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;padding:12px 8px;border:1px solid var(--border);border-radius:3px;background:#fff;font-size:13px;min-height:44px;font-weight:600"><input type="radio" name="dc_' + it.key + '" value="false" ' + checkedNo + baseHandler + '/> No</label>'
       +   naBtn
       + '</div></div>';
   } else if (it.type === 'number') {
@@ -11090,8 +11096,12 @@ function updateDcNaReasonVisibility() {
   var anyNa = false;
   CHECKLIST_DOBLE_CONTROL.forEach(function(it){
     if (!it.allow_na) return;
-    var rad = document.querySelector('#m-dc-body input[name="dc_' + it.key + '"]:checked');
-    if (rad && rad.value === 'N/A') anyNa = true;
+    // FIX 2026-04-29: usar .checked en lugar del pseudo :checked, por consistencia
+    // con la validación de saveDoubleCheck (ver fix bug 5ac1df6d).
+    var rads = document.querySelectorAll('#m-dc-body input[name="dc_' + it.key + '"]');
+    for (var ri = 0; ri < rads.length; ri++) {
+      if (rads[ri].checked && rads[ri].value === 'N/A') { anyNa = true; break; }
+    }
   });
   var wrap = document.querySelector('#m-dc-body [data-dc-na-reason="1"]');
   if (wrap) wrap.style.display = anyNa ? '' : 'none';
@@ -11102,11 +11112,47 @@ function updateDcNaReasonVisibility() {
 // registrada (verde/rojo/ámbar son inmediatos; el dot del radio nativo no).
 // Esta función limpia el highlight de TODA la fila del item y aplica la clase
 // al label seleccionado. Se invoca desde el onchange de cada radio.
+//
+// FIX 2026-04-29 (bug 5ac1df6d): handler explícito en el click del label.
+// Síntoma reportado: técnico marcaba "Sí" en "Limpieza zona de trabajo" y al
+// intentar cerrar el doble control el sistema decía "quedó en No". Causa
+// raíz: en iOS Safari, cuando el <input type="radio"> está envuelto por el
+// <label>, el tap sobre el label dispara el evento `click` antes de que el
+// browser actualice la propiedad .checked, especialmente cuando el HTML
+// inicial trae otro radio del mismo grupo con el atributo `checked`. En esos
+// casos, leer el estado vía querySelector(':checked') durante la validación
+// devolvía el radio antiguo o ninguno. Solución: forzar la sincronización
+// explícitamente al click del label (.checked = true en el input correcto)
+// y luego aplicar el highlight visual. El onchange del input también dispara
+// updateDcRadioHighlight, pero este onclick garantiza el estado incluso si
+// el navegador no emite change en algún edge-case.
+function dcLabelClick(labelEl, ev) {
+  if (!labelEl) return;
+  var input = labelEl.querySelector('input[type="radio"]');
+  if (!input) return;
+  // Si el tap fue directamente sobre el <input>, dejar que el comportamiento
+  // nativo gestione (el onchange del input ya se encargará). Esto evita un
+  // doble-toggle que podría desmarcar el radio recién marcado.
+  if (ev && ev.target && ev.target.tagName === 'INPUT') return;
+  input.checked = true;
+  updateDcRadioHighlight(input);
+  // Ítems con allow_na también deben actualizar la visibilidad del motivo.
+  if (input.value === 'N/A' || labelEl.parentNode.querySelector('input[value="N/A"]')) {
+    updateDcNaReasonVisibility();
+  }
+}
+window.dcLabelClick = dcLabelClick;
+
 function updateDcRadioHighlight(radioEl) {
   if (!radioEl || !radioEl.name) return;
-  // Recorrer todos los radios del mismo grupo (mismo name) y limpiar highlight
+  // FIX 2026-04-29 (bug 5ac1df6d): forzar la propiedad .checked del radio que
+  // disparó el onchange. En iOS Safari, después de varios taps sobre labels que
+  // envuelven el input, la propiedad .checked puede quedar fuera de sync con la
+  // selección visual. Aquí garantizamos que el radio que recibió el evento sea
+  // el único con .checked = true en su grupo, antes de actualizar los estilos.
   var group = document.querySelectorAll('#m-dc-body input[name="' + radioEl.name + '"]');
   group.forEach(function(r){
+    r.checked = (r === radioEl);
     var lbl = r.closest('label.dc-opt');
     if (!lbl) return;
     lbl.classList.remove('dc-opt-selected', 'dc-opt-yes', 'dc-opt-no', 'dc-opt-na');
@@ -11117,6 +11163,15 @@ function updateDcRadioHighlight(radioEl) {
       if (r.value === 'N/A')   lbl.classList.add('dc-opt-na');
     }
   });
+  // FIX 2026-04-29 (bug 5ac1df6d): limpiar mensaje de error pegado al cambiar
+  // selección. Antes el mensaje rojo "quedó en No" seguía visible aunque el
+  // técnico ya hubiera corregido a "Sí", confundiéndolo y haciéndolo creer que
+  // el sistema seguía rechazando su entrada.
+  var errBox = document.getElementById('m-dc-err');
+  if (errBox && errBox.style.display !== 'none') {
+    errBox.style.display = 'none';
+    errBox.textContent = '';
+  }
 }
 window.updateDcRadioHighlight = updateDcRadioHighlight;
 
@@ -11173,7 +11228,19 @@ async function _saveDoubleCheckInner() {
     var it = CHECKLIST_DOBLE_CONTROL[i];
     var val;
     if (it.type === 'bool') {
-      var rad = document.querySelector('#m-dc-body input[name="dc_' + it.key + '"]:checked');
+      // FIX 2026-04-29 (bug 5ac1df6d): en iOS Safari, ocasionalmente la pseudo-clase
+      // :checked queda desincronizada de la propiedad .checked tras varios taps en
+      // el label (especialmente cuando el ítem traía un `checked` precargado del
+      // HTML inicial y el técnico cambia la selección). Resultado: el radio "Sí"
+      // se ve marcado visualmente pero el querySelector(':checked') devuelve el
+      // "No" antiguo o null, y la validación bloquea con "quedó en No".
+      // Solución: leer TODOS los radios del grupo y usar la propiedad .checked
+      // (estado JS real del DOM, no el pseudo-CSS).
+      var allRads = document.querySelectorAll('#m-dc-body input[name="dc_' + it.key + '"]');
+      var rad = null;
+      for (var rj = 0; rj < allRads.length; rj++) {
+        if (allRads[rj].checked) { rad = allRads[rj]; break; }
+      }
       if (!rad) {
         val = null;
       } else if (rad.value === 'N/A') {
