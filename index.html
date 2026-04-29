@@ -1561,20 +1561,29 @@ function validateKPIs(kpis, ctx) {
   }
   var productive = kpis.productiveSec || 0;
   var pause = kpis.pauseSec || 0;
+  // Si hay valores PRE-CAP (porque computeKPIs aplicó cap global), usarlos
+  // para detectar el overflow real. Sin esto, el cap global enmascara la
+  // anomalía y el admin no se entera de que hubo datos sucios.
+  var rawProductive = (typeof kpis._rawProductiveSec === 'number') ? kpis._rawProductiveSec : productive;
+  var rawPause = (typeof kpis._rawPauseSec === 'number') ? kpis._rawPauseSec : pause;
   var accounted = productive + pause;
+  var rawAccounted = rawProductive + rawPause;
   var unaccounted = Math.max(0, capacitySec - accounted);
-  var overflow = Math.max(0, accounted - capacitySec);
+  var overflow = Math.max(0, rawAccounted - capacitySec);
   var violations = [];
 
   if (productive < 0) violations.push('Tiempo productivo negativo (' + productive + 's)');
   if (pause < 0) violations.push('Tiempo en pausa negativo (' + pause + 's)');
 
-  if (capacitySec > 0 && accounted > capacitySec) {
+  if (capacitySec > 0 && rawAccounted > capacitySec) {
     var hoursOver = Math.round(overflow / 360) / 10; // 1 decimal
     var hoursCap = Math.round(capacitySec / 360) / 10;
-    violations.push('Tiempo registrado (' +
-      Math.round(accounted / 360) / 10 + 'h) excede capacidad laboral del periodo (' +
-      hoursCap + 'h × ' + techCount + ' téc.) en ' + hoursOver + 'h');
+    var hoursRaw = Math.round(rawAccounted / 360) / 10;
+    var capPerTech = Math.round((capacitySec / techCount) / 360) / 10;
+    violations.push('Tiempo registrado sin capear (' + hoursRaw +
+      'h) excede capacidad del taller (' + hoursCap + 'h = ' +
+      capPerTech + 'h × ' + techCount + ' téc.) en ' + hoursOver +
+      'h. Las métricas mostradas fueron ajustadas proporcionalmente.');
   }
 
   if (capacitySec === 0 && accounted > 0 && ctx.from && ctx.to) {
@@ -7830,6 +7839,57 @@ function computeKPIs(rows, periodCtx) {
     }
   });
   var pctOnTime = withGoal > 0 ? Math.round((onTime / withGoal) * 100) : 0;
+
+  // ────────────────────────────────────────────────────────────────
+  // BUG-FIX abr 2026 (cap global agregado): la suma de productivo + pausa
+  // de TODAS las filas no puede exceder la capacidad del taller en el
+  // rango (clippedWorkSec × techCount).
+  //
+  // Por qué hace falta este cap aunque cada fila ya esté capeada:
+  // El cap por fila garantiza "cada servicio individual no aporta más
+  // tiempo que el laboral disponible en el rango", pero NO garantiza
+  // que la suma de N filas respete la capacidad agregada. Con 14
+  // servicios en 55min de jornada y 9 técnicos: cada fila puede aportar
+  // hasta 55min (cap individual), pero 14 × 55min = 12.8h. La capacidad
+  // real del taller es solo 9 × 55min = 8h 15m.
+  //
+  // El cap global protege contra:
+  //   - Solapamientos: 1 técnico que registró tiempo en 2 sesiones
+  //     paralelas (síntoma de bug en el cronómetro o inicio doble).
+  //   - Pausas legacy con duraciones absurdas que se cuelan.
+  //   - Servicios "fantasma" que arrancaron antes pero el prorrateo
+  //     sobreatribuye porque totalWorkMs estimado quedó bajo.
+  //
+  // Estrategia: si suma > capacidad, reparto proporcional preservando
+  // la mezcla productivo/pausa observada. Así "9h productivo + 6h pausa"
+  // capeado a 8h se vuelve "4.8h productivo + 3.2h pausa" (mantiene
+  // proporción 60/40).
+  //
+  // IMPORTANTE: guardamos los valores PRE-CAP en _rawProductiveSec y
+  // _rawPauseSec para que validateKPIs siga detectando el overflow y
+  // mostrando el warning. El admin ve métricas razonables Y se entera
+  // de que hubo datos sucios.
+  // ────────────────────────────────────────────────────────────────
+  var rawProductive = productive;
+  var rawPause = pause;
+  var capWasApplied = false;
+  if (hasRange && rangeFromMs !== null && rangeToCappedMs !== null && rangeToCappedMs > rangeFromMs) {
+    var techCountForCap = (periodCtx && typeof periodCtx.technicianCount === 'number' && periodCtx.technicianCount > 0)
+      ? periodCtx.technicianCount : 1;
+    var workshopCapSec = workableSecInRange(new Date(rangeFromMs), new Date(rangeToCappedMs)) * techCountForCap;
+    var totalAccounted = productive + pause;
+    if (workshopCapSec > 0 && totalAccounted > workshopCapSec) {
+      var capRatio = workshopCapSec / totalAccounted;
+      productive = Math.round(productive * capRatio);
+      pause = Math.round(pause * capRatio);
+      capWasApplied = true;
+      // También reducir proporcionalmente pauseReasons para coherencia.
+      Object.keys(pauseReasons).forEach(function(k) {
+        pauseReasons[k].seconds = Math.round(pauseReasons[k].seconds * capRatio);
+      });
+    }
+  }
+
   // BUG-FIX 446b7b6d: contar vehículos únicos como métrica principal.
   // - uniquePlates: patentes distintas que tuvieron actividad en el periodo.
   // - totalRegistros: alias semántico para rows.length (filas de tiempo).
@@ -7840,6 +7900,10 @@ function computeKPIs(rows, periodCtx) {
     totalRegistros: total,          // filas de tiempo (uso interno / distribuciones)
     uniquePlates: uniquePlates,     // mismo dato, nombre explícito
     productiveSec: productive, pauseSec: pause,
+    // PRE-CAP para diagnóstico (validateKPIs los usa para detectar overflow real).
+    _rawProductiveSec: rawProductive,
+    _rawPauseSec: rawPause,
+    _capApplied: capWasApplied,
     onTime: onTime, withGoal: withGoal, pctOnTime: pctOnTime,
     pauseReasons: pauseReasons,
     finalizados: finalizados,
