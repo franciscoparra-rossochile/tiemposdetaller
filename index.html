@@ -108,6 +108,16 @@ html[data-textsize="xl"] .card-accent{font-size:17px}
 .lbl{font-size:10px;font-weight:700;color:var(--red);letter-spacing:.1em;text-transform:uppercase;font-family:var(--head);margin-bottom:6px}
 .g2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+/* FASE 3.4: feedback visual fuerte para radios del doble control. Resuelve los
+   reportes de "marqué Sí pero el sistema dice No": ahora el label completo
+   cambia de color al tocarlo, así el técnico verifica de un vistazo cuál opción
+   quedó. transition rápida y :active con scale para confirmar el toque. */
+.dc-opt{transition:background .12s, border-color .12s, color .12s}
+.dc-opt:active{transform:scale(.97)}
+.dc-opt-selected{border-width:2px !important; padding:11px 7px !important}
+.dc-opt-yes{background:#e7f8ec !important; border-color:#22a14a !important; color:#0f5d2c !important}
+.dc-opt-no{background:#fde7e7 !important; border-color:#d23030 !important; color:#7a0e0e !important}
+.dc-opt-na{background:#fff4e5 !important; border-color:#f59e0b !important; color:#7a4a00 !important}
 .sel-btn{background:var(--bg3);border:1.5px solid var(--border);border-radius:4px;padding:9px 7px;font-size:11px;color:var(--wh3);cursor:pointer;text-align:center;transition:all .1s;line-height:1.4;font-family:var(--body);font-weight:600;letter-spacing:.02em;text-transform:uppercase;min-height:46px;touch-action:manipulation;user-select:none;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px}
 .sel-btn:active{transform:scale(.97)}.sel-btn.on{background:var(--red4);border-color:var(--red);color:var(--red);border-width:2px;font-weight:700}
 .btn{border:none;border-radius:4px;padding:12px 16px;font-size:13px;font-weight:700;cursor:pointer;width:100%;transition:all .1s;letter-spacing:.07em;text-transform:uppercase;font-family:var(--head);touch-action:manipulation;min-height:48px;user-select:none}
@@ -10233,6 +10243,12 @@ function openDoubleCheck(otId) {
   openModal('m-double-check');
   // FASE 3.3: si hay valores previos con N/A, mostrar el motivo desde el inicio.
   updateDcNaReasonVisibility();
+  // FASE 3.4: aplicar highlights iniciales para todos los radios ya marcados.
+  // Esencial si la OT tiene estado previo (reapertura tras error o edición):
+  // así un valor "No" preexistente se ve rojo desde el primer momento, evitando
+  // que el técnico crea que está vacío y se confunda con el valor real.
+  var preMarked = body.querySelectorAll('input[type="radio"]:checked');
+  preMarked.forEach(function(r){ updateDcRadioHighlight(r); });
 }
 
 function renderDCItem(it, currentValue) {
@@ -10242,17 +10258,30 @@ function renderDCItem(it, currentValue) {
     var checkedNo  = currentValue === false ? 'checked' : '';
     var checkedNa  = currentValue === 'N/A' ? 'checked' : '';
     // FASE 3.3: items con allow_na muestran un tercer botón N/A.
-    // onchange dispara updateDcNaReasonVisibility() para mostrar/ocultar el motivo.
-    var changeHandler = it.allow_na ? ' onchange="updateDcNaReasonVisibility()"' : '';
+    // FASE 3.4 (bugfix doble control): se cambió el render para resolver dos bugs
+    // reportados ("marqué Sí pero el sistema dice No"):
+    //   1. El handler onchange antes solo se aplicaba a items con allow_na, así
+    //      que en dc_clean (sin allow_na) no había ninguna actualización visual
+    //      tras tocar el radio. Ahora aplica a todos los items.
+    //   2. El único indicador de selección era el dot nativo del radio, casi
+    //      invisible en mobile (especialmente en iOS). Ahora el label completo
+    //      cambia de color de fondo (verde Sí / rojo No / ámbar N/A).
+    //   3. min-height:44px alcanza el target táctil mínimo recomendado (Apple
+    //      HIG / Material), antes los labels eran de ~30px y favorecían toques
+    //      cruzados entre filas adyacentes en viewports angostos (393px).
+    var baseHandler = ' onchange="updateDcRadioHighlight(this);' + (it.allow_na ? 'updateDcNaReasonVisibility();' : '') + '"';
+    var yesCls = checkedYes ? ' dc-opt-selected dc-opt-yes' : '';
+    var noCls  = checkedNo  ? ' dc-opt-selected dc-opt-no'  : '';
+    var naCls  = checkedNa  ? ' dc-opt-selected dc-opt-na'  : '';
     var naBtn = it.allow_na
-      ? '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;padding:8px;border:1px solid var(--border);border-radius:3px;background:#fff;font-size:12px"><input type="radio" name="dc_' + it.key + '" value="N/A" ' + checkedNa + changeHandler + '/> N/A</label>'
+      ? '<label class="dc-opt' + naCls + '" data-dc-opt="N/A" style="display:flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;padding:12px 8px;border:1px solid var(--border);border-radius:3px;background:#fff;font-size:13px;min-height:44px;font-weight:600"><input type="radio" name="dc_' + it.key + '" value="N/A" ' + checkedNa + baseHandler + '/> N/A</label>'
       : '';
     var gridCols = it.allow_na ? 'g3' : 'g2';
-    return '<div style="margin-bottom:10px">'
-      + '<div class="lbl" style="margin-bottom:4px">' + lbl + '</div>'
-      + '<div class="' + gridCols + '" style="gap:6px">'
-      +   '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;padding:8px;border:1px solid var(--border);border-radius:3px;background:#fff;font-size:12px"><input type="radio" name="dc_' + it.key + '" value="true" ' + checkedYes + changeHandler + '/> Sí</label>'
-      +   '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;padding:8px;border:1px solid var(--border);border-radius:3px;background:#fff;font-size:12px"><input type="radio" name="dc_' + it.key + '" value="false" ' + checkedNo + changeHandler + '/> No</label>'
+    return '<div style="margin-bottom:12px" data-dc-item-row="' + it.key + '">'
+      + '<div class="lbl" style="margin-bottom:6px">' + lbl + '</div>'
+      + '<div class="' + gridCols + '" style="gap:8px">'
+      +   '<label class="dc-opt' + yesCls + '" data-dc-opt="true" style="display:flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;padding:12px 8px;border:1px solid var(--border);border-radius:3px;background:#fff;font-size:13px;min-height:44px;font-weight:600"><input type="radio" name="dc_' + it.key + '" value="true" ' + checkedYes + baseHandler + '/> Sí</label>'
+      +   '<label class="dc-opt' + noCls + '" data-dc-opt="false" style="display:flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;padding:12px 8px;border:1px solid var(--border);border-radius:3px;background:#fff;font-size:13px;min-height:44px;font-weight:600"><input type="radio" name="dc_' + it.key + '" value="false" ' + checkedNo + baseHandler + '/> No</label>'
       +   naBtn
       + '</div></div>';
   } else if (it.type === 'number') {
@@ -10284,6 +10313,47 @@ function updateDcNaReasonVisibility() {
   var wrap = document.querySelector('#m-dc-body [data-dc-na-reason="1"]');
   if (wrap) wrap.style.display = anyNa ? '' : 'none';
 }
+
+// FASE 3.4: feedback visual fuerte tras tocar un radio. Antes el técnico no
+// tenía forma rápida de verificar visualmente cuál opción quedó realmente
+// registrada (verde/rojo/ámbar son inmediatos; el dot del radio nativo no).
+// Esta función limpia el highlight de TODA la fila del item y aplica la clase
+// al label seleccionado. Se invoca desde el onchange de cada radio.
+function updateDcRadioHighlight(radioEl) {
+  if (!radioEl || !radioEl.name) return;
+  // Recorrer todos los radios del mismo grupo (mismo name) y limpiar highlight
+  var group = document.querySelectorAll('#m-dc-body input[name="' + radioEl.name + '"]');
+  group.forEach(function(r){
+    var lbl = r.closest('label.dc-opt');
+    if (!lbl) return;
+    lbl.classList.remove('dc-opt-selected', 'dc-opt-yes', 'dc-opt-no', 'dc-opt-na');
+    if (r.checked) {
+      lbl.classList.add('dc-opt-selected');
+      if (r.value === 'true')  lbl.classList.add('dc-opt-yes');
+      if (r.value === 'false') lbl.classList.add('dc-opt-no');
+      if (r.value === 'N/A')   lbl.classList.add('dc-opt-na');
+    }
+  });
+}
+window.updateDcRadioHighlight = updateDcRadioHighlight;
+
+// FASE 3.4: scroll al ítem del doble control que generó error de validación.
+// El técnico ve de inmediato cuál es el ítem en conflicto y puede corregirlo
+// sin reabrir el modal. Antes el mensaje aparecía arriba y el técnico no
+// sabía dónde estaba el ítem, especialmente si el modal estaba scrolleado.
+function scrollDcItemIntoView(itemKey) {
+  try {
+    var row = document.querySelector('#m-dc-body [data-dc-item-row="' + itemKey + '"]');
+    if (row && row.scrollIntoView) {
+      row.scrollIntoView({behavior:'smooth', block:'center'});
+      // Flash de atención: borde dorado por 1.5s sin alterar el highlight de selección.
+      row.style.transition = 'box-shadow .25s';
+      row.style.boxShadow = '0 0 0 3px var(--gold)';
+      setTimeout(function(){ row.style.boxShadow = ''; }, 1500);
+    }
+  } catch(_){}
+}
+window.scrollDcItemIntoView = scrollDcItemIntoView;
 
 async function saveDoubleCheck() {
   if (!_activeOT) return;
@@ -10333,6 +10403,8 @@ async function saveDoubleCheck() {
       if (missing) {
         err.textContent = 'Falta: ' + it.label;
         err.style.display = 'block';
+        // FASE 3.4: scroll al item faltante para que el técnico vea cuál es.
+        scrollDcItemIntoView(it.key);
         return;
       }
     }
@@ -10340,8 +10412,18 @@ async function saveDoubleCheck() {
     // no permitir cierre. El doble control debe quedar 100% conforme.
     // (N/A no cuenta como No: significa que el item no aplica a este servicio.)
     if (it.required && it.type === 'bool' && val === false) {
-      err.textContent = 'No puedes cerrar el doble control con "No" en: ' + it.label + '. Corrige antes de cerrar.';
+      // FASE 3.4 (bugfix doble control): cuando el técnico reportaba "marqué Sí
+      // pero el sistema dice No", el flujo viejo solo mostraba un mensaje rojo
+      // arriba y el técnico no podía verificar visualmente qué pasó. Ahora:
+      //   1. Mensaje pide confirmar visualmente el ítem (apunta al destino).
+      //   2. Scroll automático al ítem para que el técnico LO VEA.
+      //   3. El ítem ya tiene fondo rojo por la clase dc-opt-no aplicada en
+      //      el render/onchange, así que el técnico distingue al toque si
+      //      realmente quedó en "No" o si fue un error de tap.
+      //   4. NO se cierra el modal: el técnico puede tocar "Sí" directamente.
+      err.textContent = 'El ítem "' + it.label + '" quedó en "No". Si fue un error, tócalo de nuevo en "Sí". Si realmente está mal, no puedes cerrar el doble control hasta corregirlo.';
       err.style.display = 'block';
+      scrollDcItemIntoView(it.key);
       return;
     }
     data[it.key] = val;
