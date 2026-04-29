@@ -1360,12 +1360,93 @@ function computeAccumulatedEffectivePauseMs(sess) {
   return total;
 }
 
+// workableMsInRange(from, to) — capacidad laboral teórica del taller entre
+// dos timestamps, en milisegundos. Reusa effectivePauseMsBetween: la
+// "intersección con jornada laboral" de un rango ES exactamente lo mismo
+// que se necesita para calcular capacidad. Si el rango no es válido,
+// retorna 0.
+//
+// Ejemplo: from=Lunes 00:00, to=Lunes 23:59 → 9h = 32_400_000 ms (jornada lunes).
+// Ejemplo: from=Sábado 00:00, to=Domingo 23:59 → 0 (fin de semana sin operación).
+function workableMsInRange(from, to) {
+  return effectivePauseMsBetween(from, to);
+}
+
+function workableSecInRange(from, to) {
+  return Math.round(workableMsInRange(from, to) / 1000);
+}
+
+// validateKPIs(kpis, ctx) — valida invariantes del cálculo de tiempo
+// (bug 9704d65b). Retorna un objeto con:
+//   - valid: true/false
+//   - violations: array de strings con descripción de cada violación
+//   - capacitySec: capacidad laboral del periodo (segundos)
+//   - accountedSec: productiveSec + pauseSec (lo que el sistema sabe)
+//   - unaccountedSec: brecha (capacidad - accounted), nunca negativa
+//   - overflowSec: cuánto excede accounted la capacidad (cuando aplica)
+//
+// ctx esperado: { from: Date, to: Date, technicianCount: int }
+// Si technicianCount no se da, asume 1 (filtro de un técnico) — eso evita
+// reportar falsos positivos cuando se filtra por persona específica.
+//
+// Invariantes verificadas:
+//   I1. accounted ≤ capacity × technicianCount (no se puede trabajar más
+//       de lo que la jornada permite).
+//   I2. unaccountedSec ≥ 0 (la brecha es siempre no-negativa por construcción).
+//   I3. pauseSec ≥ 0 y productiveSec ≥ 0 (sanity).
+//   I4. Si capacitySec === 0 (rango fuera de horario laboral) y
+//       accountedSec > 0, eso es inconsistente.
+function validateKPIs(kpis, ctx) {
+  ctx = ctx || {};
+  var techCount = (typeof ctx.technicianCount === 'number' && ctx.technicianCount > 0)
+    ? ctx.technicianCount : 1;
+  var capacitySec = 0;
+  if (ctx.from && ctx.to) {
+    capacitySec = workableSecInRange(ctx.from, ctx.to) * techCount;
+  }
+  var productive = kpis.productiveSec || 0;
+  var pause = kpis.pauseSec || 0;
+  var accounted = productive + pause;
+  var unaccounted = Math.max(0, capacitySec - accounted);
+  var overflow = Math.max(0, accounted - capacitySec);
+  var violations = [];
+
+  if (productive < 0) violations.push('Tiempo productivo negativo (' + productive + 's)');
+  if (pause < 0) violations.push('Tiempo en pausa negativo (' + pause + 's)');
+
+  if (capacitySec > 0 && accounted > capacitySec) {
+    var hoursOver = Math.round(overflow / 360) / 10; // 1 decimal
+    var hoursCap = Math.round(capacitySec / 360) / 10;
+    violations.push('Tiempo registrado (' +
+      Math.round(accounted / 360) / 10 + 'h) excede capacidad laboral del periodo (' +
+      hoursCap + 'h × ' + techCount + ' téc.) en ' + hoursOver + 'h');
+  }
+
+  if (capacitySec === 0 && accounted > 0 && ctx.from && ctx.to) {
+    violations.push('Hay ' + Math.round(accounted / 360) / 10 +
+      'h registradas en un rango sin horario laboral (fin de semana o fuera de turno)');
+  }
+
+  return {
+    valid: violations.length === 0,
+    violations: violations,
+    capacitySec: capacitySec,
+    accountedSec: accounted,
+    unaccountedSec: unaccounted,
+    overflowSec: overflow,
+    technicianCount: techCount
+  };
+}
+
 // Exponer para debugging en consola.
 window.WORK_HOURS = WORK_HOURS;
 window.getWorkingIntervals = getWorkingIntervals;
 window.effectivePauseMsBetween = effectivePauseMsBetween;
 window.effectivePauseSecBetween = effectivePauseSecBetween;
 window.computeAccumulatedEffectivePauseMs = computeAccumulatedEffectivePauseMs;
+window.workableMsInRange = workableMsInRange;
+window.workableSecInRange = workableSecInRange;
+window.validateKPIs = validateKPIs;
 
 // ═══════════════════════════════════════════════════════════════
 // FASE 3.2 — ESTADO CANÓNICO DEL SERVICIO
@@ -7127,7 +7208,18 @@ async function renderBossReportes(body) {
   // ──────────────────────────────────────────────
   // Card: KPIs
   // ──────────────────────────────────────────────
-  var kpis = computeKPIs(REP.data);
+  // Bug 9704d65b — pasar contexto del periodo para calcular capacidad,
+  // brecha (tiempo no registrado) y validar invariantes.
+  // technicianCount: si filtran por un técnico específico = 1; si es
+  // "todos" = cantidad de técnicos hábiles que devolvió el query inicial.
+  var techCountForCapacity = REP.technicianId
+    ? 1
+    : (techs || []).filter(function(u) { return u.role === 'tech'; }).length || 1;
+  var kpis = computeKPIs(REP.data, {
+    from: b2.from,
+    to: b2.to,
+    technicianCount: techCountForCapacity
+  });
   var kpiCard = mk('div','');
   kpiCard.style.marginBottom = '10px';
   kpiCard.innerHTML = '<div class="lbl" style="margin-left:4px">Indicadores · ' + repRangeLabel() + '</div>';
@@ -7137,7 +7229,44 @@ async function renderBossReportes(body) {
   grid.appendChild(kpiBox('En objetivo', kpis.pctOnTime + '%', kpis.pctOnTime >= 70 ? 'var(--green)' : 'var(--red)'));
   grid.appendChild(kpiBox('Tiempo productivo', fmtHM(kpis.productiveSec), 'var(--blue)'));
   grid.appendChild(kpiBox('Tiempo en pausa', fmtHM(kpis.pauseSec), 'var(--gold3)'));
+  // Bug 9704d65b — KPI nuevo: brecha (tiempo no registrado).
+  // Solo se muestra si el periodo tiene capacidad laboral > 0
+  // (no tiene sentido mostrar brecha en fines de semana).
+  if (kpis.capacitySec && kpis.capacitySec > 0) {
+    var brechaPct = kpis.capacitySec > 0
+      ? Math.round((kpis.unaccountedSec / kpis.capacitySec) * 100)
+      : 0;
+    var brechaColor = brechaPct > 30 ? 'var(--red)'
+      : brechaPct > 15 ? 'var(--gold3)'
+      : 'var(--green)';
+    var brechaLabel = 'No registrado'
+      + (REP.technicianId ? '' : ' (' + techCountForCapacity + ' téc.)');
+    grid.appendChild(kpiBox(brechaLabel,
+      fmtHM(kpis.unaccountedSec) + ' (' + brechaPct + '%)',
+      brechaColor));
+    grid.appendChild(kpiBox('Capacidad jornada',
+      fmtHM(kpis.capacitySec),
+      'var(--wh3)'));
+  }
   kpiCard.appendChild(grid);
+
+  // Bug 9704d65b — alerta visual si hay violación de invariantes.
+  // No bloquea, solo informa: la idea es que el admin sepa que las
+  // métricas pueden estar contaminadas y revise.
+  if (kpis._invalid && kpis._violations && kpis._violations.length) {
+    var warn = mk('div','');
+    warn.style.cssText = 'margin-top:10px;padding:8px 10px;background:rgba(218,165,32,.08);'
+      + 'border-left:3px solid var(--gold3);border-radius:3px;font-size:11px;line-height:1.4';
+    var head = '<div style="font-weight:700;color:var(--gold3);text-transform:uppercase;'
+      + 'letter-spacing:.04em;font-family:\'Rajdhani\',sans-serif;margin-bottom:4px">'
+      + '⚠ Métricas posiblemente inválidas</div>';
+    var list = kpis._violations.map(function(v) {
+      return '<div style="color:var(--wh2)">• ' + v + '</div>';
+    }).join('');
+    warn.innerHTML = head + list;
+    kpiCard.appendChild(warn);
+  }
+
   body.appendChild(kpiCard);
 
   // ──────────────────────────────────────────────
@@ -7231,8 +7360,12 @@ function fmtHM(sec) {
   return h + 'h ' + (m < 10 ? '0' : '') + m + 'm';
 }
 
-// Computar KPIs a partir de filas del historial
-function computeKPIs(rows) {
+// Computar KPIs a partir de filas del historial.
+// `periodCtx` (opcional): { from: Date, to: Date, technicianCount: int }
+//   - Si se pasa, calcula capacidad laboral del periodo, brecha
+//     (tiempo no registrado) y valida invariantes (bug 9704d65b).
+//   - Si no se pasa, retorna los KPIs clásicos (compatible hacia atrás).
+function computeKPIs(rows, periodCtx) {
   var total = rows.length;
   var productive = 0;
   var pause = 0;
@@ -7311,7 +7444,7 @@ function computeKPIs(rows) {
     }
   });
   var pctOnTime = withGoal > 0 ? Math.round((onTime / withGoal) * 100) : 0;
-  return {
+  var out = {
     total: total, productiveSec: productive, pauseSec: pause,
     onTime: onTime, withGoal: withGoal, pctOnTime: pctOnTime,
     pauseReasons: pauseReasons,
@@ -7320,6 +7453,22 @@ function computeKPIs(rows) {
     activosRunning: activosRunning,
     activosPaused: activosPaused
   };
+  // Bug 9704d65b — capacidad / brecha / validación de invariantes.
+  // Solo si nos dan contexto del periodo (rango + cantidad de técnicos).
+  if (periodCtx && periodCtx.from && periodCtx.to) {
+    var v = validateKPIs(out, periodCtx);
+    out.capacitySec = v.capacitySec;
+    out.accountedSec = v.accountedSec;
+    out.unaccountedSec = v.unaccountedSec;
+    out.overflowSec = v.overflowSec;
+    out.utilizationPct = v.capacitySec > 0
+      ? Math.round((v.accountedSec / v.capacitySec) * 1000) / 10
+      : 0;
+    out._invalid = !v.valid;
+    out._violations = v.violations;
+    out._technicianCount = v.technicianCount;
+  }
+  return out;
 }
 async function renderBossUsers(body) {
   body.innerHTML = '<div class="empty"><span class="spin"></span>Cargando...</div>';
