@@ -15070,20 +15070,10 @@ function generatePDFGestion() {
 var INFORME_LOGO_DATA_URL = null;
 async function getInformeLogoDataUrl() {
   if (INFORME_LOGO_DATA_URL) return INFORME_LOGO_DATA_URL;
-  // Intentar tomar el logo de la imagen ya cargada en el header (en DOM).
-  // Si no está, fetch del archivo.
-  try {
-    // Buscamos un <img> con el logo en el DOM (existen varios en hdrs)
-    var imgs = document.querySelectorAll('img[src^="data:image/png;base64"]');
-    for (var i = 0; i < imgs.length; i++) {
-      // El logo grande tiene ancho > 400, lo distinguimos del favicon
-      if (imgs[i].naturalWidth > 200) {
-        INFORME_LOGO_DATA_URL = imgs[i].src;
-        return INFORME_LOGO_DATA_URL;
-      }
-    }
-  } catch(e) {}
-  // Fallback: fetch del archivo
+  // Cargar SIEMPRE el archivo oficial del logo Rosso (rojo, sin "OPS").
+  // Antes tomábamos cualquier <img> grande del DOM, lo que terminaba
+  // agarrando el logo "Rosso OPS" del header de la app — incorrecto
+  // para informes que se entregan al cliente.
   try {
     var resp = await fetch('rosso_logo_transparent_600w.png');
     if (resp.ok) {
@@ -15102,7 +15092,26 @@ async function getInformeLogoDataUrl() {
 }
 
 // Helper: convertir valor crudo del checklist a etiqueta legible
-function informeFmtVal(v, type) {
+function informeFmtVal(v, type, itemKey) {
+  // Mapeo específico por pregunta para valores que con la etiqueta
+  // genérica ("Correcto"/"Requiere atención") quedan ambiguos en el
+  // informe que recibe el cliente.
+  if (itemKey === 'gar_es_garantia') {
+    if (v === true) return 'Sí, la falla aplica a garantía';
+    if (v === false) return 'No, la falla no aplica a garantía';
+  }
+  if (itemKey === 'gar_repuestos') {
+    // Texto libre. Si el técnico escribió variantes de "nada", normalizar.
+    if (v != null && v !== '') {
+      var norm = String(v).trim().toLowerCase();
+      if (norm === 'nada' || norm === 'n/a' || norm === 'na'
+          || norm === 'ninguno' || norm === 'ninguna'
+          || norm === 'no' || norm === 'no aplica'
+          || norm === '-' || norm === '--') {
+        return 'Ninguno';
+      }
+    }
+  }
   if (v == null || v === '') return '—';
   if (v === 'N/A') return 'No aplica';
   if (v === true) return 'Correcto';
@@ -15114,25 +15123,35 @@ function informeFmtVal(v, type) {
 // (mediciones numéricas) vs (booleanos/textos). Las mediciones van
 // a tabla, el resto a prosa.
 function informeSplitItems(sec, tcData) {
-  var measures = []; // {label, value, unit}
-  var states = [];   // {label, value, type}
-  var notes = [];    // textos largos / textareas con valor
+  var measures = []; // {label, value, unit, key}
+  var states = [];   // {label, value, type, key}
+  var notes = [];    // {label, value, key}
   (sec.items || []).forEach(function(it) {
     var val = tcData[it.key];
     if (val == null || val === '') return;
+    // Si el técnico marcó que NO se usó aceite, no incluir esa pregunta
+    // en el informe entregado al cliente: es información operativa
+    // interna, no un hallazgo del servicio.
+    if (it.key === 'oil_used' && val === false) return;
     if (it.type === 'number') {
-      measures.push({label: it.label, value: val, unit: it.unit || ''});
+      measures.push({label: it.label, value: val, unit: it.unit || '', key: it.key});
     } else if (it.type === 'textarea' && String(val).length > 30) {
-      notes.push({label: it.label, value: val});
+      notes.push({label: it.label, value: val, key: it.key});
     } else {
-      states.push({label: it.label, value: val, type: it.type});
+      states.push({label: it.label, value: val, type: it.type, key: it.key});
     }
   });
   return {measures: measures, states: states, notes: notes};
 }
 
-// Decide si el valor de un item es "negativo" (requiere atención)
+// Decide si el valor de un item es "negativo" (requiere atención).
+// Excluye preguntas administrativas que no son hallazgos del servicio:
+// - oil_used: si dice no, es info interna, no una falla
+// - gar_es_garantia: si la falla aplica/no aplica a garantía es una
+//   clasificación, no un hallazgo
 function informeIsConcern(it, val) {
+  if (it.key === 'oil_used') return false;
+  if (it.key === 'gar_es_garantia') return false;
   if (it.type === 'bool' && val === false) return true;
   if (it.type === 'select') {
     var s = String(val).toLowerCase();
@@ -15302,7 +15321,7 @@ async function generateInformePdf(woId) {
         if (split.states.length) {
           if (y > pageH - 30) { doc.addPage(); y = 18; }
           var stateBody = split.states.map(function(s){
-            return [s.label, informeFmtVal(s.value, s.type)];
+            return [s.label, informeFmtVal(s.value, s.type, s.key)];
           });
           doc.autoTable({
             startY: y,
@@ -15319,7 +15338,7 @@ async function generateInformePdf(woId) {
               // Resaltar valores que sugieren atención
               if (data.section === 'body' && data.column.index === 1) {
                 var raw = split.states[data.row.index];
-                if (raw && informeIsConcern({type: raw.type}, raw.value)) {
+                if (raw && informeIsConcern({type: raw.type, key: raw.key}, raw.value)) {
                   data.cell.styles.textColor = [180, 30, 30];
                   data.cell.styles.fontStyle = 'bold';
                 }
@@ -15730,8 +15749,8 @@ async function openInformePreview(woId) {
           html += '<div style="display:flex;justify-content:space-between;padding:2px 0;font-size:11px"><span>' + escapeHtml(m.label) + '</span><b>' + escapeHtml(String(m.value) + (m.unit ? ' ' + m.unit : '')) + '</b></div>';
         });
         split.states.forEach(function(st){
-          var fmt = informeFmtVal(st.value, st.type);
-          var concern = informeIsConcern({type: st.type}, st.value);
+          var fmt = informeFmtVal(st.value, st.type, st.key);
+          var concern = informeIsConcern({type: st.type, key: st.key}, st.value);
           var color = concern ? '#b00' : (st.value === true ? '#2a7a2a' : '#333');
           html += '<div style="display:flex;justify-content:space-between;padding:2px 0;font-size:11px"><span>' + escapeHtml(st.label) + '</span><b style="color:' + color + '">' + escapeHtml(fmt) + '</b></div>';
         });
