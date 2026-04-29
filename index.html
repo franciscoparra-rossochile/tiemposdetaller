@@ -1376,6 +1376,119 @@ function workableSecInRange(from, to) {
   return Math.round(workableMsInRange(from, to) / 1000);
 }
 
+// ─────────────────────────────────────────────────────────────────
+// BUG-FIX 9704d65b (abr 2026): prorrateo de actividad por rango.
+// ─────────────────────────────────────────────────────────────────
+// Cuando un servicio cruza días (ej: empezó ayer 16:00, finalizó hoy 08:05),
+// atribuir TODO su tiempo al día de finalización distorsiona los reportes.
+// Este helper recorta el productivo y el pausa de una fila al rango pedido,
+// además de respetar el horario laboral (los huecos nocturnos no cuentan).
+//
+// Devuelve { productiveSec, pauseSec, hadActivity }:
+//   - productiveSec: segundos productivos efectivos dentro del rango.
+//   - pauseSec: segundos en pausa efectivos dentro del rango.
+//   - hadActivity: true si el servicio tuvo actividad efectiva (productiva o
+//     pausa) dentro del rango. Sirve para decidir si esta patente cuenta como
+//     "atendida" en el periodo.
+//
+// Inputs:
+//   row:    objeto fila del reporte (history o active normalizado).
+//           Espera: started_at (preferido), ended_at, seconds, pauses[].
+//   from:   Date inicio rango (inclusive).
+//   to:     Date fin rango (inclusive).
+//
+// Estrategia:
+//   1) Resolver started_at: si la fila lo trae explícito, usarlo. Si no, se
+//      infiere como ended_at - seconds (aproximación legacy aceptada).
+//   2) Acotar [start, end] al rango [from, to] e intersectar con jornada
+//      laboral usando workableMsInRange. Eso da el "tramo laboral total"
+//      del servicio dentro del rango.
+//   3) Productivo proporcional = seconds × (tramoLaboralEnRango / tramoLaboralTotal).
+//      Si tramoLaboralTotal == 0 (servicio enteramente fuera de horario),
+//      cae el fallback: si el servicio quedó completamente dentro del rango
+//      crudo, atribuir entero; si no, 0.
+//   4) Pausas: cada pausa con paused_at + resumed_at se intersecta directo
+//      contra el rango y la jornada (effectivePauseSecBetween ya hace eso si
+//      le pasamos los timestamps acotados al rango).
+function proRateRowInRange(row, from, to) {
+  var fromMs = from instanceof Date ? from.getTime() : new Date(from).getTime();
+  var toMs   = to   instanceof Date ? to.getTime()   : new Date(to).getTime();
+  if (!isFinite(fromMs) || !isFinite(toMs) || toMs <= fromMs) {
+    return {productiveSec: 0, pauseSec: 0, hadActivity: false};
+  }
+
+  // 1) Resolver started_at y ended_at de la fila.
+  var rowEndedMs = row.ended_at ? new Date(row.ended_at).getTime() : null;
+  var rowStartedMs = null;
+  if (row.started_at) {
+    rowStartedMs = new Date(row.started_at).getTime();
+  } else if (rowEndedMs && typeof row.seconds === 'number') {
+    // Aproximación legacy: ended_at - seconds. Ignora pausas y noches,
+    // pero es lo mejor disponible para filas viejas sin started_at.
+    rowStartedMs = rowEndedMs - (row.seconds * 1000);
+  }
+  if (!rowEndedMs || !rowStartedMs || rowStartedMs >= rowEndedMs) {
+    return {productiveSec: 0, pauseSec: 0, hadActivity: false};
+  }
+
+  // 2) Tramo laboral total del servicio (denominador del prorrateo).
+  var totalWorkMs = workableMsInRange(new Date(rowStartedMs), new Date(rowEndedMs));
+
+  // 3) Tramo laboral del servicio que cae DENTRO del rango pedido.
+  var clipStartMs = Math.max(rowStartedMs, fromMs);
+  var clipEndMs   = Math.min(rowEndedMs, toMs);
+  if (clipEndMs <= clipStartMs) {
+    return {productiveSec: 0, pauseSec: 0, hadActivity: false};
+  }
+  var clippedWorkMs = workableMsInRange(new Date(clipStartMs), new Date(clipEndMs));
+
+  // 4) Productivo prorrateado.
+  var productiveSec = 0;
+  var totalSeconds = (typeof row.seconds === 'number' && row.seconds > 0) ? row.seconds : 0;
+  if (totalWorkMs > 0 && totalSeconds > 0) {
+    productiveSec = Math.round(totalSeconds * (clippedWorkMs / totalWorkMs));
+  } else if (totalSeconds > 0 && rowStartedMs >= fromMs && rowEndedMs <= toMs) {
+    // Fallback: servicio enteramente fuera de horario laboral pero dentro
+    // del rango (raro pero posible: registros legacy con timestamps raros).
+    productiveSec = totalSeconds;
+  }
+
+  // 5) Pausas prorrateadas. Cada pausa se intersecta directo con el rango
+  //    y la jornada vía effectivePauseSecBetween (que ya filtra horario).
+  var pauseSec = 0;
+  if (row.pauses && row.pauses.length) {
+    for (var i = 0; i < row.pauses.length; i++) {
+      var p = row.pauses[i];
+      var pStart = null, pEnd = null;
+      if (p.paused_at && p.resumed_at) {
+        pStart = new Date(p.paused_at).getTime();
+        pEnd = new Date(p.resumed_at).getTime();
+      } else if (p.paused_at && !p.resumed_at && rowEndedMs && !row._is_active) {
+        pStart = new Date(p.paused_at).getTime();
+        pEnd = rowEndedMs;
+      } else if (p.paused_at && !p.resumed_at && row._is_active && row._status === 'paused') {
+        pStart = new Date(p.paused_at).getTime();
+        pEnd = Date.now();
+      }
+      if (pStart && pEnd && pEnd > pStart) {
+        var pClipStart = Math.max(pStart, fromMs);
+        var pClipEnd = Math.min(pEnd, toMs);
+        if (pClipEnd > pClipStart) {
+          pauseSec += effectivePauseSecBetween(new Date(pClipStart), new Date(pClipEnd));
+        }
+      }
+      // Pausa legacy sin timestamps utilizables: no se puede prorratear con
+      // precisión. Se omite del cálculo del rango (mejor 0 que contaminar).
+    }
+  }
+
+  return {
+    productiveSec: productiveSec,
+    pauseSec: pauseSec,
+    hadActivity: productiveSec > 0 || pauseSec > 0 || clippedWorkMs > 0
+  };
+}
+
 // validateKPIs(kpis, ctx) — valida invariantes del cálculo de tiempo
 // (bug 9704d65b). Retorna un objeto con:
 //   - valid: true/false
@@ -1402,7 +1515,20 @@ function validateKPIs(kpis, ctx) {
     ? ctx.technicianCount : 1;
   var capacitySec = 0;
   if (ctx.from && ctx.to) {
-    capacitySec = workableSecInRange(ctx.from, ctx.to) * techCount;
+    // BUG-FIX 9704d65b (abr 2026): capar el rango al "ahora" si incluye el
+    // futuro. Antes "Hoy" calculaba capacidad sobre 24h completas (00:00 a
+    // 23:59), así que a las 8:14 AM mostraba 63h de capacidad cuando en
+    // realidad solo se han vivido ~14 minutos de jornada. Ahora la capacidad
+    // refleja "lo que efectivamente pudo trabajarse hasta este momento".
+    var fromMs = new Date(ctx.from).getTime();
+    var toMs = new Date(ctx.to).getTime();
+    var nowMs = Date.now();
+    var effectiveTo = new Date(Math.min(toMs, nowMs));
+    if (effectiveTo.getTime() > fromMs) {
+      capacitySec = workableSecInRange(ctx.from, effectiveTo) * techCount;
+    } else {
+      capacitySec = 0;
+    }
   }
   var productive = kpis.productiveSec || 0;
   var pause = kpis.pauseSec || 0;
@@ -4829,6 +4955,13 @@ async function doFinish(checklist, sessionKey) {
       goal_minutes: finGoal || null,
       pauses: finPauses, checklist: checklist,
       work_order_id: woId || null,
+      // BUG-FIX 9704d65b (abr 2026): persistir started_at para poder prorratear
+      // correctamente la actividad cuando un servicio cruza días (ej: empezó
+      // ayer 16:00, finalizó hoy 08:05). Sin este timestamp, el reporte
+      // atribuye TODO el tiempo al día de finalización, distorsionando el
+      // KPI "Hoy". Si la columna no existe en Supabase, el fallback de abajo
+      // reintenta sin ella (datos viejos siguen funcionando aproximados).
+      started_at: (sess && sess.started_at) || null,
       ended_at: new Date().toISOString()
     };
     logR('FINISH_HISTORY_PAYLOAD', histPayload);
@@ -4836,14 +4969,33 @@ async function doFinish(checklist, sessionKey) {
     var {error: hErr} = await sb.from('history').insert(histPayload);
     logR('FINISH_HISTORY_RESULT', {error: hErr ? hErr.message : null});
     if (hErr) {
-      // Si falla porque la columna work_order_id no existe aún en Supabase, reintentar sin ella
-      if (hErr.message && hErr.message.toLowerCase().indexOf('work_order_id') !== -1) {
-        logR('HIST_NO_WOID_COL', {msg: hErr.message}, 'warn');
-        delete histPayload.work_order_id;
+      // BUG-FIX (abr 2026): fallback genérico para columnas que aún no
+      // existen en el schema cache. Antes solo cubría work_order_id; ahora
+      // también started_at. Si en el futuro se agregan más columnas, esta
+      // lista crece sin necesidad de tocar la lógica.
+      var msgLower = (hErr.message || '').toLowerCase();
+      var optionalCols = ['work_order_id', 'started_at'];
+      var missingCol = optionalCols.find(function(c){ return msgLower.indexOf(c) !== -1; });
+      if (missingCol) {
+        logR('HIST_MISSING_COL', {col: missingCol, msg: hErr.message}, 'warn');
+        delete histPayload[missingCol];
         var {error: hErr2} = await sb.from('history').insert(histPayload);
         if (hErr2) {
-          showGlobalError('Error al guardar historial: ' + hErr2.message + '\n\nReintenta tocando Finalizar de nuevo.', 5000);
-          return false;
+          // Reintentar una vez más por si faltaba otra columna
+          var msgLower2 = (hErr2.message || '').toLowerCase();
+          var missingCol2 = optionalCols.find(function(c){ return c !== missingCol && msgLower2.indexOf(c) !== -1; });
+          if (missingCol2) {
+            logR('HIST_MISSING_COL_2', {col: missingCol2, msg: hErr2.message}, 'warn');
+            delete histPayload[missingCol2];
+            var {error: hErr3} = await sb.from('history').insert(histPayload);
+            if (hErr3) {
+              showGlobalError('Error al guardar historial: ' + hErr3.message + '\n\nReintenta tocando Finalizar de nuevo.', 5000);
+              return false;
+            }
+          } else {
+            showGlobalError('Error al guardar historial: ' + hErr2.message + '\n\nReintenta tocando Finalizar de nuevo.', 5000);
+            return false;
+          }
         }
       } else {
         showGlobalError('Error al guardar historial: ' + hErr.message + '\n\nReintenta tocando Finalizar de nuevo.', 5000);
@@ -5369,7 +5521,10 @@ async function renderTechMiDia(body) {
   // KPIs del dia
   var grid = mk('div','');
   grid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:10px';
-  grid.appendChild(kpiBox('Finalizados', kpis.total, '#111'));
+  // BUG-FIX 446b7b6d: el label dice "Finalizados" así que el dato debe ser
+  // finalizados, no total. Antes mostraba kpis.total (que incluía activos),
+  // que era incorrecto en su propio label.
+  grid.appendChild(kpiBox('Finalizados', kpis.finalizados, '#111'));
   grid.appendChild(kpiBox('En objetivo', kpis.withGoal > 0 ? kpis.pctOnTime + '%' : '-', kpis.pctOnTime >= 70 ? 'var(--green)' : 'var(--red)'));
   grid.appendChild(kpiBox('Productivo', fmtHM(kpis.productiveSec), 'var(--blue)'));
   grid.appendChild(kpiBox('En pausa', fmtHM(kpis.pauseSec), 'var(--gold3)'));
@@ -5880,6 +6035,10 @@ async function adminForceFinish(sessionKey, techName, serviceLabel, plate) {
     pauses: pauses,
     checklist: { forced_finish: true, forced_by: CU.name, forced_at: new Date().toISOString() },
     work_order_id: (sess && sess.work_order_id) || null,
+    // BUG-FIX 9704d65b (abr 2026): persistir started_at para prorrateo correcto
+    // del reporte cuando el servicio cruza días. Ver comentario equivalente en
+    // doFinish.
+    started_at: sess.started_at || null,
     ended_at: new Date().toISOString()
     // odometer_photo_start: sess.odometer_photo_start || null,  // columna no existe en history
     // odometer_photo_end: null,                                  // columna no existe en history
@@ -5887,11 +6046,43 @@ async function adminForceFinish(sessionKey, techName, serviceLabel, plate) {
     // km_end: null                                                // columna no existe en history
   };
 
+  // BUG-FIX 27892d89 + 9704d65b (abr 2026): fallback para columnas que aún no
+  // existen en el schema cache de Supabase. Cubre work_order_id y started_at.
+  // Si en el futuro se agregan más columnas opcionales, agregarlas a la lista.
+  // El cierre forzado se completa siempre (es lo crítico para destrabar).
   var {error: hErr} = await sb.from('history').insert(histPayload);
   if (hErr) {
-    logR('ADMIN_FINISH_HIST_ERR', {err: hErr.message, payload_keys: Object.keys(histPayload)}, 'err');
-    showGlobalError('Error al guardar historial: ' + hErr.message + '\n\nLa sesión NO fue borrada — puedes reintentar.', 6000);
-    return;
+    var msgLower = (hErr.message || '').toLowerCase();
+    var optionalCols = ['work_order_id', 'started_at'];
+    var missingCol = optionalCols.find(function(c){ return msgLower.indexOf(c) !== -1; });
+    if (missingCol) {
+      logR('ADMIN_FINISH_HIST_MISSING_COL', {col: missingCol, msg: hErr.message}, 'warn');
+      delete histPayload[missingCol];
+      var {error: hErr2} = await sb.from('history').insert(histPayload);
+      if (hErr2) {
+        // Reintentar una vez más por si faltaba otra columna también
+        var msgLower2 = (hErr2.message || '').toLowerCase();
+        var missingCol2 = optionalCols.find(function(c){ return c !== missingCol && msgLower2.indexOf(c) !== -1; });
+        if (missingCol2) {
+          logR('ADMIN_FINISH_HIST_MISSING_COL_2', {col: missingCol2, msg: hErr2.message}, 'warn');
+          delete histPayload[missingCol2];
+          var {error: hErr3} = await sb.from('history').insert(histPayload);
+          if (hErr3) {
+            logR('ADMIN_FINISH_HIST_ERR', {err: hErr3.message, payload_keys: Object.keys(histPayload)}, 'err');
+            showGlobalError('Error al guardar historial: ' + hErr3.message + '\n\nLa sesión NO fue borrada — puedes reintentar.', 6000);
+            return;
+          }
+        } else {
+          logR('ADMIN_FINISH_HIST_ERR', {err: hErr2.message, payload_keys: Object.keys(histPayload)}, 'err');
+          showGlobalError('Error al guardar historial: ' + hErr2.message + '\n\nLa sesión NO fue borrada — puedes reintentar.', 6000);
+          return;
+        }
+      }
+    } else {
+      logR('ADMIN_FINISH_HIST_ERR', {err: hErr.message, payload_keys: Object.keys(histPayload)}, 'err');
+      showGlobalError('Error al guardar historial: ' + hErr.message + '\n\nLa sesión NO fue borrada — puedes reintentar.', 6000);
+      return;
+    }
   }
 
   var {error: dErr} = await sb.from('active_sessions').delete().eq('session_key', sessionKey);
@@ -7219,18 +7410,30 @@ async function renderBossReportes(body) {
   // ──────────────────────────────────────────────
   var b2 = repRangeBounds();
 
-  // Query 1: history (servicios finalizados)
+  // BUG-FIX 9704d65b (abr 2026): para que servicios que CRUZAN el rango se
+  // contabilicen correctamente (ej: empezó ayer 16:00, finalizó hoy 08:05
+  // debe aparecer prorrateado en el reporte de "ayer" Y en el de "hoy"),
+  // ampliamos la ventana de búsqueda 24h hacia atrás. El prorrateo en
+  // computeKPIs/proRateRowInRange luego filtra: si la fila no tuvo
+  // actividad efectiva en el rango pedido, no contribuye con segundos
+  // ni con su patente. Esto cubre tanto servicios con started_at real
+  // como servicios viejos sin started_at (donde se infiere ended_at-seconds).
+  var queryFrom = new Date(b2.from.getTime() - 24 * 3600 * 1000);
+
+  // Query 1: history (servicios finalizados que terminaron en la ventana
+  // ampliada). El prorrateo decidirá cuánto cae en el rango real.
   var qHist = sb.from('history').select('*')
-    .gte('ended_at', b2.from.toISOString())
+    .gte('ended_at', queryFrom.toISOString())
     .lte('ended_at', b2.to.toISOString())
     .order('ended_at', {ascending: false});
   if (REP.technicianId) qHist = qHist.eq('technician', REP.technicianId);
   if (REP.service) qHist = qHist.eq('service', REP.service);
 
-  // Query 2: active_sessions (servicios que NO han finalizado)
-  // Filtramos por started_at en lugar de ended_at porque no tienen ended_at.
+  // Query 2: active_sessions (sesiones que aún no finalizaron). Una sesión
+  // que empezó ayer y sigue corriendo HOY también debe aparecer en el
+  // reporte de hoy. Buscamos las que comenzaron en cualquier momento
+  // anterior al fin del rango (luego prorrateamos contra el rango real).
   var qActive = sb.from('active_sessions').select('*')
-    .gte('started_at', b2.from.toISOString())
     .lte('started_at', b2.to.toISOString())
     .order('started_at', {ascending: false});
   if (REP.technicianId) qActive = qActive.eq('technician', REP.technicianId);
@@ -7242,6 +7445,11 @@ async function renderBossReportes(body) {
 
   // Normalizar servicios activos al mismo formato que history.
   // Duracion = tiempo real trabajado (started_at hasta ahora, menos pausas).
+  // BUG-FIX 9704d65b: agregamos started_at y ended_at explícitos para que
+  // el prorrateo funcione (proRateRowInRange necesita ambos timestamps).
+  // Antes el campo ended_at se usaba "trampa" como started_at para ordenar
+  // — eso lo hicimos legítimo agregando _sort_key separado.
+  var nowIsoForActive = new Date().toISOString();
   var normalizedActive = activeRows.map(function(s) {
     var sec = liveSecondsNow(s);
     return {
@@ -7255,7 +7463,9 @@ async function renderBossReportes(body) {
       goal_minutes: s.goal_minutes,
       pauses: s.pauses || [],
       checklist: null,                          // no tiene porque no finalizo
-      ended_at: s.started_at,                   // usamos started_at para ordenamiento
+      started_at: s.started_at,                 // timestamp real de inicio
+      ended_at: nowIsoForActive,                // sesión activa: "ahora" como fin lógico
+      _sort_key: s.started_at,                  // para ordenamiento UI (lo más reciente arriba)
       _is_active: true,                         // bandera para distinguir en la UI
       _status: s.status,                         // running | paused | checklist_pending
       _session_key: s.session_key,
@@ -7264,9 +7474,13 @@ async function renderBossReportes(body) {
     };
   });
 
-  // Combinar y ordenar por fecha descendente
+  // Combinar y ordenar por fecha descendente. Para filas de history se usa
+  // ended_at (real); para activos usamos _sort_key (= started_at) para que
+  // aparezcan en orden cronológico de inicio, no del falso "ended_at = now".
   var rows = historyRows.concat(normalizedActive).sort(function(a, b) {
-    return new Date(b.ended_at).getTime() - new Date(a.ended_at).getTime();
+    var ka = a._sort_key || a.ended_at;
+    var kb = b._sort_key || b.ended_at;
+    return new Date(kb).getTime() - new Date(ka).getTime();
   });
 
   REP.data = rows;
@@ -7291,6 +7505,8 @@ async function renderBossReportes(body) {
   kpiCard.innerHTML = '<div class="lbl" style="margin-left:4px">Indicadores · ' + repRangeLabel() + '</div>';
   var grid = mk('div','');
   grid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:6px';
+  // BUG-FIX 446b7b6d: "Servicios" cuenta vehículos únicos (1 patente = 1 servicio),
+  // no registros de tiempo. kpis.total ahora es patentes únicas por construcción.
   grid.appendChild(kpiBox('Servicios', kpis.total, '#111'));
   grid.appendChild(kpiBox('En objetivo', kpis.pctOnTime + '%', kpis.pctOnTime >= 70 ? 'var(--green)' : 'var(--red)'));
   grid.appendChild(kpiBox('Tiempo productivo', fmtHM(kpis.productiveSec), 'var(--blue)'));
@@ -7391,7 +7607,7 @@ async function renderBossReportes(body) {
         + '<div style="text-align:right;flex-shrink:0">'
         + '<div style="font-size:16px;font-weight:700;font-family:var(--mono);color:' + (over?'var(--red)':(r._is_active?'var(--wh4)':'var(--green)')) + '">' + r.duration + '</div>'
         + (r.goal_minutes ? '<div style="font-size:9px;color:#aaa;text-transform:uppercase">OBJ:' + r.goal_minutes + 'm</div>' : '')
-        + '<div style="font-size:10px;color:#aaa">' + (r._is_active ? 'Iniciado ' + fmtD(r.ended_at) : fmtD(r.ended_at)) + '</div>'
+        + '<div style="font-size:10px;color:#aaa">' + (r._is_active ? 'Iniciado ' + fmtD(r.started_at || r.ended_at) : fmtD(r.ended_at)) + '</div>'
         + '</div>';
       listCard.appendChild(row);
     });
@@ -7443,9 +7659,35 @@ function computeKPIs(rows, periodCtx) {
   var activosRunning = 0;
   var activosPaused = 0;
   var pauseReasons = {};
+  // BUG-FIX 446b7b6d (abr 2026): "Servicios" debe contar VEHÍCULOS únicos
+  // (patentes únicas), no registros de tiempo. Antes una OT con varias
+  // sesiones (ej: pausa larga + reanudación, o relevo entre técnicos)
+  // inflaba el conteo. La regla de negocio: 1 patente = 1 servicio.
+  // `total` se preserva como `totalRegistros` para uso interno y
+  // distribuciones (carga por técnico, popularidad de tipo de servicio).
+  var uniquePlatesSet = {};
+  var uniquePlatesNoData = 0; // filas sin patente (logística de taller, etc.)
+
+  // BUG-FIX 9704d65b (abr 2026): si hay periodCtx con rango, prorratear cada
+  // fila al rango y al horario laboral. Esto resuelve el caso "servicio que
+  // cruza días": empezó ayer 16:00, finalizó hoy 08:05 → al reporte de hoy
+  // solo le tocan los 5 minutos de hoy, no las 6h totales.
+  // Cuando NO hay periodCtx (ej: Mi Día técnico), se mantiene el cálculo
+  // clásico por compatibilidad: ahí cada fila ya pertenece "naturalmente"
+  // al día consultado porque se filtra por ended_at.
+  var hasRange = !!(periodCtx && periodCtx.from && periodCtx.to);
+  var rangeFromMs = hasRange ? new Date(periodCtx.from).getTime() : null;
+  var rangeToMs = hasRange ? new Date(periodCtx.to).getTime() : null;
+  // Cap del rango al "ahora" si el rango incluye el futuro (ej: "Hoy" suele
+  // ser 00:00 → 23:59, pero a las 8:14 AM no hemos vivido las próximas 16h).
+  var nowMs = Date.now();
+  var rangeToCappedMs = hasRange ? Math.min(rangeToMs, nowMs) : null;
+
   rows.forEach(function(r) {
-    var sec = r.seconds || 0;
-    productive += sec;
+    // Patente: la registramos provisionalmente; abajo (con prorrateo) puede
+    // descartarse si no hubo actividad efectiva en el rango.
+    var pNorm = r.plate ? (typeof normalizePlate === 'function' ? normalizePlate(r.plate) : String(r.plate).toUpperCase()) : '';
+
     // Clasificar servicio por estado
     if (r._is_active) {
       activosPausados += 1;
@@ -7454,54 +7696,94 @@ function computeKPIs(rows, periodCtx) {
     } else {
       finalizados += 1;
     }
-    if (r.pauses && r.pauses.length) {
-      r.pauses.forEach(function(p) {
-        // FIX BUG a4def683: el cálculo de tiempo en pausa estaba inflado
-        // (110h en una jornada de 72h posibles) por dos causas:
-        //   1) Pausas legacy (pre-FASE 3.2) tenían `duration_ms` en tiempo
-        //      CRUDO, incluyendo noches y fines de semana.
-        //   2) `computeKPIs` confiaba ciegamente en `duration_ms` sin
-        //      verificar si fue marcado como efectivo (`_eff: true`).
-        //
-        // Estrategia:
-        //   - Si tenemos paused_at + resumed_at: SIEMPRE recalcular efectivo,
-        //     ignorando `duration_ms` (puede estar contaminado).
-        //   - Si solo hay `duration_ms` sin timestamps: usar como fallback,
-        //     pero capear a 9h (una jornada laboral) para neutralizar legacy.
-        //   - Pausas abiertas: recalcular contra ended_at o Date.now() laboral.
-        var ps = 0;
-        var MAX_PAUSE_PER_ENTRY_S = 9 * 3600; // tope: una jornada laboral
 
-        if (p.paused_at && p.resumed_at) {
-          // Caso normal: tenemos timestamps, calculamos efectivo.
-          // Esto sobreescribe duration_ms legacy contaminado.
-          ps = effectivePauseSecBetween(p.paused_at, p.resumed_at);
-        } else if (p.paused_at && !p.resumed_at && r.ended_at && !r._is_active) {
-          // Pausa sin reanudar en servicio finalizado: paused_at → ended_at.
-          ps = effectivePauseSecBetween(p.paused_at, r.ended_at);
-        } else if (p.paused_at && !p.resumed_at && r._is_active && r._status === 'paused') {
-          // Pausa actualmente activa: paused_at → ahora.
-          ps = effectivePauseSecBetween(p.paused_at, Date.now());
-        } else if (typeof p.duration_ms === 'number' && p.duration_ms > 0) {
-          // Fallback legacy: sin timestamps utilizables.
-          ps = Math.round(p.duration_ms / 1000);
-          if (ps > MAX_PAUSE_PER_ENTRY_S) ps = MAX_PAUSE_PER_ENTRY_S;
-        } else if (typeof p.seconds === 'number') {
-          ps = p.seconds;
-          if (ps > MAX_PAUSE_PER_ENTRY_S) ps = MAX_PAUSE_PER_ENTRY_S;
-        } else if (typeof p.duration_seconds === 'number') {
-          ps = p.duration_seconds;
-          if (ps > MAX_PAUSE_PER_ENTRY_S) ps = MAX_PAUSE_PER_ENTRY_S;
+    if (hasRange) {
+      // ── PRORRATEO ─────────────────────────────────────────────────
+      var pr = proRateRowInRange(r, new Date(rangeFromMs), new Date(rangeToCappedMs));
+      productive += pr.productiveSec;
+      pause += pr.pauseSec;
+      // Solo contar la patente si tuvo actividad efectiva en el rango
+      if (pr.hadActivity) {
+        if (pNorm) uniquePlatesSet[pNorm] = true;
+        else uniquePlatesNoData += 1;
+      }
+      // Acumular pauseReasons solo con tiempo prorrateado por motivo.
+      // Para mantener proporciones, repartir pr.pauseSec entre las pausas
+      // del row según su peso natural en horario laboral.
+      if (pr.pauseSec > 0 && r.pauses && r.pauses.length) {
+        // Calcular peso de cada pausa en el rango para repartir el total.
+        var weights = [];
+        var weightSum = 0;
+        r.pauses.forEach(function(p) {
+          var pStart = null, pEnd = null;
+          if (p.paused_at && p.resumed_at) {
+            pStart = new Date(p.paused_at).getTime();
+            pEnd = new Date(p.resumed_at).getTime();
+          } else if (p.paused_at && !p.resumed_at && r.ended_at && !r._is_active) {
+            pStart = new Date(p.paused_at).getTime();
+            pEnd = new Date(r.ended_at).getTime();
+          } else if (p.paused_at && !p.resumed_at && r._is_active && r._status === 'paused') {
+            pStart = new Date(p.paused_at).getTime();
+            pEnd = nowMs;
+          }
+          var w = 0;
+          if (pStart && pEnd && pEnd > pStart) {
+            var cs = Math.max(pStart, rangeFromMs);
+            var ce = Math.min(pEnd, rangeToCappedMs);
+            if (ce > cs) w = effectivePauseSecBetween(new Date(cs), new Date(ce));
+          }
+          weights.push(w);
+          weightSum += w;
+        });
+        if (weightSum > 0) {
+          r.pauses.forEach(function(p, idx) {
+            var key = p.reason || 'Sin motivo';
+            if (!pauseReasons[key]) pauseReasons[key] = {count:0, seconds:0};
+            pauseReasons[key].count += 1;
+            pauseReasons[key].seconds += weights[idx];
+          });
         }
-
-        if (ps < 0) ps = 0;
-        pause += ps;
-        var key = p.reason || 'Sin motivo';
-        if (!pauseReasons[key]) pauseReasons[key] = {count:0, seconds:0};
-        pauseReasons[key].count += 1;
-        pauseReasons[key].seconds += ps;
-      });
+      }
+    } else {
+      // ── MODO LEGACY (sin rango): cálculo crudo, retrocompatible ──
+      var sec = r.seconds || 0;
+      productive += sec;
+      if (pNorm) uniquePlatesSet[pNorm] = true;
+      else uniquePlatesNoData += 1;
+      if (r.pauses && r.pauses.length) {
+        r.pauses.forEach(function(p) {
+          // FIX BUG a4def683: el cálculo de tiempo en pausa estaba inflado
+          // por pausas legacy con duration_ms crudo (incluía noches/finde).
+          // Estrategia: si hay timestamps, recalcular efectivo; si solo hay
+          // duration_ms, capear a 9h.
+          var ps = 0;
+          var MAX_PAUSE_PER_ENTRY_S = 9 * 3600;
+          if (p.paused_at && p.resumed_at) {
+            ps = effectivePauseSecBetween(p.paused_at, p.resumed_at);
+          } else if (p.paused_at && !p.resumed_at && r.ended_at && !r._is_active) {
+            ps = effectivePauseSecBetween(p.paused_at, r.ended_at);
+          } else if (p.paused_at && !p.resumed_at && r._is_active && r._status === 'paused') {
+            ps = effectivePauseSecBetween(p.paused_at, Date.now());
+          } else if (typeof p.duration_ms === 'number' && p.duration_ms > 0) {
+            ps = Math.round(p.duration_ms / 1000);
+            if (ps > MAX_PAUSE_PER_ENTRY_S) ps = MAX_PAUSE_PER_ENTRY_S;
+          } else if (typeof p.seconds === 'number') {
+            ps = p.seconds;
+            if (ps > MAX_PAUSE_PER_ENTRY_S) ps = MAX_PAUSE_PER_ENTRY_S;
+          } else if (typeof p.duration_seconds === 'number') {
+            ps = p.duration_seconds;
+            if (ps > MAX_PAUSE_PER_ENTRY_S) ps = MAX_PAUSE_PER_ENTRY_S;
+          }
+          if (ps < 0) ps = 0;
+          pause += ps;
+          var key = p.reason || 'Sin motivo';
+          if (!pauseReasons[key]) pauseReasons[key] = {count:0, seconds:0};
+          pauseReasons[key].count += 1;
+          pauseReasons[key].seconds += ps;
+        });
+      }
     }
+
     if (r.goal_minutes) {
       withGoal += 1;
       // Solo considerar "en objetivo" los servicios finalizados
@@ -7510,8 +7792,16 @@ function computeKPIs(rows, periodCtx) {
     }
   });
   var pctOnTime = withGoal > 0 ? Math.round((onTime / withGoal) * 100) : 0;
+  // BUG-FIX 446b7b6d: contar vehículos únicos como métrica principal.
+  // - uniquePlates: patentes distintas que tuvieron actividad en el periodo.
+  // - totalRegistros: alias semántico para rows.length (filas de tiempo).
+  // - total: alias de uniquePlates para call-sites antiguos.
+  var uniquePlates = Object.keys(uniquePlatesSet).length + uniquePlatesNoData;
   var out = {
-    total: total, productiveSec: productive, pauseSec: pause,
+    total: uniquePlates,           // ahora = patentes únicas (servicios)
+    totalRegistros: total,          // filas de tiempo (uso interno / distribuciones)
+    uniquePlates: uniquePlates,     // mismo dato, nombre explícito
+    productiveSec: productive, pauseSec: pause,
     onTime: onTime, withGoal: withGoal, pctOnTime: pctOnTime,
     pauseReasons: pauseReasons,
     finalizados: finalizados,
@@ -14273,11 +14563,14 @@ function pdfRenderHeaderBlock(doc, title, subtitle, kpis) {
   var w = doc.internal.pageSize.getWidth();
   var boxW = (w - 28 - 6) / 4;
   var boxH = 22;
-  // KPI "Servicios" ahora muestra finalizados / total para dejar visible
-  // la diferencia entre lo terminado y lo que sigue abierto.
-  var srvLabel = kpis.activosPausados > 0
-    ? String(kpis.finalizados) + ' fin · ' + String(kpis.activosPausados) + ' pend'
-    : String(kpis.total);
+  // BUG-FIX 446b7b6d: "Servicios" cuenta vehículos únicos (1 patente = 1 servicio),
+  // no registros de tiempo. La distinción finalizado/pendiente ya no aplica
+  // a este KPI principal porque mezclaba conteos heterogéneos (patentes vs
+  // sesiones). Si hay actividad pendiente se indica con un sufijo informativo.
+  var srvLabel = String(kpis.total);
+  if (kpis.activosPausados > 0) {
+    srvLabel += ' · ' + kpis.activosPausados + ' sesion' + (kpis.activosPausados === 1 ? '' : 'es') + ' pend.';
+  }
   pdfKPIBox(doc, 14, y, boxW, boxH, 'Servicios', srvLabel, PDF_COLORS.black);
   pdfKPIBox(doc, 14 + boxW + 2, y, boxW, boxH, 'En objetivo', kpis.pctOnTime + '%', kpis.pctOnTime >= 70 ? PDF_COLORS.green : PDF_COLORS.red);
   pdfKPIBox(doc, 14 + (boxW + 2)*2, y, boxW, boxH, 'Productivo', fmtHM(kpis.productiveSec), [48, 80, 176]);
@@ -14442,10 +14735,12 @@ function generatePDFTecnico() {
     var w = doc.internal.pageSize.getWidth();
     var boxW = (w - 28 - 4) / 3;
     var boxH = 18;
-    // KPI "Servicios" distingue finalizados de pendientes
-    var tSrvLabel = tKpis.activosPausados > 0
-      ? String(tKpis.finalizados) + '/' + String(tKpis.total)
-      : String(tKpis.total);
+    // BUG-FIX 446b7b6d: "Servicios" cuenta vehículos únicos del técnico
+    // (1 patente atendida = 1 servicio), no registros de tiempo.
+    var tSrvLabel = String(tKpis.total);
+    if (tKpis.activosPausados > 0) {
+      tSrvLabel += ' · ' + tKpis.activosPausados + ' pend.';
+    }
     pdfKPIBox(doc, 14, y, boxW, boxH, 'Servicios', tSrvLabel, PDF_COLORS.black);
     pdfKPIBox(doc, 14 + boxW + 2, y, boxW, boxH, 'En objetivo', tKpis.pctOnTime + '%', tKpis.pctOnTime >= 70 ? PDF_COLORS.green : PDF_COLORS.red);
     pdfKPIBox(doc, 14 + (boxW+2)*2, y, boxW, boxH, 'Productivo', fmtHM(tKpis.productiveSec), [48, 80, 176]);
