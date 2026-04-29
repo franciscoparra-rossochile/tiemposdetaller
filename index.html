@@ -1443,14 +1443,28 @@ function proRateRowInRange(row, from, to) {
   var clippedWorkMs = workableMsInRange(new Date(clipStartMs), new Date(clipEndMs));
 
   // 4) Productivo prorrateado.
+  // BUG-FIX 9704d65b (abr 2026, hotfix post-deploy): el productivo NUNCA
+  // puede exceder el tramo laboral disponible en el rango. Antes el
+  // prorrateo proporcional inflaba porque `seconds` (lo que marcó el
+  // cronómetro) puede ser MAYOR que `totalWorkMs` (intersección con
+  // jornada): un cronómetro corre minuto a minuto incluso si esos minutos
+  // están fuera del horario laboral del backend. Eso producía atribuciones
+  // del tipo "12h productivas en una jornada de 39 minutos".
+  // Solución: cap duro a clippedWorkSec.
   var productiveSec = 0;
   var totalSeconds = (typeof row.seconds === 'number' && row.seconds > 0) ? row.seconds : 0;
+  var clippedWorkSec = Math.round(clippedWorkMs / 1000);
   if (totalWorkMs > 0 && totalSeconds > 0) {
     productiveSec = Math.round(totalSeconds * (clippedWorkMs / totalWorkMs));
+    // Cap: no se puede trabajar más segundos que los que la jornada permite
+    // en el rango recortado. Esta es la invariante dura: tramo laboral
+    // disponible es el techo absoluto de actividad atribuible.
+    if (productiveSec > clippedWorkSec) productiveSec = clippedWorkSec;
   } else if (totalSeconds > 0 && rowStartedMs >= fromMs && rowEndedMs <= toMs) {
     // Fallback: servicio enteramente fuera de horario laboral pero dentro
     // del rango (raro pero posible: registros legacy con timestamps raros).
-    productiveSec = totalSeconds;
+    // Aún así cap a clippedWorkSec por seguridad.
+    productiveSec = Math.min(totalSeconds, clippedWorkSec);
   }
 
   // 5) Pausas prorrateadas. Cada pausa se intersecta directo con el rango
@@ -1480,6 +1494,21 @@ function proRateRowInRange(row, from, to) {
       // Pausa legacy sin timestamps utilizables: no se puede prorratear con
       // precisión. Se omite del cálculo del rango (mejor 0 que contaminar).
     }
+  }
+
+  // BUG-FIX 9704d65b (abr 2026, hotfix post-deploy): cap conjunto.
+  // La suma de productivo + pausa de UN mismo servicio en UN rango no puede
+  // exceder el tramo laboral disponible en ese rango (clippedWorkSec).
+  // Si los excede (puede pasar por ruido en pausas legacy o solapamientos),
+  // los reparto proporcionalmente para preservar la proporción original.
+  // Esta es la invariante por fila; combinada con el cap individual de
+  // productivo, garantiza que la suma global de N filas no genere overflows
+  // físicamente imposibles ("18.5h trabajadas en 39 minutos").
+  var combined = productiveSec + pauseSec;
+  if (combined > clippedWorkSec && combined > 0) {
+    var ratio = clippedWorkSec / combined;
+    productiveSec = Math.round(productiveSec * ratio);
+    pauseSec = Math.round(pauseSec * ratio);
   }
 
   return {
@@ -7321,7 +7350,12 @@ async function renderBossReportes(body) {
   body.innerHTML = '<div class="empty"><span class="spin"></span>Cargando...</div>';
 
   // Cargar listado de tecnicos para el filtro
-  var {data: techs} = await sb.from('users').select('id,name,role').in('role',['tech','jefatura','admin']).order('name');
+  // BUG-FIX 9704d65b (abr 2026): traer también `can_tech` para identificar
+  // usuarios que operan como técnicos aunque su role principal sea jefatura
+  // o admin (ej: Benjamín Cifuentes es jefatura pero cronometra). Antes el
+  // conteo de capacidad solo consideraba role='tech', subreportando 1-2
+  // técnicos y haciendo que la capacidad pareciera siempre excedida.
+  var {data: techs} = await sb.from('users').select('id,name,role,can_tech').in('role',['tech','jefatura','admin']).order('name');
   techs = techs || [];
 
   body.innerHTML = '';
@@ -7491,10 +7525,14 @@ async function renderBossReportes(body) {
   // Bug 9704d65b — pasar contexto del periodo para calcular capacidad,
   // brecha (tiempo no registrado) y validar invariantes.
   // technicianCount: si filtran por un técnico específico = 1; si es
-  // "todos" = cantidad de técnicos hábiles que devolvió el query inicial.
+  // "todos" = cantidad de personas que operan como técnico (role='tech'
+  // O can_tech=true). Antes solo contaba role='tech' y dejaba afuera a
+  // jefes/admins que también cronometran (ej: Benjamín como jefatura).
   var techCountForCapacity = REP.technicianId
     ? 1
-    : (techs || []).filter(function(u) { return u.role === 'tech'; }).length || 1;
+    : (techs || []).filter(function(u) {
+        return u.role === 'tech' || u.can_tech === true;
+      }).length || 1;
   var kpis = computeKPIs(REP.data, {
     from: b2.from,
     to: b2.to,
