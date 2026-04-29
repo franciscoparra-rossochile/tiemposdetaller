@@ -2619,6 +2619,21 @@ function connStatusText() {
 }
 
 function renderUI(forceText) {
+  // FIX 2026-04-29: si Supabase está OK, ocultar el banner de "carga lenta"
+  // que el fallback de emergencia pueda haber dejado visible. Evita que el
+  // operador vea un mensaje rojo de error mientras la app funciona bien.
+  if (_supabaseReady) {
+    try {
+      var bar = document.getElementById('g-err-bar');
+      var span = document.getElementById('g-err-msg');
+      if (bar && span && bar.style.display === 'block') {
+        var txt = (span.textContent || '').toLowerCase();
+        if (txt.indexOf('carga lenta') !== -1 || txt.indexOf('modo limitado') !== -1) {
+          bar.style.display = 'none';
+        }
+      }
+    } catch(_) {}
+  }
   if (_uiRendered) {
     var cs0 = document.getElementById('conn-status');
     if (cs0) cs0.textContent = forceText || connStatusText();
@@ -4078,6 +4093,19 @@ function applyAssign(service, plate) {
 }
 
 async function doStartSession() {
+  // FIX 2026-04-29: guard contra doble-click. Sin esto, dos taps muy rápidos
+  // antes de que btn.disabled = true se aplique podían crear 2 sesiones
+  // con session_keys distintos (incluyen Date.now()).
+  if (_starting) { logR('START_GUARD_BLOCKED', {}); return; }
+  _starting = true;
+  try {
+    await _doStartSessionInner();
+  } finally {
+    _starting = false;
+  }
+}
+
+async function _doStartSessionInner() {
   var srv = SRVS.find(function(s) { return s.name === selSrv; });
   if (!srv) { showGlobalError('Selecciona un servicio', 5000); return; }
 
@@ -4334,6 +4362,17 @@ async function confirmPrioridadPause() {
 }
 
 async function confirmPause(reason) {
+  // FIX 2026-04-29: guard contra doble-click.
+  if (_pausing) { logR('PAUSE_GUARD_BLOCKED', {}); return; }
+  _pausing = true;
+  try {
+    await _confirmPauseInner(reason);
+  } finally {
+    _pausing = false;
+  }
+}
+
+async function _confirmPauseInner(reason) {
   closeModal('m-pause');
   if (!T.sessionKey) {
     // Try to find running session
@@ -4397,6 +4436,17 @@ async function confirmPause(reason) {
 }
 
 async function doResume() {
+  // FIX 2026-04-29: guard contra doble-click.
+  if (_resuming) { logR('RESUME_GUARD_BLOCKED', {}); return; }
+  _resuming = true;
+  try {
+    await _doResumeInner();
+  } finally {
+    _resuming = false;
+  }
+}
+
+async function _doResumeInner() {
   if (!T.sessionKey) {
     // Find session in liveData
     var mine = liveData.find(function(s) { return s.username === CU.username; });
@@ -4682,6 +4732,15 @@ async function submitChecklist() {
 }
 
 var _finishing = false; // guard against double-click
+// FIX 2026-04-29: guards anti doble-click adicionales para operaciones
+// críticas. Antes solo doFinish tenía guard; doStartSession, pause, resume,
+// saveDoubleCheck y approveVisado/rejectVisado podían disparar 2 veces si
+// el usuario hacía tap muy rápido antes de que btn.disabled = true se aplicara.
+var _starting = false;
+var _pausing = false;
+var _resuming = false;
+var _savingDC = false;
+var _visando = false;
 
 // Retorna true si se finalizo exitosamente, false en cualquier error.
 // submitChecklist usa el retorno para decidir si cerrar el modal.
@@ -4842,8 +4901,15 @@ async function doFinish(checklist, sessionKey) {
             }).eq('id', woId);
             logR('OT_AUTO_TO_VISADO', {wo: woId, ot: rGet.data.ot_number, from: rGet.data.status});
             // Notificar a visadores
+            // FIX bug 2026-04-29: getUsersWithExplicitPerm es async; sin await
+            // devolvía una Promise (no un array) y el for nunca entraba, por
+            // lo que las notificaciones a visadores nunca llegaban.
             try {
-              var visadores = (typeof getUsersWithExplicitPerm === 'function') ? (getUsersWithExplicitPerm('can_visar') || []) : [];
+              var visadores = [];
+              if (typeof getUsersWithExplicitPerm === 'function') {
+                try { visadores = await getUsersWithExplicitPerm('can_visar') || []; }
+                catch(_) { visadores = []; }
+              }
               for (var iv = 0; iv < visadores.length; iv++) {
                 await sb.from('notifications').insert({
                   type: 'visado',
@@ -10525,6 +10591,17 @@ function scrollDcItemIntoView(itemKey) {
 window.scrollDcItemIntoView = scrollDcItemIntoView;
 
 async function saveDoubleCheck() {
+  // FIX 2026-04-29: guard contra doble-click.
+  if (_savingDC) { logR('DC_GUARD_BLOCKED', {}); return; }
+  _savingDC = true;
+  try {
+    await _saveDoubleCheckInner();
+  } finally {
+    _savingDC = false;
+  }
+}
+
+async function _saveDoubleCheckInner() {
   if (!_activeOT) return;
   var o = _activeOT.ot;
   var err = document.getElementById('m-dc-err');
@@ -10662,10 +10739,15 @@ async function saveDoubleCheck() {
 
   // FASE 3.2: notificar a visadores AHORA (no antes en el checklist técnico).
   // Garantiza que los visadores solo reciben OTs ya cerradas con doble control.
+  // FIX bug 2026-04-29: getUsersWithExplicitPerm es async; sin await devolvía
+  // una Promise (no un array) y el for nunca entraba, por lo que los
+  // visadores nunca recibían la notificación.
   try {
-    var visadoresList = (typeof getUsersWithExplicitPerm === 'function')
-      ? (getUsersWithExplicitPerm('can_visar') || [])
-      : [];
+    var visadoresList = [];
+    if (typeof getUsersWithExplicitPerm === 'function') {
+      try { visadoresList = await getUsersWithExplicitPerm('can_visar') || []; }
+      catch(_) { visadoresList = []; }
+    }
     for (var iv = 0; iv < visadoresList.length; iv++) {
       var uV = visadoresList[iv];
       await sb.from('notifications').insert({
@@ -11208,6 +11290,19 @@ function showRejectionForm() {
 }
 
 async function approveVisado() {
+  // FIX 2026-04-29: guard contra doble-click. Compartido con rejectVisado:
+  // ambas son operaciones terminales sobre la misma OT, no deben ejecutarse
+  // en paralelo.
+  if (_visando) { logR('VISADO_GUARD_BLOCKED', {action:'approve'}); return; }
+  _visando = true;
+  try {
+    await _approveVisadoInner();
+  } finally {
+    _visando = false;
+  }
+}
+
+async function _approveVisadoInner() {
   if (!_activeVisadoOT) return;
   var o = _activeVisadoOT.ot;
 
@@ -11316,6 +11411,17 @@ async function approveVisado() {
 }
 
 async function rejectVisado() {
+  // FIX 2026-04-29: comparte _visando con approveVisado.
+  if (_visando) { logR('VISADO_GUARD_BLOCKED', {action:'reject'}); return; }
+  _visando = true;
+  try {
+    await _rejectVisadoInner();
+  } finally {
+    _visando = false;
+  }
+}
+
+async function _rejectVisadoInner() {
   if (!_activeVisadoOT) return;
   var rej = document.getElementById('m-visado-rejection');
   var reason = rej && rej.value ? rej.value.trim() : '';
@@ -14606,7 +14712,11 @@ function fmtD(d) {
 <script>
 // HARD FALLBACK: garantizar que el splash NUNCA quede pegado mas de 15s.
 // Coordinado con SDK_TIMEOUT_MS (8s) + CONN_TIMEOUT_MS (5s) + margen.
+// FIX 2026-04-29: usar la misma constante (15000) declarada arriba como
+// EMERGENCY_TIMEOUT_MS en el script principal. Como este bloque es un IIFE
+// separado y no comparte scope, replicamos el valor pero documentado.
 (function () {
+  var EMERGENCY_FALLBACK_MS = 15000; // mantener en sincronía con EMERGENCY_TIMEOUT_MS
   function forceShowApp() {
     try {
       var ls = document.getElementById('load-screen');
@@ -14640,7 +14750,7 @@ function fmtD(d) {
       console.error('[INIT] EMERGENCY FALLBACK error', e);
     }
   }
-  setTimeout(forceShowApp, 15000);
+  setTimeout(forceShowApp, EMERGENCY_FALLBACK_MS);
 })();
 
 (function () {
