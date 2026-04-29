@@ -15734,6 +15734,712 @@ async function generateInformePdf(woId) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// CREAR INFORME TÉCNICO — wizard manual para generar informe sobre
+// cualquier patente del catastro, con o sin OT abierta.
+// ═══════════════════════════════════════════════════════════════
+// Flujo en 3 pasos:
+//   1. Buscar y seleccionar patente (cruzando vehículos + work_orders + history)
+//   2. Elegir contexto: usar OT existente o crear informe "manual" nuevo
+//   3. Llenar checklist técnico (reusando CHECKLISTS_TECH) y luego abrir
+//      editor de extras (observaciones, hallazgos, imágenes, PDFs)
+//
+// Persistencia: si el usuario eligió una OT existente, actualiza su
+// checklist_data.tech_checklist. Si es manual, crea un nuevo work_order
+// con status='manual_report' (no entra en cola operativa, solo aparece
+// en la pestaña Informes).
+// ═══════════════════════════════════════════════════════════════
+
+var _CREAR_INFORME_STATE = null;
+
+// Punto de entrada: abre el modal del wizard en el paso 1
+function openCrearInformeWizard() {
+  if (!sb) { showGlobalError('Sin conexión a BD', 4000); return; }
+  var existing = document.getElementById('m-crear-inf');
+  if (existing) existing.remove();
+
+  _CREAR_INFORME_STATE = {
+    step: 1,
+    // Paso 1
+    searchTerm: '',
+    searchResults: null,    // [{plate, vehicle_id, brand, model, client_id, client_name, ots: [...], history: [...]}]
+    selectedVehicle: null,  // entrada elegida del array anterior
+    // Paso 2
+    contextChoice: null,    // 'existing_ot' | 'manual'
+    selectedOtId: null,     // si contextChoice = 'existing_ot'
+    selectedServiceKey: null, // si contextChoice = 'manual'
+    selectedServiceSubtype: null,
+    // Paso 3
+    checklistData: {},      // valores del checklist
+    workOrderId: null       // se setea al guardar (existente o creado)
+  };
+
+  var ov = document.createElement('div');
+  ov.className = 'overlay'; ov.id = 'm-crear-inf'; ov.style.display = 'flex';
+  ov.innerHTML =
+    '<div class="modal" style="max-width:680px;max-height:92vh;overflow-y:auto">'
+    + '<div class="modal-t">Crear informe técnico</div>'
+    + '<div class="modal-s" id="crear-inf-step-label">Paso 1 de 3 · Selecciona el vehículo</div>'
+    + '<div id="crear-inf-body" style="margin-top:12px"></div>'
+    + '</div>';
+  document.body.appendChild(ov);
+  renderCrearInformeStep();
+}
+
+function closeCrearInformeWizard() {
+  var m = document.getElementById('m-crear-inf');
+  if (m) m.remove();
+  _CREAR_INFORME_STATE = null;
+}
+
+function renderCrearInformeStep() {
+  var st = _CREAR_INFORME_STATE;
+  if (!st) return;
+  var lbl = document.getElementById('crear-inf-step-label');
+  if (lbl) {
+    var labels = {
+      1: 'Paso 1 de 3 · Selecciona el vehículo',
+      2: 'Paso 2 de 3 · Elige el servicio',
+      3: 'Paso 3 de 3 · Completa el checklist técnico'
+    };
+    lbl.textContent = labels[st.step] || '';
+  }
+  if (st.step === 1) renderCrearInformeStep1();
+  else if (st.step === 2) renderCrearInformeStep2();
+  else if (st.step === 3) renderCrearInformeStep3();
+}
+
+// ── PASO 1 ────────────────────────────────────────────────────────
+function renderCrearInformeStep1() {
+  var st = _CREAR_INFORME_STATE;
+  var body = document.getElementById('crear-inf-body');
+  if (!body) return;
+  var html = ''
+    + '<div style="margin-bottom:12px">'
+    +   '<div style="font-size:11px;color:#666;margin-bottom:4px">Buscar por patente, cliente, marca o modelo</div>'
+    +   '<input type="text" id="crear-inf-search" class="inp" placeholder="ej. ABCD12, Juan Pérez, Toyota..." value="' + escapeHtml(st.searchTerm || '') + '" style="width:100%;font-size:14px" autocomplete="off"/>'
+    + '</div>'
+    + '<div id="crear-inf-results" style="max-height:50vh;overflow-y:auto;border:1px solid #eee;border-radius:4px;background:#fafafa">'
+    +   '<div style="padding:14px;text-align:center;color:#888;font-size:12px"><span class="spin"></span> Cargando vehículos...</div>'
+    + '</div>'
+    + '<div style="display:flex;gap:8px;margin-top:14px">'
+    +   '<button class="btn btn-out" onclick="closeCrearInformeWizard()" style="flex:1">Cancelar</button>'
+    + '</div>';
+  body.innerHTML = html;
+
+  var inp = document.getElementById('crear-inf-search');
+  if (inp) {
+    inp.oninput = function(){
+      st.searchTerm = this.value;
+      renderCrearInformeResultsList();
+    };
+    setTimeout(function(){ inp.focus(); }, 50);
+  }
+
+  // Cargar la data una vez (se cachea en _CREAR_INFORME_STATE.searchResults)
+  if (!st.searchResults) {
+    loadCrearInformeVehicles().then(function(){
+      renderCrearInformeResultsList();
+    }).catch(function(e){
+      var resDiv = document.getElementById('crear-inf-results');
+      if (resDiv) resDiv.innerHTML = '<div style="padding:14px;color:#c00;font-size:12px">Error: ' + escapeHtml(e.message || String(e)) + '</div>';
+    });
+  } else {
+    renderCrearInformeResultsList();
+  }
+}
+
+// Carga listado consolidado: por cada patente del catastro reúne info
+// del vehículo + sus work_orders + sus servicios históricos (tabla history)
+async function loadCrearInformeVehicles() {
+  var st = _CREAR_INFORME_STATE;
+
+  // 1. Vehículos no archivados del catastro
+  var rV = await sb.from('client_vehicles')
+    .select('id,plate,brand,model,year,km_entry,client_id,archived,created_at')
+    .or('archived.is.null,archived.eq.false')
+    .order('created_at', {ascending: false})
+    .limit(2000);
+  if (rV.error) throw new Error(rV.error.message);
+  var vehicles = rV.data || [];
+
+  // 2. Clientes asociados (para nombre)
+  var clientIds = {};
+  vehicles.forEach(function(v){ if (v.client_id) clientIds[v.client_id] = true; });
+  var clientsMap = {};
+  if (Object.keys(clientIds).length) {
+    try {
+      var rC = await sb.from('clients').select('id,name').in('id', Object.keys(clientIds));
+      (rC.data || []).forEach(function(c){ clientsMap[c.id] = c; });
+    } catch(_){}
+  }
+
+  // 3. Work orders (servicios actuales/abiertos) - útiles para el paso 2
+  var rWO = await sb.from('work_orders_with_plate')
+    .select('id,ot_number,plate,vehicle_id,client_id,service_classification,service_subtype,status,checklist_data,created_at,updated_at')
+    .order('updated_at', {ascending: false})
+    .limit(1500);
+  var wosByVehicleId = {};
+  var wosByPlate = {};
+  (rWO.data || []).forEach(function(wo){
+    if (wo.vehicle_id) {
+      if (!wosByVehicleId[wo.vehicle_id]) wosByVehicleId[wo.vehicle_id] = [];
+      wosByVehicleId[wo.vehicle_id].push(wo);
+    }
+    var p = (wo.plate || '').trim().toUpperCase();
+    if (p) {
+      if (!wosByPlate[p]) wosByPlate[p] = [];
+      wosByPlate[p].push(wo);
+    }
+  });
+
+  // 4. History (servicios históricos cerrados) — agrupado por patente
+  var rH = await sb.from('history')
+    .select('id,plate,service,technician,ended_at')
+    .order('ended_at', {ascending: false})
+    .limit(2000);
+  var histByPlate = {};
+  (rH.data || []).forEach(function(h){
+    var p = (h.plate || '').trim().toUpperCase();
+    if (!p || p === 'LOGISTICA DE TALLER') return;
+    if (!histByPlate[p]) histByPlate[p] = [];
+    histByPlate[p].push(h);
+  });
+
+  // 5. Consolidar — un registro por patente
+  var consolidated = vehicles.map(function(v){
+    var plateUp = (v.plate || '').trim().toUpperCase();
+    var ots = wosByVehicleId[v.id] || wosByPlate[plateUp] || [];
+    var hist = histByPlate[plateUp] || [];
+    var client = v.client_id ? (clientsMap[v.client_id] || null) : null;
+    return {
+      vehicle_id: v.id,
+      plate: v.plate || '—',
+      plateUp: plateUp,
+      brand: v.brand || '',
+      model: v.model || '',
+      year: v.year || null,
+      km_entry: v.km_entry || null,
+      client_id: v.client_id || null,
+      client_name: client ? (client.name || '') : '',
+      ots: ots,
+      hist: hist
+    };
+  });
+
+  st.searchResults = consolidated;
+  return consolidated;
+}
+
+function renderCrearInformeResultsList() {
+  var st = _CREAR_INFORME_STATE;
+  var resDiv = document.getElementById('crear-inf-results');
+  if (!resDiv || !st.searchResults) return;
+
+  var term = (st.searchTerm || '').trim().toLowerCase();
+  var rows = st.searchResults;
+  if (term) {
+    rows = rows.filter(function(r){
+      var hay = ((r.plate || '') + ' ' + (r.brand || '') + ' ' + (r.model || '') + ' ' + (r.client_name || '')).toLowerCase();
+      return hay.indexOf(term) !== -1;
+    });
+  }
+  // Priorizar los que tienen actividad reciente (OTs o historial)
+  rows.sort(function(a,b){
+    var aAct = (a.ots.length ? 2 : 0) + (a.hist.length ? 1 : 0);
+    var bAct = (b.ots.length ? 2 : 0) + (b.hist.length ? 1 : 0);
+    if (aAct !== bAct) return bAct - aAct;
+    // Si igual actividad, alfabético por patente
+    return (a.plateUp || '').localeCompare(b.plateUp || '');
+  });
+  // Limitar a 60 resultados visibles para no saturar el modal
+  var truncated = rows.length > 60;
+  if (truncated) rows = rows.slice(0, 60);
+
+  if (!rows.length) {
+    resDiv.innerHTML = '<div style="padding:18px;text-align:center;color:#888;font-size:13px">'
+      + (term ? 'Sin resultados para «' + escapeHtml(st.searchTerm) + '»' : 'Sin vehículos en el catastro')
+      + '</div>';
+    return;
+  }
+  var html = '';
+  rows.forEach(function(r){
+    var srvCount = r.ots.length + r.hist.length;
+    var lastActivity = '—';
+    var lastTs = 0;
+    r.ots.forEach(function(o){
+      var t = o.updated_at ? new Date(o.updated_at).getTime() : 0;
+      if (t > lastTs) lastTs = t;
+    });
+    r.hist.forEach(function(h){
+      var t = h.ended_at ? new Date(h.ended_at).getTime() : 0;
+      if (t > lastTs) lastTs = t;
+    });
+    if (lastTs) {
+      try { lastActivity = new Date(lastTs).toLocaleDateString('es-CL'); } catch(_){}
+    }
+    var titleVeh = ((r.brand || '') + ' ' + (r.model || '')).trim() || '—';
+    html += '<div class="crear-inf-row" data-plate="' + escapeHtml(r.plateUp) + '" style="padding:10px 12px;border-bottom:1px solid #eee;cursor:pointer;display:flex;gap:10px;align-items:center;background:#fff" onmouseover="this.style.background=\'#f4f9ff\'" onmouseout="this.style.background=\'#fff\'">'
+      +   '<div style="flex:1;min-width:0">'
+      +     '<div style="display:flex;align-items:center;gap:6px;margin-bottom:2px">'
+      +       '<span class="plate-tag" style="font-size:11px">' + escapeHtml(r.plate) + '</span>'
+      +       '<span style="font-size:13px;font-weight:600;color:#222;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(titleVeh) + '</span>'
+      +     '</div>'
+      +     (r.client_name ? '<div style="font-size:11px;color:#666;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(r.client_name) + '</div>' : '')
+      +     '<div style="font-size:10px;color:#999;margin-top:2px">'
+      +       (srvCount ? srvCount + ' servicio(s) · últ. ' + escapeHtml(lastActivity) : 'Sin servicios registrados')
+      +     '</div>'
+      +   '</div>'
+      +   '<button class="btn-sm" style="border-color:var(--red);color:var(--red);font-size:11px;flex-shrink:0">Seleccionar →</button>'
+      + '</div>';
+  });
+  if (truncated) {
+    html += '<div style="padding:8px 12px;text-align:center;font-size:10px;color:#999;background:#f0f0f0">Mostrando los primeros 60 resultados. Refina la búsqueda para encontrar otros.</div>';
+  }
+  resDiv.innerHTML = html;
+
+  // Hooks: clic en cualquier parte de la fila selecciona la patente
+  var nodes = resDiv.querySelectorAll('.crear-inf-row');
+  nodes.forEach(function(node){
+    node.onclick = function(){
+      var plate = this.dataset.plate;
+      var entry = (st.searchResults || []).find(function(x){ return x.plateUp === plate; });
+      if (entry) {
+        st.selectedVehicle = entry;
+        st.step = 2;
+        renderCrearInformeStep();
+      }
+    };
+  });
+}
+
+// ── PASO 2 ────────────────────────────────────────────────────────
+function renderCrearInformeStep2() {
+  var st = _CREAR_INFORME_STATE;
+  var body = document.getElementById('crear-inf-body');
+  if (!body || !st.selectedVehicle) return;
+  var v = st.selectedVehicle;
+  var html = '';
+
+  // Header con info del vehículo seleccionado
+  html += '<div style="background:#f4f9ff;border-left:3px solid #1f6fbf;padding:10px 12px;border-radius:4px;margin-bottom:14px">'
+    +   '<div style="display:flex;align-items:center;gap:8px;margin-bottom:2px">'
+    +     '<span class="plate-tag">' + escapeHtml(v.plate) + '</span>'
+    +     '<span style="font-size:13px;font-weight:600">' + escapeHtml((v.brand + ' ' + v.model).trim() || '—') + '</span>'
+    +   '</div>'
+    +   (v.client_name ? '<div style="font-size:11px;color:#444">Cliente: ' + escapeHtml(v.client_name) + '</div>' : '')
+    +   (v.km_entry ? '<div style="font-size:11px;color:#666">Km de ingreso: ' + Number(v.km_entry).toLocaleString('es-CL') + '</div>' : '')
+    + '</div>';
+
+  // OPCIÓN A: usar una OT existente
+  var ots = v.ots || [];
+  // Solo mostrar OTs que tengan service_classification (las manuales antiguas también valen)
+  var validOts = ots.filter(function(o){ return o.service_classification && CHECKLISTS_TECH[o.service_classification]; });
+  var validOtsTotal = validOts.length;
+  // Mostrar solo las 8 más recientes (ya vienen ordenadas por updated_at desc)
+  if (validOts.length > 8) validOts = validOts.slice(0, 8);
+
+  if (validOts.length) {
+    html += '<div style="font-weight:700;font-size:12px;color:#222;margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">Servicios actuales / OTs registradas '
+      + (validOtsTotal > 8 ? '<span style="font-weight:400;color:#888;font-size:10px;text-transform:none">(8 más recientes de ' + validOtsTotal + ')</span>' : '')
+      + '</div>';
+    html += '<div style="margin-bottom:14px">';
+    validOts.forEach(function(o){
+      var srvDef = SERVICES_INGRESO.find(function(x){return x.key===o.service_classification;});
+      var srvLbl = srvDef ? srvDef.label : o.service_classification;
+      if (o.service_subtype) srvLbl += ' — ' + o.service_subtype;
+      var cd = o.checklist_data || {};
+      var hasChk = !!(cd.tech_checklist && Object.keys(cd.tech_checklist).length);
+      var stateBadge = '';
+      if (o.status === 'closed') stateBadge = '<span style="font-size:10px;color:#2a7a2a">● Cerrada</span>';
+      else if (o.status === 'pending_visado') stateBadge = '<span style="font-size:10px;color:#a07000">● Pend. visado</span>';
+      else if (o.status === 'pending_double_check') stateBadge = '<span style="font-size:10px;color:#a07000">● Pend. doble ctrl</span>';
+      else if (o.status === 'in_progress') stateBadge = '<span style="font-size:10px;color:#1f6fbf">● En curso</span>';
+      else if (o.status === 'manual_report') stateBadge = '<span style="font-size:10px;color:#666">● Informe manual</span>';
+      else stateBadge = '<span style="font-size:10px;color:#888">● ' + escapeHtml(o.status || '—') + '</span>';
+      var dateStr = '';
+      try { dateStr = new Date(o.updated_at || o.created_at).toLocaleDateString('es-CL'); } catch(_){}
+      html += '<div data-ot-id="' + escapeHtml(o.id) + '" class="crear-inf-ot-row" style="padding:10px;border:1px solid #ddd;border-radius:4px;margin-bottom:6px;cursor:pointer;background:#fff" onmouseover="this.style.borderColor=\'var(--red)\';this.style.background=\'#fff5f5\'" onmouseout="this.style.borderColor=\'#ddd\';this.style.background=\'#fff\'">'
+        +   '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">'
+        +     '<div style="flex:1;min-width:0">'
+        +       '<div style="font-size:13px;font-weight:600;color:#111">' + escapeHtml(srvLbl) + '</div>'
+        +       '<div style="font-size:10px;color:#888">'
+        +         (o.ot_number ? 'OT-' + escapeHtml(String(o.ot_number)) + ' · ' : '')
+        +         escapeHtml(dateStr) + ' · '
+        +         stateBadge
+        +       '</div>'
+        +     '</div>'
+        +     '<div style="font-size:10px;text-align:right;flex-shrink:0">'
+        +       (hasChk
+                  ? '<span style="color:#2a7a2a">✓ Checklist OK</span><br/><span style="color:#888">Editar / regenerar</span>'
+                  : '<span style="color:#a07000">Sin checklist</span><br/><span style="color:#888">Llenar →</span>')
+        +     '</div>'
+        +   '</div>'
+        + '</div>';
+    });
+    html += '</div>';
+  }
+
+  // OPCIÓN B: crear informe manual (nuevo)
+  html += '<div style="border-top:1px solid #eee;padding-top:14px;margin-top:6px">';
+  html += '<div style="font-weight:700;font-size:12px;color:#222;margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">Crear informe manual</div>';
+  html += '<div style="font-size:11px;color:#666;margin-bottom:8px">Para informes que no nacen de una OT operativa (ej: revisión a pedido del cliente, evaluación post-falla, segunda opinión).</div>';
+  html += '<div style="margin-bottom:8px">'
+    +   '<div class="lbl">Tipo de servicio a documentar <span style="color:var(--red)">*</span></div>'
+    +   '<select id="crear-inf-srv" class="inp">'
+    +     '<option value="">— Selecciona un tipo —</option>';
+  // Agrupar por familia
+  var groups = {};
+  SERVICES_INGRESO.forEach(function(s){
+    if (!CHECKLISTS_TECH[s.key]) return; // solo los que tienen checklist
+    var g = s.group || 'Otros';
+    if (!groups[g]) groups[g] = [];
+    groups[g].push(s);
+  });
+  Object.keys(groups).forEach(function(gname){
+    html += '<optgroup label="' + escapeHtml(gname) + '">';
+    groups[gname].forEach(function(s){
+      var sel = (st.selectedServiceKey === s.key) ? ' selected' : '';
+      html += '<option value="' + escapeHtml(s.key) + '"' + sel + '>' + escapeHtml(s.label) + '</option>';
+    });
+    html += '</optgroup>';
+  });
+  html += '</select></div>';
+  html += '<div id="crear-inf-srv-sub-wrap" style="margin-bottom:8px;display:none">'
+    +   '<div class="lbl">Especificación</div>'
+    +   '<select id="crear-inf-srv-sub" class="inp"></select>'
+    + '</div>';
+  html += '<button class="btn btn-red" id="crear-inf-manual-go" style="width:100%" onclick="proceedToCrearInformeStep3Manual()">Continuar al checklist →</button>';
+  html += '</div>';
+
+  // Pie con botón volver
+  html += '<div style="display:flex;gap:8px;margin-top:14px;border-top:1px solid #eee;padding-top:12px">'
+    + '<button class="btn btn-out" onclick="_CREAR_INFORME_STATE.step=1; renderCrearInformeStep();" style="flex:1">← Volver</button>'
+    + '<button class="btn btn-out" onclick="closeCrearInformeWizard()" style="flex:1">Cancelar</button>'
+    + '</div>';
+
+  body.innerHTML = html;
+
+  // Hooks fila OT
+  var rows = body.querySelectorAll('.crear-inf-ot-row');
+  rows.forEach(function(node){
+    node.onclick = function(){
+      var otId = this.dataset.otId;
+      proceedToCrearInformeStep3Existing(otId);
+    };
+  });
+
+  // Hook select de servicio (para mostrar subtypes si aplica)
+  var srvSel = document.getElementById('crear-inf-srv');
+  var subWrap = document.getElementById('crear-inf-srv-sub-wrap');
+  var subSel = document.getElementById('crear-inf-srv-sub');
+  if (srvSel) {
+    srvSel.onchange = function(){
+      var val = this.value;
+      _CREAR_INFORME_STATE.selectedServiceKey = val || null;
+      _CREAR_INFORME_STATE.selectedServiceSubtype = null;
+      var def = SERVICES_INGRESO.find(function(x){return x.key === val;});
+      if (def && def.subs && def.subs.length) {
+        subWrap.style.display = '';
+        var optsHtml = '<option value="">— Selecciona —</option>';
+        def.subs.forEach(function(s){ optsHtml += '<option value="' + escapeHtml(s) + '">' + escapeHtml(s) + '</option>'; });
+        subSel.innerHTML = optsHtml;
+      } else {
+        subWrap.style.display = 'none';
+        subSel.innerHTML = '';
+      }
+    };
+  }
+  if (subSel) {
+    subSel.onchange = function(){
+      _CREAR_INFORME_STATE.selectedServiceSubtype = this.value || null;
+    };
+  }
+}
+
+function proceedToCrearInformeStep3Existing(otId) {
+  var st = _CREAR_INFORME_STATE;
+  st.contextChoice = 'existing_ot';
+  st.selectedOtId = otId;
+  // Buscar el OT en searchResults para pre-llenar checklist si ya existe
+  var ot = null;
+  (st.selectedVehicle.ots || []).forEach(function(o){
+    if (o.id === otId) ot = o;
+  });
+  if (ot) {
+    var cd = ot.checklist_data || {};
+    st.checklistData = cd.tech_checklist ? Object.assign({}, cd.tech_checklist) : {};
+    st.selectedServiceKey = ot.service_classification;
+    st.selectedServiceSubtype = ot.service_subtype || null;
+    st.workOrderId = ot.id;
+  }
+  st.step = 3;
+  renderCrearInformeStep();
+}
+
+function proceedToCrearInformeStep3Manual() {
+  var st = _CREAR_INFORME_STATE;
+  var srvKey = (document.getElementById('crear-inf-srv') || {}).value;
+  if (!srvKey) {
+    showGlobalError('Selecciona un tipo de servicio', 3000);
+    return;
+  }
+  var def = SERVICES_INGRESO.find(function(x){return x.key === srvKey;});
+  if (def && def.subs && def.subs.length) {
+    var sub = (document.getElementById('crear-inf-srv-sub') || {}).value;
+    if (!sub) { showGlobalError('Selecciona la especificación', 3000); return; }
+    st.selectedServiceSubtype = sub;
+  }
+  st.contextChoice = 'manual';
+  st.selectedServiceKey = srvKey;
+  st.checklistData = {};
+  st.workOrderId = null; // se creará al guardar
+  st.step = 3;
+  renderCrearInformeStep();
+}
+
+// ── PASO 3 ────────────────────────────────────────────────────────
+function renderCrearInformeStep3() {
+  var st = _CREAR_INFORME_STATE;
+  var body = document.getElementById('crear-inf-body');
+  if (!body) return;
+  var v = st.selectedVehicle;
+  var def = CHECKLISTS_TECH[st.selectedServiceKey];
+  if (!def) {
+    body.innerHTML = '<div style="color:#c00;padding:8px">Tipo de servicio sin checklist técnico definido.</div>';
+    return;
+  }
+  var srvDef = SERVICES_INGRESO.find(function(x){return x.key===st.selectedServiceKey;});
+  var srvLbl = srvDef ? srvDef.label : st.selectedServiceKey;
+  if (st.selectedServiceSubtype) srvLbl += ' — ' + st.selectedServiceSubtype;
+
+  var html = '';
+  // Header sticky con resumen
+  html += '<div style="background:#f4f9ff;border-left:3px solid #1f6fbf;padding:8px 12px;border-radius:4px;margin-bottom:12px;font-size:11px">'
+    +   '<div style="display:flex;align-items:center;gap:6px;margin-bottom:2px">'
+    +     '<span class="plate-tag" style="font-size:10px">' + escapeHtml(v.plate) + '</span>'
+    +     '<span style="font-weight:600">' + escapeHtml((v.brand + ' ' + v.model).trim() || '—') + '</span>'
+    +   '</div>'
+    +   '<div style="color:#444"><b>' + escapeHtml(srvLbl) + '</b>'
+    +     (st.contextChoice === 'manual' ? ' <span style="color:#888;font-style:italic">· informe manual</span>' : '')
+    +   '</div>'
+    + '</div>';
+
+  // Render del checklist con los mismos componentes que openTechChecklist
+  // pero adaptado para vivir dentro del modal del wizard. Usamos el mismo
+  // helper renderChecklistItem (ya definido) y reutilizamos los selectores
+  // [data-chk-key], [data-chk-key-na], etc., pero los buscamos dentro de
+  // un contenedor distinto del original.
+  html += '<div id="crear-inf-checklist">';
+  def.sections.forEach(function(sec){
+    html += '<div style="border-top:2px solid var(--red);margin:14px -2px 8px;padding-top:10px">'
+      + '<div style="font-size:12px;font-weight:700;color:#111;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px">'
+      + escapeHtml(sec.title) + '</div>';
+    sec.items.forEach(function(it){
+      html += renderChecklistItem(it, st.checklistData[it.key]);
+    });
+    html += '</div>';
+  });
+  html += '</div>';
+
+  html += '<div id="crear-inf-err" style="display:none;color:#c00;font-size:12px;margin-top:8px"></div>';
+
+  html += '<div style="display:flex;gap:8px;margin-top:14px;border-top:1px solid #eee;padding-top:12px;flex-wrap:wrap">'
+    + '<button class="btn btn-out" onclick="_CREAR_INFORME_STATE.step=2; renderCrearInformeStep();" style="flex:1;min-width:80px">← Volver</button>'
+    + '<button class="btn btn-red" id="crear-inf-save" onclick="saveCrearInformeChecklist()" style="flex:2;min-width:160px">💾 Guardar y abrir editor</button>'
+    + '</div>';
+
+  body.innerHTML = html;
+
+  // El renderChecklistItem usa onchange="onChecklistChange()" y onclick
+  // referencias. Esos hooks buscan elementos dentro de #m-techchk-body por
+  // ID, así que NO funcionarán dentro de #crear-inf-checklist. Para evitar
+  // errores en consola, los desactivamos para este modal redirigiendo a
+  // helpers locales.
+  setTimeout(applyCrearInformeChecklistConditionals, 30);
+
+  // Re-cablear los onchange de radios y selects para que apliquen
+  // condicionales con nuestro container, no con #m-techchk-body.
+  var container = document.getElementById('crear-inf-checklist');
+  if (container) {
+    container.querySelectorAll('input[type="radio"]').forEach(function(r){
+      r.onchange = applyCrearInformeChecklistConditionals;
+    });
+    container.querySelectorAll('input[data-chk-key-na]').forEach(function(cb){
+      cb.onchange = function(){
+        var key = this.dataset.chkKeyNa;
+        var input = container.querySelector('input[data-chk-key="' + key + '"]');
+        if (!input) return;
+        if (this.checked) { input.value = ''; input.disabled = true; }
+        else { input.disabled = false; }
+      };
+    });
+  }
+}
+
+// Versión local de applyChecklistConditionals que opera sobre
+// #crear-inf-checklist en lugar de #m-techchk-body
+function applyCrearInformeChecklistConditionals() {
+  var container = document.getElementById('crear-inf-checklist');
+  if (!container) return;
+  container.querySelectorAll('[data-chk-item]').forEach(function(div){
+    var key = div.dataset.chkItem;
+    var def = null;
+    Object.values(CHECKLISTS_TECH).forEach(function(c){
+      c.sections.forEach(function(s){
+        s.items.forEach(function(it){ if (it.key === key) def = it; });
+      });
+    });
+    if (def && def.required_if) {
+      var refVal = getCrearInformeChkValue(def.required_if);
+      div.style.display = (refVal === true || (refVal && refVal !== '' && refVal !== false)) ? '' : 'none';
+    }
+  });
+}
+
+function getCrearInformeChkValue(key) {
+  var container = document.getElementById('crear-inf-checklist');
+  if (!container) return null;
+  var rad = container.querySelector('input[name="chk_' + key + '"]:checked');
+  if (rad) return rad.value === 'true';
+  var inp = container.querySelector('[data-chk-key="' + key + '"]');
+  if (!inp) return null;
+  if (inp.disabled) return 'N/A';
+  return inp.value;
+}
+
+// Guardar el checklist: si es OT existente actualiza, si es manual crea
+// un nuevo work_order con status='manual_report' y luego abre el editor
+// de extras + previsualización.
+async function saveCrearInformeChecklist() {
+  var st = _CREAR_INFORME_STATE;
+  if (!st) return;
+  var def = CHECKLISTS_TECH[st.selectedServiceKey];
+  if (!def) { showGlobalError('Tipo de servicio no válido', 3000); return; }
+  var errEl = document.getElementById('crear-inf-err');
+  if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
+
+  // Validar y recolectar valores (mismo enfoque que saveTechChecklist)
+  var data = {};
+  var allItems = [];
+  def.sections.forEach(function(sec){ sec.items.forEach(function(it){ allItems.push(it); }); });
+  var container = document.getElementById('crear-inf-checklist');
+  for (var i = 0; i < allItems.length; i++) {
+    var it = allItems[i];
+    var div = container.querySelector('[data-chk-item="' + it.key + '"]');
+    if (div && div.style.display === 'none') continue;
+    var val = getCrearInformeChkValue(it.key);
+    if (it.required && (val == null || val === '' || (it.type === 'bool' && val !== true && val !== false))) {
+      if (errEl) {
+        errEl.textContent = 'Falta llenar: ' + it.label;
+        errEl.style.display = 'block';
+      }
+      return;
+    }
+    data[it.key] = val;
+  }
+  // Auto-uppercase para texto/na_text
+  Object.keys(data).forEach(function(k){
+    var d = allItems.find(function(x){return x.key===k;});
+    if (d && (d.type === 'text' || d.type === 'na_text') && typeof data[k] === 'string' && data[k] !== 'N/A') {
+      data[k] = data[k].toUpperCase();
+    }
+  });
+
+  var btn = document.getElementById('crear-inf-save');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spin"></span> Guardando...'; }
+
+  try {
+    var woId = null;
+    if (st.contextChoice === 'existing_ot' && st.selectedOtId) {
+      // Actualizar OT existente: solo tocamos checklist_data.tech_checklist
+      // sin alterar status, asignaciones ni flujo operativo.
+      var rGet = await sb.from('work_orders').select('checklist_data,status').eq('id', st.selectedOtId).maybeSingle();
+      if (rGet.error || !rGet.data) throw new Error('OT no encontrada');
+      var prevCd = rGet.data.checklist_data || {};
+      var newCd = Object.assign({}, prevCd, {
+        tech_checklist: data,
+        tech_completed_at: prevCd.tech_completed_at || new Date().toISOString(),
+        tech_completed_by: prevCd.tech_completed_by || (CU ? CU.id : null),
+        tech_completed_by_name: prevCd.tech_completed_by_name || (CU ? CU.name : null),
+        // Marca de edición desde el wizard
+        tech_last_edited_from_wizard_at: new Date().toISOString(),
+        tech_last_edited_from_wizard_by: CU ? CU.name : null
+      });
+      var rUp = await sb.from('work_orders').update({
+        checklist_data: newCd,
+        updated_by: CU ? CU.id : null
+      }).eq('id', st.selectedOtId);
+      if (rUp.error) throw new Error(rUp.error.message);
+      woId = st.selectedOtId;
+    } else {
+      // Crear work_order manual nuevo. status='manual_report' lo mantiene
+      // fuera de la cola operativa pero visible en la pestaña Informes.
+      var v = st.selectedVehicle;
+      var insertPayload = {
+        client_id: v.client_id || null,
+        vehicle_id: v.vehicle_id || null,
+        service_classification: st.selectedServiceKey,
+        service_subtype: st.selectedServiceSubtype || null,
+        status: 'manual_report',
+        created_by: CU ? CU.id : null,
+        updated_by: CU ? CU.id : null,
+        checklist_data: {
+          tech_checklist: data,
+          tech_completed_at: new Date().toISOString(),
+          tech_completed_by: CU ? CU.id : null,
+          tech_completed_by_name: CU ? CU.name : null,
+          manual_report: true,
+          manual_report_created_by: CU ? CU.name : null,
+          manual_report_created_at: new Date().toISOString()
+        }
+      };
+      var rIns = await sb.from('work_orders').insert(insertPayload).select('id').single();
+      if (rIns.error) {
+        // Si falla por columna NOT NULL (ej. commercial_manager_id), reintentar
+        // poniendo el usuario actual como gestor placeholder.
+        if (/commercial_manager|null value|violates not-null/i.test(rIns.error.message || '')) {
+          insertPayload.commercial_manager_id = CU ? CU.id : null;
+          insertPayload.commercial_manager_name = CU ? CU.name : null;
+          var rIns2 = await sb.from('work_orders').insert(insertPayload).select('id').single();
+          if (rIns2.error) throw new Error(rIns2.error.message);
+          woId = rIns2.data.id;
+        } else {
+          throw new Error(rIns.error.message);
+        }
+      } else {
+        woId = rIns.data.id;
+      }
+    }
+
+    // Cerrar el wizard y abrir el editor de extras + previsualización
+    closeCrearInformeWizard();
+    showGlobalError('✓ Checklist guardado. Abriendo editor del informe...', 2000);
+    // Pequeña pausa para que el toast se vea antes del modal
+    setTimeout(function(){
+      openInformeEditor(woId);
+    }, 200);
+    // Refrescar listado de informes si está visible
+    setTimeout(function(){
+      var tabBody = document.querySelector('#tab-body');
+      if (tabBody && (typeof renderBossInformes === 'function')) {
+        // Solo refresca si la pestaña activa es informes
+        var activeTab = document.querySelector('.tab.active');
+        if (activeTab && /informes/i.test(activeTab.dataset.tab || '')) {
+          renderBossInformes(tabBody);
+        }
+      }
+    }, 800);
+  } catch(e) {
+    console.error('[CREAR_INFORME_ERR]', e);
+    if (errEl) {
+      errEl.textContent = 'Error: ' + (e.message || e);
+      errEl.style.display = 'block';
+    }
+    if (btn) { btn.disabled = false; btn.innerHTML = '💾 Guardar y abrir editor'; }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
 // EDITOR DE INFORMES — observaciones editables, hallazgos extra,
 // imágenes adjuntas y documentos PDF anexos (escáner)
 // ═══════════════════════════════════════════════════════════════
@@ -16227,6 +16933,18 @@ async function renderBossInformes(body) {
   // Construir UI
   body.innerHTML = '';
 
+  // Botón principal "+ Crear informe técnico" — visible para todos
+  // (técnicos, jefes, admin). Permite crear informe sobre cualquier
+  // patente del catastro, con o sin OT abierta.
+  var topBar = mk('div','');
+  topBar.style.cssText = 'margin-bottom:10px;display:flex;gap:8px;align-items:center';
+  var btnNew = mk('button','btn btn-red');
+  btnNew.style.cssText = 'flex:1;font-size:13px';
+  btnNew.innerHTML = '➕ Crear informe técnico';
+  btnNew.onclick = function(){ openCrearInformeWizard(); };
+  topBar.appendChild(btnNew);
+  body.appendChild(topBar);
+
   // Header / filtros
   var bar = mk('div','');
   bar.style.cssText = 'background:#fff;border:1px solid var(--border);border-radius:4px;padding:12px;margin-bottom:10px;position:sticky;top:0;z-index:5';
@@ -16332,6 +17050,7 @@ function renderInformesList(body, clientsMap, vehiclesMap) {
     else if (o.status === 'pending_visado') { stateBadge = 'Pendiente visado'; stateColor = '#a07000'; }
     else if (o.status === 'pending_double_check') { stateBadge = 'Pendiente doble ctrl'; stateColor = '#a07000'; }
     else if (o.status === 'in_progress') { stateBadge = 'En curso'; stateColor = '#1f6fbf'; }
+    else if (o.status === 'manual_report') { stateBadge = 'Informe manual'; stateColor = '#666'; }
     else { stateBadge = o.status || '—'; }
 
     row.innerHTML =
