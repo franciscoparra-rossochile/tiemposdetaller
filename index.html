@@ -7257,25 +7257,45 @@ function computeKPIs(rows) {
     }
     if (r.pauses && r.pauses.length) {
       r.pauses.forEach(function(p) {
-        // duration_ms es el campo real (no p.seconds).
+        // FIX BUG a4def683: el cálculo de tiempo en pausa estaba inflado
+        // (110h en una jornada de 72h posibles) por dos causas:
+        //   1) Pausas legacy (pre-FASE 3.2) tenían `duration_ms` en tiempo
+        //      CRUDO, incluyendo noches y fines de semana.
+        //   2) `computeKPIs` confiaba ciegamente en `duration_ms` sin
+        //      verificar si fue marcado como efectivo (`_eff: true`).
+        //
+        // Estrategia:
+        //   - Si tenemos paused_at + resumed_at: SIEMPRE recalcular efectivo,
+        //     ignorando `duration_ms` (puede estar contaminado).
+        //   - Si solo hay `duration_ms` sin timestamps: usar como fallback,
+        //     pero capear a 9h (una jornada laboral) para neutralizar legacy.
+        //   - Pausas abiertas: recalcular contra ended_at o Date.now() laboral.
         var ps = 0;
-        if (typeof p.duration_ms === 'number' && p.duration_ms > 0) {
+        var MAX_PAUSE_PER_ENTRY_S = 9 * 3600; // tope: una jornada laboral
+
+        if (p.paused_at && p.resumed_at) {
+          // Caso normal: tenemos timestamps, calculamos efectivo.
+          // Esto sobreescribe duration_ms legacy contaminado.
+          ps = effectivePauseSecBetween(p.paused_at, p.resumed_at);
+        } else if (p.paused_at && !p.resumed_at && r.ended_at && !r._is_active) {
+          // Pausa sin reanudar en servicio finalizado: paused_at → ended_at.
+          ps = effectivePauseSecBetween(p.paused_at, r.ended_at);
+        } else if (p.paused_at && !p.resumed_at && r._is_active && r._status === 'paused') {
+          // Pausa actualmente activa: paused_at → ahora.
+          ps = effectivePauseSecBetween(p.paused_at, Date.now());
+        } else if (typeof p.duration_ms === 'number' && p.duration_ms > 0) {
+          // Fallback legacy: sin timestamps utilizables.
           ps = Math.round(p.duration_ms / 1000);
+          if (ps > MAX_PAUSE_PER_ENTRY_S) ps = MAX_PAUSE_PER_ENTRY_S;
         } else if (typeof p.seconds === 'number') {
           ps = p.seconds;
+          if (ps > MAX_PAUSE_PER_ENTRY_S) ps = MAX_PAUSE_PER_ENTRY_S;
         } else if (typeof p.duration_seconds === 'number') {
           ps = p.duration_seconds;
+          if (ps > MAX_PAUSE_PER_ENTRY_S) ps = MAX_PAUSE_PER_ENTRY_S;
         }
-        // FASE 3.2: pausas abiertas calculadas con tiempo EFECTIVO (laboral),
-        // no real. Antes una pausa abierta sumaba la noche o el fin de semana.
-        // Pausa sin reanudar en servicio finalizado: paused_at → ended_at, laboral.
-        if (ps === 0 && p.paused_at && !p.resumed_at && r.ended_at && !r._is_active) {
-          ps = effectivePauseSecBetween(p.paused_at, r.ended_at);
-        }
-        // Pausa actualmente activa en servicio pausado: paused_at → ahora, laboral.
-        if (ps === 0 && p.paused_at && !p.resumed_at && r._is_active && r._status === 'paused') {
-          ps = effectivePauseSecBetween(p.paused_at, Date.now());
-        }
+
+        if (ps < 0) ps = 0;
         pause += ps;
         var key = p.reason || 'Sin motivo';
         if (!pauseReasons[key]) pauseReasons[key] = {count:0, seconds:0};
