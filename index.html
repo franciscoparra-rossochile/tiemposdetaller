@@ -2055,32 +2055,18 @@ const CHECKLIST_DOBLE_CONTROL = [
   {key:'dc_torque_filter',  label:'Marcaje torque filtro de aceite',     type:'bool',   required:true, allow_na:true},
   {key:'dc_apriete_filter', label:'Marcaje apriete filtro de aceite',    type:'bool',   required:true, allow_na:true},
   {key:'dc_label',          label:'Etiqueta de cambio de aceite pegada', type:'bool',   required:true, allow_na:true},
-  // FIX 2026-04-29 (bug 5ac1df6d, parte 2): habilitar N/A en limpieza de zona
-  // de trabajo. Hay servicios donde el ítem no aplica de forma natural — p.ej.
-  // cambio de cinta de airbag (trabajo en habitáculo, sin "zona de taller"
-  // que limpiar), reprogramación ECU, garantías administrativas, etc. Antes,
-  // el técnico estaba forzado a marcar "Sí" o "No" y la regla de calidad le
-  // bloqueaba el cierre con "No". Con allow_na el motivo N/A pasa a ser
-  // obligatorio (mismo patrón que los items de aceite), y el visador puede
-  // rechazar si no corresponde — el control de calidad se mantiene en visado.
-  {key:'dc_clean',          label:'Limpieza zona de trabajo',            type:'bool',   required:true, allow_na:true},
+  {key:'dc_clean',          label:'Limpieza zona de trabajo',            type:'bool',   required:true},
   {key:'dc_km_exit',        label:'Kilometraje de salida',               type:'number', required:true},
-  {key:'dc_na_reason',      label:'Motivo de la no aplicación (N/A)',    type:'textarea', required_if_na:true, rows:2, placeholder:'Ej: cambio de cinta de airbag (sin zona de taller), cliente excluyó cambio de aceite, reparación general, etc.'},
+  {key:'dc_na_reason',      label:'Motivo de la no aplicación (N/A)',    type:'textarea', required_if_na:true, rows:2, placeholder:'Ej: cliente excluyó cambio de aceite, reparación general sin aceite, etc.'},
   {key:'dc_observations',   label:'Observaciones (opcional)',            type:'textarea', required:false, rows:2}
 ];
 
 // Devuelve true si el doble control tiene items aceite-dependientes en N/A.
 // Útil para destacar el caso al visador.
-// FIX 2026-04-29 (bug 5ac1df6d, parte 2): lista explícita de items que son
-// aceite-dependientes. Antes era "cualquier item con allow_na", pero al
-// permitir N/A también en dc_clean (que NO es aceite-dependiente), esa
-// heurística generaría falsos positivos en la alerta al visador.
-var DC_OIL_DEPENDENT_KEYS = ['dc_torque_filter', 'dc_apriete_filter', 'dc_label'];
-
 function hasOilNa(doubleCheckData) {
   if (!doubleCheckData) return false;
-  return DC_OIL_DEPENDENT_KEYS.some(function(k){
-    return doubleCheckData[k] === 'N/A';
+  return CHECKLIST_DOBLE_CONTROL.some(function(it){
+    return it.allow_na && doubleCheckData[it.key] === 'N/A';
   });
 }
 
@@ -3748,6 +3734,7 @@ async function confirmHandoff() {
     if (sess.work_order_id) {
       var ste = {
         work_order_id: sess.work_order_id,
+        technician_id: CU.id,
         technician_username: CU.username,
         technician_name: CU.name,
         session_key: sess.session_key,
@@ -3817,6 +3804,7 @@ async function confirmAsistencia() {
     // Crear tramo de asistencia (entry abierto, ended_at=null) en service_time_entries
     var ste = {
       work_order_id: assistedWoId,
+      technician_id: CU.id,
       technician_username: CU.username,
       technician_name: CU.name,
       session_key: sess.session_key + '_assist_' + Date.now(),
@@ -5224,6 +5212,7 @@ async function doFinish(checklist, sessionKey) {
       if (woId) {
         var ste = {
           work_order_id: woId,
+          technician_id: CU.id,
           technician_username: CU.username,
           technician_name: CU.name,
           session_key: useKey,
@@ -5234,7 +5223,15 @@ async function doFinish(checklist, sessionKey) {
           notes: 'Servicio finalizado'
         };
         var rste = await sb.from('service_time_entries').insert(ste);
-        if (rste && rste.error) logR('STE_FINISH_ERR', {msg: rste.error.message}, 'warn');
+        // FIX 2026-04-30: antes este error se loguaba como 'warn' silencioso,
+        // ocultando que la tabla service_time_entries estaba bloqueada por RLS
+        // sin políticas. Ahora avisamos al usuario para que escale al admin.
+        // El servicio igual queda finalizado en history (que es la fuente
+        // primaria); service_time_entries es secundaria para KPIs detallados.
+        if (rste && rste.error) {
+          logR('STE_FINISH_ERR', {msg: rste.error.message}, 'err');
+          showGlobalError('Aviso: el tramo de tiempo no se guardó en service_time_entries (' + rste.error.message + '). El servicio sí se finalizó. Avisa a admin.', 6000);
+        }
 
         // FASE 2.7 BUG-FIX: auto-promover la OT a pending_visado al cerrar el cronometro.
         // Antes el tecnico se auto-marcaba "visado aprobado" en su propio checklist y la OT
@@ -7441,7 +7438,7 @@ async function exportSelectedHist(mode) {
         DC_Torque_Filtro: dc.dc_torque_filter === true ? 'SÍ' : dc.dc_torque_filter === false ? 'NO' : dc.dc_torque_filter === 'N/A' ? 'N/A' : '',
         DC_Apriete_Filtro: dc.dc_apriete_filter === true ? 'SÍ' : dc.dc_apriete_filter === false ? 'NO' : dc.dc_apriete_filter === 'N/A' ? 'N/A' : '',
         DC_Etiqueta: dc.dc_label === true ? 'SÍ' : dc.dc_label === false ? 'NO' : dc.dc_label === 'N/A' ? 'N/A' : '',
-        DC_Limpieza: dc.dc_clean === true ? 'SÍ' : dc.dc_clean === false ? 'NO' : dc.dc_clean === 'N/A' ? 'N/A' : '',
+        DC_Limpieza: dc.dc_clean === true ? 'SÍ' : dc.dc_clean === false ? 'NO' : '',
         DC_Motivo_NA: dc.dc_na_reason || '',
         // Visado
         Visado_Por: (cd && cd.visado_by_name) || '',
@@ -11307,7 +11304,7 @@ async function _saveDoubleCheckInner() {
   if (anyNa) {
     var reason = (data.dc_na_reason || '').trim();
     if (!reason) {
-      err.textContent = 'Indica el motivo de la no aplicación (N/A). Ej: cambio de cinta de airbag, cliente excluyó cambio de aceite, etc.';
+      err.textContent = 'Indica el motivo de la no aplicación (N/A). Ej: cliente excluyó cambio de aceite, reparación general sin aceite, etc.';
       err.style.display = 'block';
       return;
     }
