@@ -3,7 +3,7 @@
 <head>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" crossorigin="anonymous" defer></script>
 <meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <title>Rosso OPS</title>
 <link rel="icon" type="image/x-icon" href="favicon.ico"/>
@@ -169,6 +169,8 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 .empty{text-align:center;color:var(--wh4);font-size:13px;padding:28px 0;letter-spacing:.05em;text-transform:uppercase;font-family:var(--head)}
 .spin{display:inline-block;width:14px;height:14px;border:2px solid var(--border2);border-top-color:var(--red);border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:5px}
 @keyframes spin{to{transform:rotate(360deg)}}
+/* FEATURE 2026-04-30: pulso suave para chip 'En pausa' cuando supera el umbral */
+@keyframes rosso-pulse-gold{0%,100%{box-shadow:0 0 0 0 rgba(245,158,11,.45)}50%{box-shadow:0 0 0 6px rgba(245,158,11,0)}}
 .plate-tag{display:inline-block;background:#111;border-radius:3px;padding:2px 8px;font-family:var(--mono);font-size:11px;color:#fff;letter-spacing:.15em}
 .row{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border)}
 .row:last-child{border-bottom:none}
@@ -210,14 +212,14 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     <div><div class="hdr-t">OPS</div><div class="hdr-s">Operaciones Especiales</div></div>
   </div>
   <div class="body" style="justify-content:center;max-width:360px;margin:0 auto;width:100%">
-    <div class="card-accent">
+    <form class="card-accent" id="li-form" onsubmit="event.preventDefault(); doLogin();" autocomplete="on">
       <div class="lbl">Usuario</div>
-      <input class="inp" id="li-user" placeholder="nombre.apellido" autocomplete="username" autocapitalize="none" autocorrect="off"/>
+      <input class="inp" id="li-user" name="username" placeholder="nombre.apellido" autocomplete="username" autocapitalize="none" autocorrect="off" required/>
       <div class="lbl">Contrasena</div>
-      <input class="inp" type="password" id="li-pass" placeholder="Contrasena" autocomplete="current-password"/>
+      <input class="inp" type="password" id="li-pass" name="password" placeholder="Contrasena" autocomplete="current-password" required/>
       <div id="li-err" class="card-err" style="display:none;margin-bottom:8px;font-size:12px;color:var(--red);font-weight:600"></div>
-      <button class="btn btn-red" id="li-btn" onclick="doLogin()">Ingresar</button>
-    </div>
+      <button type="submit" class="btn btn-red" id="li-btn">Ingresar</button>
+    </form>
     <button class="btn btn-out" style="margin-top:4px" onclick="openModal('m-create-user')">Crear cuenta nueva</button>
     <div id="conn-status" style="text-align:center;font-size:10px;color:var(--wh4);margin-top:8px;font-family:var(--mono)"></div>
     <button id="retry-btn" onclick="retryConn()" style="display:none;margin-top:8px;background:var(--red);color:#fff;border:none;border-radius:4px;padding:8px 16px;font-size:12px;font-weight:700;cursor:pointer;font-family:var(--head);letter-spacing:.06em;text-transform:uppercase">Reintentar conexion</button>
@@ -270,7 +272,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     <div class="tab" data-tab="b-ingreso" onclick="bossTab('b-ingreso')" id="tab-ingreso" style="display:none">Ingreso Taller</div>
     <div class="tab" data-tab="b-catastro" onclick="bossTab('b-catastro')" id="tab-catastro" style="display:none">Catastro Vehículos</div>
     <div class="tab" data-tab="b-entregados" onclick="bossTab('b-entregados')" id="tab-entregados" style="display:none">Entregados</div>
-    <div class="tab active" data-tab="b-online" onclick="bossTab('b-online')" id="tab-online">En curso</div>
+    <div class="tab active" data-tab="b-online" onclick="bossTab('b-online')" id="tab-online">En curso<span class="ndot" id="boss-online-dot" title="Hay muchos servicios pausados"></span></div>
     <div class="tab" data-tab="b-calendario" onclick="bossTab('b-calendario')" id="tab-calendario">Calendario</div>
     <div class="tab" data-tab="b-plan" onclick="bossTab('b-plan')" id="tab-plan">Planificacion</div>
     <div class="tab" data-tab="b-hist" onclick="bossTab('b-hist')" id="tab-hist">Historial</div>
@@ -400,6 +402,23 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     <textarea class="inp" id="pr-text" rows="3" style="height:80px" placeholder="Ej: Cambio de aceite patente XYZ · cliente urgente..."></textarea>
     <button class="btn btn-gold" onclick="confirmPrioridadPause()">Pausar y cambiar</button>
     <button class="btn btn-out" onclick="closeModal('m-prioridad')" style="margin-top:8px">Cancelar</button>
+  </div>
+</div>
+
+<!-- FASE 4.0: Modal hallazgo en vivo (durante un servicio activo) -->
+<div class="overlay" id="m-finding" style="display:none">
+  <div class="modal" style="max-width:440px">
+    <div class="modal-t">Agregar hallazgo</div>
+    <div class="modal-s" id="m-finding-sub">Lo que escribas se sumará al informe de servicio en tiempo real.</div>
+    <div class="lbl" style="margin-top:6px">Hallazgo / observación</div>
+    <textarea class="inp" id="m-finding-text" rows="4" style="height:110px" placeholder="Ej: Se detectó fuga menor en cárter trasero. Se sugiere reemplazo de empaquetadura en próximo servicio."></textarea>
+    <div style="font-size:10px;color:var(--wh4);margin-top:2px;line-height:1.4">Sé específico. Esto queda registrado con tu nombre y la hora exacta. El gestor comercial podrá comunicarlo al cliente sin que tengas que avisar aparte.</div>
+    <div class="lbl" style="margin-top:10px">Foto (opcional)</div>
+    <input type="file" id="m-finding-photo" accept="image/*" capture="environment" style="font-size:11px"/>
+    <div id="m-finding-photo-preview" style="margin-top:6px"></div>
+    <div id="m-finding-err" style="display:none;color:var(--red);font-size:12px;margin:8px 0;font-weight:600;padding:8px;background:var(--red4);border-radius:4px"></div>
+    <button class="btn btn-red" id="m-finding-btn" onclick="saveLiveFinding()" style="margin-top:12px">Guardar hallazgo</button>
+    <button class="btn btn-out" onclick="closeModal('m-finding')" style="margin-top:8px">Cancelar</button>
   </div>
 </div>
 
@@ -871,10 +890,11 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     <div class="lbl">Patente</div>
     <input class="inp" id="m-ev-plate" placeholder="ABCD12" oninput="this.value=this.value.toUpperCase().replace(/[^A-Z0-9]/g,'')"/>
     <div class="lbl">Fecha y hora <span style="color:var(--wh4);font-weight:400;text-transform:none;letter-spacing:0">(formato 24h, horario taller)</span></div>
-    <input class="inp" type="datetime-local" id="m-ev-dt" step="900" oninput="validateWorkshopHour(this)"/>
+    <input class="inp" type="datetime-local" id="m-ev-dt" step="900" oninput="validateWorkshopHour(this);refreshEventTechHint()"/>
     <div id="m-ev-dt-hint" style="font-size:10px;color:var(--wh4);margin-top:-4px;margin-bottom:8px;font-family:var(--mono);min-height:14px;line-height:1.4">L-X 08:30 a 19:00 · J 08:30 a 18:00 · V 08:30 a 17:00 · S/D cerrado</div>
-    <div class="lbl">Técnico designado</div>
-    <select class="inp" id="m-ev-tech"><option value="">Sin asignar</option></select>
+    <div class="lbl">Técnico designado <span style="color:var(--red)" id="m-ev-tech-req" style="display:none">*</span></div>
+    <select class="inp" id="m-ev-tech" onchange="refreshEventTechHint()"><option value="">Sin asignar</option></select>
+    <div id="m-ev-tech-hint" style="font-size:10px;color:var(--wh4);margin-top:-4px;margin-bottom:8px;line-height:1.4;min-height:14px"></div>
     <div class="lbl">Tiempo objetivo (min) <span style="color:var(--red)">*</span></div>
     <input class="inp" type="number" id="m-ev-goal" placeholder="Ej: 60" min="1" max="480"/>
     <div id="m-ev-goal-hint" style="font-size:10px;color:var(--wh4);margin-top:-4px;margin-bottom:8px;font-family:var(--mono);line-height:1.4">Si el técnico supera este tiempo, se enviará alerta automática.</div>
@@ -978,8 +998,33 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // ═══════════════════════════════════════════════
 // CONFIG & DEBUG
 // ═══════════════════════════════════════════════
-const DEBUG = true;
-const APP_VERSION = 'v2.7.OPS-historial-clean';
+// FIX QW-12 (2026-04-30): config global única para evitar drift entre scripts.
+// Cualquier ajuste de timeouts/intervals va aqui y los demas scripts lo leen.
+window.RossoConfig = Object.freeze({
+  APP_VERSION: 'v1.0.0-rc1',                        // hotfix v1 sobre v2.7.OPS-historial-clean
+  SDK_TIMEOUT_MS: 8000,
+  CONN_TIMEOUT_MS: 5000,
+  EMERGENCY_TIMEOUT_MS: 15000,
+  POLL_INTERVAL_MS: 3000,
+  POLL_MAX_BACKOFF_MS: 60000,
+  TICK_INTERVAL_MS: 1000,
+  SESSION_MAX_AGE_MS: 4 * 60 * 60 * 1000,           // FIX QW-6: bajado de 12h a 4h
+  IDLE_TIMEOUT_MS: 30 * 60 * 1000,                  // 30 min de idle antes de exigir re-login
+  PAUSED_ALERT_THRESHOLD: 3                         // Umbral para alertar visualmente sobre exceso de servicios en pausa
+});
+
+// FIX QW-1 (2026-04-30): DEBUG ya no esta hardcodeado en true.
+// En produccion no spammeamos consola con payloads sensibles. Para activar
+// en un dispositivo: agregar ?debug=1 a la URL o setear localStorage.rosso_debug='1'.
+const DEBUG = (function() {
+  try {
+    if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') return true;
+    if (/[?&]debug=1\b/.test(location.search)) return true;
+    if (localStorage.getItem('rosso_debug') === '1') return true;
+  } catch(_) {}
+  return false;
+})();
+const APP_VERSION = window.RossoConfig.APP_VERSION;
 const SURL = 'https://jczmupcmeixpwjedfgtk.supabase.co';
 const SKEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impjem11cGNtZWl4cHdqZWRmZ3RrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY5NzMxOTMsImV4cCI6MjA5MjU0OTE5M30.DuICC_pCQGv27lZivieXRRvGz9A1GNkgmhvTvyKo25o';
 var sb = null; // initialized in init()
@@ -1014,11 +1059,20 @@ window.onunhandledrejection = function(e) {
 };
 
 let dbgLines = [];
+// FIX QW-1 (2026-04-30): si DEBUG=false, NO emitimos console.log; ademas
+// redactamos payloads sensibles (login, insert) para que no aparezcan ni
+// siquiera en error/warn. En desarrollo (?debug=1) sigue siendo verboso.
+const _SENSITIVE_LABELS = new Set([
+  'LOGIN_RESULT', 'LOGIN_ATTEMPT', 'INSERT_SESSION_PAYLOAD',
+  'FINISH_HISTORY_PAYLOAD', 'FORCE_PW_OK', 'SESSION_RESTORED'
+]);
 function logR(l,d,lv){
   var prefix = '[Rosso]';
-  if (lv === 'err' || lv === 'e') console.error(prefix, l, d || '');
-  else if (lv === 'warn' || lv === 'w') console.warn(prefix, l, d || '');
-  else if (DEBUG) console.log(prefix, l, d || '');
+  var payload = d || '';
+  if (!DEBUG && _SENSITIVE_LABELS.has(l)) payload = {_redacted: true};
+  if (lv === 'err' || lv === 'e') console.error(prefix, l, payload);
+  else if (lv === 'warn' || lv === 'w') console.warn(prefix, l, payload);
+  else if (DEBUG) console.log(prefix, l, payload);
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1039,6 +1093,99 @@ function logR(l,d,lv){
 function normalizePlate(p) {
   if (!p) return '';
   return String(p).toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+
+// ═══════════════════════════════════════════════════════════════
+// FASE 4.0 — CACHE GLOBAL DE INFO DE VEHÍCULO POR PATENTE
+// ═══════════════════════════════════════════════════════════════
+// El equipo pidió que en TODAS las cards (en curso, planificación,
+// calendario, historial, ingresos) aparezca marca + modelo junto a
+// la patente, no solo la patente desnuda.
+//
+// Como muchas tablas (active_sessions, scheduled_services, history)
+// solo guardan el string `plate`, mantenemos un cache en memoria que
+// se llena bajo demanda desde client_vehicles, y se consulta de forma
+// sincrónica al renderizar las cards.
+//
+// Diseño: una sola query batch al cargar listas grandes (ver
+// preloadPlateInfoFromList), y consulta puntual en miss.
+// ═══════════════════════════════════════════════════════════════
+var _plateInfoCache = {}; // { 'AABB12': {brand, model, vehicle_id} }
+var _plateInfoMisses = {}; // patentes ya consultadas que no existen, para no machacar BD
+
+// Devuelve {brand, model} si está en cache; null si no.
+function plateInfoCached(plate) {
+  if (!plate) return null;
+  var key = normalizePlate(plate);
+  return _plateInfoCache[key] || null;
+}
+
+// Carga en bloque la info de un set de patentes desde client_vehicles.
+// Idempotente: si ya están en cache, no las pide de nuevo.
+async function preloadPlateInfo(plates) {
+  if (!sb || !plates || !plates.length) return;
+  var pendingPlates = [];
+  var seen = {};
+  plates.forEach(function(p){
+    if (!p) return;
+    var key = normalizePlate(p);
+    if (!key || key === 'LOGISTICADETALLER') return;
+    if (_plateInfoCache[key] || _plateInfoMisses[key] || seen[key]) return;
+    seen[key] = true;
+    pendingPlates.push(p);
+  });
+  if (!pendingPlates.length) return;
+  try {
+    // client_vehicles guarda plate sin normalizar — buscamos por la patente cruda
+    var r = await sb.from('client_vehicles')
+      .select('id,plate,brand,model')
+      .in('plate', pendingPlates);
+    if (r && r.data) {
+      r.data.forEach(function(v){
+        var key = normalizePlate(v.plate);
+        if (key) _plateInfoCache[key] = {
+          brand: v.brand || '',
+          model: v.model || '',
+          vehicle_id: v.id
+        };
+      });
+    }
+    // Marcar como miss las que no aparecieron (evita reintentos)
+    pendingPlates.forEach(function(p){
+      var key = normalizePlate(p);
+      if (!_plateInfoCache[key]) _plateInfoMisses[key] = true;
+    });
+  } catch(e) {
+    logR('PRELOAD_PLATE_INFO_ERR', {msg: e.message, count: pendingPlates.length}, 'warn');
+  }
+}
+
+// Helper sincrónico: devuelve "MARCA MODELO" o null si no lo conoce.
+// Para uso inline en innerHTML de cards.
+function plateBrandModel(plate) {
+  var info = plateInfoCached(plate);
+  if (!info) return null;
+  var s = '';
+  if (info.brand) s += info.brand;
+  if (info.model) s += (s ? ' ' : '') + info.model;
+  return s.trim() || null;
+}
+
+// Helper de display: pinta "MARCA MODELO · [PLATE]" como bloque inline,
+// con la patente en estilo plate-tag y la marca/modelo en texto secundario.
+// Si no se conoce marca/modelo, solo se ve la patente.
+// Devuelve string HTML listo para concatenar.
+function plateTagWithBrand(plate, opts) {
+  if (!plate) return '';
+  opts = opts || {};
+  var bm = plateBrandModel(plate);
+  var size = opts.size || 'md'; // 'sm' | 'md'
+  var bmFs = size === 'sm' ? '10px' : '11px';
+  var html = '<span class="plate-tag">' + escapeHtml(plate) + '</span>';
+  if (bm) {
+    html += '<span style="font-size:' + bmFs + ';color:var(--wh3);font-weight:600;text-transform:uppercase;letter-spacing:.02em;margin-left:5px">' + escapeHtml(bm) + '</span>';
+  }
+  return html;
 }
 
 // logServiceEvent — registra eventos operacionales con metadata estandarizada.
@@ -2763,9 +2910,12 @@ var _supabaseReady = false;
 var _connState = 'pending'; // 'pending' | 'ok' | 'sdk_fail' | 'create_fail' | 'ping_fail' | 'offline'
 var _connDetail = '';
 
-const SDK_TIMEOUT_MS = 8000;
-const CONN_TIMEOUT_MS = 5000;
-const EMERGENCY_TIMEOUT_MS = 15000;
+// FIX QW-12 (2026-04-30): leer de RossoConfig para evitar drift con el IIFE
+// final. Mantenemos los nombres locales como aliases por compatibilidad con
+// el resto del codigo del archivo.
+const SDK_TIMEOUT_MS = window.RossoConfig.SDK_TIMEOUT_MS;
+const CONN_TIMEOUT_MS = window.RossoConfig.CONN_TIMEOUT_MS;
+const EMERGENCY_TIMEOUT_MS = window.RossoConfig.EMERGENCY_TIMEOUT_MS;
 
 function setLoadStatus(status, detail) {
   var s = document.getElementById('load-status');
@@ -3056,7 +3206,11 @@ function retryConn() {
 // El logout explicito (boton Salir) borra la sesion guardada, entonces
 // si alguien necesita asegurar que el proximo usuario haga login,
 // debe tocar Salir antes de prestar el dispositivo.
-const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000; // 12 horas
+// FIX QW-6 (2026-04-30): bajado de 12h a 4h. La jornada del taller es <4h,
+// y ademas con dispositivos compartidos entre turnos, 12h heredaba sesiones
+// del turno anterior y dejaba acciones registradas con el tecnico equivocado.
+// Adicional: idle-timeout de 30 min cierra la sesion si no hay interaccion.
+const SESSION_MAX_AGE_MS = window.RossoConfig.SESSION_MAX_AGE_MS; // 4h
 
 async function tryRestoreSession() {
   var raw;
@@ -3149,7 +3303,21 @@ function closeModal(id) { document.getElementById(id).style.display = 'none'; }
 // ═══════════════════════════════════════════════
 // AUTH
 // ═══════════════════════════════════════════════
+// FIX QW-2 (2026-04-30): guard contra doble-submit. Antes el boton se
+// deshabilitaba pero si el form se submitea por Enter y por click rapido,
+// se podia disparar doLogin dos veces y duplicar queries a `users`.
+let _loggingIn = false;
 async function doLogin() {
+  if (_loggingIn) { logR('LOGIN_GUARD_BLOCKED', {}, 'warn'); return; }
+  _loggingIn = true;
+  try {
+    await _doLoginInner();
+  } finally {
+    _loggingIn = false;
+  }
+}
+
+async function _doLoginInner() {
   const u = document.getElementById('li-user').value.trim().toLowerCase();
   const p = document.getElementById('li-pass').value;
   const btn = document.getElementById('li-btn');
@@ -3247,6 +3415,19 @@ async function doLogin() {
 }
 
 function doLogout() {
+  // FIX UX (2026-04-30): si el tecnico tiene cronometro corriendo, confirmar
+  // antes de cerrar sesion. Antes un toque accidental cerraba la sesion y
+  // dejaba el cronometro corriendo en BD; al volver a logear el tecnico
+  // tenia que reanudar a mano.
+  if (T && T.running && T.sessionKey) {
+    var ok = window.confirm(
+      'Tienes un cronometro corriendo (' + (T.srvLabel || 'servicio') + ').\n\n' +
+      'Si cierras sesion, el cronometro queda activo en el servidor y deberas\n' +
+      'reanudarlo desde "Mis servicios" al volver a entrar.\n\n' +
+      'Cerrar sesion de todos modos?'
+    );
+    if (!ok) return;
+  }
   logR('LOGOUT', {user: CU ? CU.username : 'none'});
   // Borrar sesion persistente (intencional - si el usuario toca Salir, quiere salir)
   try { localStorage.removeItem('rosso_session'); } catch(e) {}
@@ -3394,13 +3575,59 @@ async function saveForcedPassword() {
 // ═══════════════════════════════════════════════
 // POLLING
 // ═══════════════════════════════════════════════
+// FIX QW-9 (2026-04-30): el polling antes era setInterval(pollAll, 3000) sin
+// retry, sin backoff y sin coordinacion con operaciones del usuario. Si la
+// BD se caia, hacia 1.200 queries en 1 hora pidiendole a una BD muerta.
+// Ahora: setTimeout recursivo con backoff exponencial al fallo (3s -> 6s ->
+// 12s -> 24s -> 48s -> 60s max), reset al primer exito.
+//
+// FIX QW-4 (2026-04-30): cuando la pestaña se oculta, suspendemos pollInt y
+// tickInt completamente. En webviews antiguos (kiosco iOS) los intervals no
+// se throttlean automaticamente y consumen CPU al 100% durante las 8h que
+// el dispositivo queda dormido encima del meson.
+//
+// Coordinacion: _opsInFlight cuenta operaciones criticas en vuelo (pause,
+// resume, finish, login). Mientras > 0, pollAll se salta para no pisar el
+// estado local con datos viejos de BD.
+let _opsInFlight = 0;
+function startOp() { _opsInFlight++; }
+function endOp() { _opsInFlight = Math.max(0, _opsInFlight - 1); }
+let _pollFailures = 0;
+let _pollScheduled = null;
+
+function _schedulePoll() {
+  if (_pollScheduled) { clearTimeout(_pollScheduled); _pollScheduled = null; }
+  var base = window.RossoConfig.POLL_INTERVAL_MS;
+  var max = window.RossoConfig.POLL_MAX_BACKOFF_MS;
+  var delay = Math.min(max, base * Math.pow(2, _pollFailures));
+  _pollScheduled = setTimeout(async function() {
+    _pollScheduled = null;
+    if (!CU) return;
+    if (document.visibilityState === 'hidden') return;   // se reactivara en visibilitychange
+    if (!navigator.onLine) {
+      _pollFailures = Math.min(_pollFailures + 1, 6);
+      _schedulePoll();
+      return;
+    }
+    try {
+      await pollAll();
+      _pollFailures = 0;                                  // reset al primer exito
+    } catch(e) {
+      _pollFailures = Math.min(_pollFailures + 1, 6);
+      logR('POLL_FAIL', {count: _pollFailures, msg: e && e.message ? e.message : String(e)}, 'warn');
+    }
+    if (CU) _schedulePoll();
+  }, delay);
+}
+
 function startPolling() {
   stopPolling();
   // Cargar cache de avatares de todos los usuarios para que aparezcan
   // en En Curso, Historial, listas, etc. Es UN solo query al arranque.
   refreshAvatarsCache();
-  pollAll();
-  pollInt = setInterval(pollAll, 3000);
+  pollAll().catch(function(){});
+  _schedulePoll();
+  _startIdleTracker(); // FIX QW-6: cierre por inactividad de 30 min
   tickInt = setInterval(function() {
     // Este interval corre cada 1 segundo y hace UNA sola cosa: repintar la UI.
     // Todos los numeros de tiempo se calculan derivados de timestamps con
@@ -3427,29 +3654,91 @@ function startPolling() {
       }
     }
     refreshLiveUI();
-  }, 1000);
+  }, window.RossoConfig.TICK_INTERVAL_MS);
 }
 
 function stopPolling() {
-  if (pollInt) { clearInterval(pollInt); pollInt = null; }
+  if (_pollScheduled) { clearTimeout(_pollScheduled); _pollScheduled = null; }
+  if (pollInt) { clearInterval(pollInt); pollInt = null; }   // legacy compat
   if (tickInt) { clearInterval(tickInt); tickInt = null; }
+  _stopIdleTracker();
+  _pollFailures = 0;
 }
 
 // ═══════════════════════════════════════════════════════════════
-// Cuando el navegador vuelve a estar visible (desbloqueo pantalla,
-// cambio de pestana, regreso del home screen), forzar un refresh
-// inmediato del UI. Sin esto, en iOS Safari el usuario ve el tiempo
-// congelado por 1-2 segundos hasta que el ticker se despierte.
-//
-// Gracias al refactor de timestamps, el tiempo REAL nunca se pierde
-// (se calcula como ahora - started_at). Esto es solo para que la UI
-// se ponga al dia visualmente lo mas rapido posible.
+// FIX QW-6 (2026-04-30): idle-tracker.
+// Si el dispositivo queda 30 min sin interaccion (touch, click, key) Y NO
+// hay cronometro corriendo, cerramos sesion automaticamente. Esto reduce
+// el riesgo de que un dispositivo prestado entre turnos quede logueado
+// con la sesion del tecnico anterior.
+// Si hay cronometro corriendo, NO cerramos sesion (el tecnico esta trabajando
+// en el vehiculo); solo trackeamos para el momento que finalice.
+// ═══════════════════════════════════════════════════════════════
+let _idleTimer = null;
+let _idleHandler = null;
+function _startIdleTracker() {
+  _stopIdleTracker();
+  var ms = (window.RossoConfig && window.RossoConfig.IDLE_TIMEOUT_MS) || (30*60*1000);
+  function reset() {
+    if (_idleTimer) clearTimeout(_idleTimer);
+    _idleTimer = setTimeout(function() {
+      // No deslogear si hay cronometro corriendo
+      if (T && T.running && T.sessionKey) {
+        logR('IDLE_SKIP_RUNNING', {});
+        reset();
+        return;
+      }
+      logR('IDLE_LOGOUT', {after_min: Math.round(ms/60000)}, 'warn');
+      try { showGlobalError('Sesion cerrada por inactividad', 5000); } catch(_){}
+      try { doLogoutSilent(); } catch(_){}
+    }, ms);
+  }
+  _idleHandler = reset;
+  ['touchstart','mousedown','keydown','scroll'].forEach(function(ev) {
+    document.addEventListener(ev, reset, {passive: true});
+  });
+  reset();
+}
+function _stopIdleTracker() {
+  if (_idleTimer) { clearTimeout(_idleTimer); _idleTimer = null; }
+  if (_idleHandler) {
+    ['touchstart','mousedown','keydown','scroll'].forEach(function(ev) {
+      try { document.removeEventListener(ev, _idleHandler); } catch(_){}
+    });
+    _idleHandler = null;
+  }
+}
+
+// Variante de logout sin confirm() (para idle, no necesita preguntar).
+function doLogoutSilent() {
+  try { localStorage.removeItem('rosso_session'); } catch(e) {}
+  stopPolling();
+  resetT();
+  CU = null; liveData = []; lastNotifId = null;
+  selSrv = null; selSub = null; selDesc = ''; selPlate = '';
+  techMode = false;
+  try {
+    document.getElementById('li-user').value = '';
+    document.getElementById('li-pass').value = '';
+    document.getElementById('li-err').style.display = 'none';
+  } catch(_){}
+  showScreen('s-login');
+}
+
+// ═══════════════════════════════════════════════════════════════
+// FIX QW-4 (2026-04-30): suspender intervals cuando la pestaña esta oculta.
+// Cuando vuelve a visible, refrescar inmediato y reanudar polling.
 // ═══════════════════════════════════════════════════════════════
 document.addEventListener('visibilitychange', function() {
   if (document.visibilityState === 'visible' && CU) {
     logR('VISIBILITY_RESUMED', {});
+    // Si los intervals fueron suspendidos, reiniciarlos
+    if (!tickInt) {
+      startPolling();
+      return; // startPolling ya hace pollAll y refreshLiveUI
+    }
     // Refresh inmediato: trae datos frescos y repinta
-    pollAll();
+    pollAll().catch(function(){});
     refreshLiveUI();
     // Ademas si tengo timer activo, actualizar display
     if (T.running && T.sessionKey) {
@@ -3460,11 +3749,27 @@ document.addEventListener('visibilitychange', function() {
         if (disp) disp.textContent = fmtT(T.sec);
       }
     }
+  } else if (document.visibilityState === 'hidden') {
+    logR('VISIBILITY_HIDDEN', {});
+    // Suspender intervals para no quemar CPU/bateria mientras la pantalla
+    // esta apagada o la pestaña en background. El proximo visibilitychange
+    // reanudara con datos frescos.
+    if (_pollScheduled) { clearTimeout(_pollScheduled); _pollScheduled = null; }
+    if (pollInt) { clearInterval(pollInt); pollInt = null; }
+    if (tickInt) { clearInterval(tickInt); tickInt = null; }
   }
 });
 
 async function pollAll() {
   if (!CU) return;
+  // FIX coordinacion: si hay operaciones criticas en vuelo (pause/resume/
+  // finish), saltar este ciclo. Antes el polling pisaba el estado local del
+  // usuario con datos a medio actualizar de BD.
+  if (_opsInFlight > 0) {
+    logR('POLL_SKIP_OPS_IN_FLIGHT', {count: _opsInFlight});
+    return;
+  }
+  if (!navigator.onLine) return;
   await Promise.all([fetchLive(), fetchNotifs()]);
 }
 
@@ -3529,6 +3834,48 @@ function validateWorkshopHour(inputEl) {
   } else {
     hint.textContent = '✗ ' + v.reason;
     hint.style.color = 'var(--red)';
+  }
+}
+
+// FASE 4.0: feedback en vivo en el modal de agendar.
+// Si el usuario está agendando para hoy y no eligió técnico, mostrar
+// advertencia inmediata (no esperar al guardar). El bloqueo duro vive
+// en saveEvent; este hint es solo UX para evitar que el usuario tipee
+// todo y se encuentre con el rechazo al final.
+function refreshEventTechHint() {
+  var dtEl = document.getElementById('m-ev-dt');
+  var techEl = document.getElementById('m-ev-tech');
+  var hintEl = document.getElementById('m-ev-tech-hint');
+  var reqStar = document.getElementById('m-ev-tech-req');
+  if (!dtEl || !techEl || !hintEl) return;
+  var dtVal = dtEl.value;
+  var techId = techEl.value;
+  if (!dtVal) {
+    hintEl.textContent = '';
+    hintEl.style.color = 'var(--wh4)';
+    if (reqStar) reqStar.style.display = 'none';
+    return;
+  }
+  var sched = new Date(dtVal);
+  var todayStart = new Date(); todayStart.setHours(0,0,0,0);
+  var todayEnd = new Date(); todayEnd.setHours(23,59,59,999);
+  var isToday = sched >= todayStart && sched <= todayEnd;
+  if (isToday && !techId) {
+    hintEl.innerHTML = '⚠ <b>Para hoy debes designar un técnico antes de guardar.</b> No se permite agendar el mismo día sin asignación.';
+    hintEl.style.color = 'var(--red)';
+    if (reqStar) reqStar.style.display = 'inline';
+  } else if (!techId) {
+    hintEl.textContent = 'Servicio futuro sin técnico — recuerda asignar antes del día agendado.';
+    hintEl.style.color = 'var(--gold3)';
+    if (reqStar) reqStar.style.display = 'none';
+  } else if (isToday) {
+    hintEl.textContent = '✓ Servicio para hoy con técnico asignado.';
+    hintEl.style.color = 'var(--green)';
+    if (reqStar) reqStar.style.display = 'none';
+  } else {
+    hintEl.textContent = '✓ Técnico designado.';
+    hintEl.style.color = 'var(--green)';
+    if (reqStar) reqStar.style.display = 'none';
   }
 }
 
@@ -3762,6 +4109,145 @@ async function confirmHandoff() {
   } catch(e) {
     logR('HANDOFF_THREW', {msg: e.message}, 'err');
     showGlobalError('Error inesperado: ' + e.message, 5000);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// FASE 4.0 — HALLAZGOS EN VIVO durante un servicio activo
+// ═══════════════════════════════════════════════════════════════
+// El técnico, mientras está trabajando, puede agregar hallazgos al
+// informe sin tener que detener el cronómetro ni esperar al cierre.
+// Cada hallazgo se persiste en work_orders.checklist_data.live_findings
+// y queda visible para el gestor comercial para que pueda comunicarle
+// al cliente en tiempo real cualquier novedad.
+//
+// El botón "+ Hallazgo" aparece en:
+//   - Cronómetro principal del técnico (renderTimerCard)
+//   - Cards "Mis Servicios" cuando un servicio está running/paused
+//
+// Estado global del modal:
+//   _findingState = { workOrderId, plate, sessionKey, photoDataUrl }
+// ═══════════════════════════════════════════════════════════════
+var _findingState = null;
+
+function openLiveFindingModal(workOrderId, plate, sessionKey) {
+  if (!workOrderId) {
+    showGlobalError('Este servicio no está vinculado a una orden de trabajo. No se puede agregar hallazgo en vivo.', 5000);
+    return;
+  }
+  _findingState = {
+    workOrderId: workOrderId,
+    plate: plate || '',
+    sessionKey: sessionKey || null,
+    photoDataUrl: null
+  };
+  var sub = document.getElementById('m-finding-sub');
+  if (sub) {
+    sub.innerHTML = 'Lo que escribas se sumará al informe del servicio en tiempo real'
+      + (plate ? ' · <span class="plate-tag">' + escapeHtml(plate) + '</span>' : '') + '.';
+  }
+  var ta = document.getElementById('m-finding-text');
+  if (ta) ta.value = '';
+  var ph = document.getElementById('m-finding-photo');
+  if (ph) ph.value = '';
+  var prev = document.getElementById('m-finding-photo-preview');
+  if (prev) prev.innerHTML = '';
+  var err = document.getElementById('m-finding-err');
+  if (err) err.style.display = 'none';
+  var btn = document.getElementById('m-finding-btn');
+  if (btn) { btn.disabled = false; btn.innerHTML = 'Guardar hallazgo'; }
+  // Listener para preview
+  if (ph) {
+    ph.onchange = function() {
+      var f = ph.files && ph.files[0];
+      if (!f) { _findingState.photoDataUrl = null; if (prev) prev.innerHTML = ''; return; }
+      var reader = new FileReader();
+      reader.onload = function(ev) {
+        _findingState.photoDataUrl = ev.target.result;
+        if (prev) prev.innerHTML = '<img src="' + ev.target.result + '" style="max-width:100%;max-height:140px;border-radius:4px;border:1px solid var(--border);margin-top:4px"/>';
+      };
+      reader.readAsDataURL(f);
+    };
+  }
+  openModal('m-finding');
+  setTimeout(function(){ if (ta) ta.focus(); }, 100);
+}
+
+async function saveLiveFinding() {
+  var st = _findingState;
+  if (!st || !st.workOrderId) { showGlobalError('Estado del modal corrupto, vuelve a intentarlo.', 4000); return; }
+  var ta = document.getElementById('m-finding-text');
+  var err = document.getElementById('m-finding-err');
+  var btn = document.getElementById('m-finding-btn');
+  var text = (ta && ta.value || '').trim();
+  if (text.length < 5) {
+    if (err) { err.textContent = 'Describe el hallazgo (mínimo 5 caracteres).'; err.style.display = 'block'; }
+    return;
+  }
+  if (text.length > 1000) {
+    if (err) { err.textContent = 'Texto demasiado largo (máximo 1000 caracteres). Resume o crea varios hallazgos.'; err.style.display = 'block'; }
+    return;
+  }
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spin"></span> Guardando...'; }
+  try {
+    // Leer estado actual de la OT (no podemos hacer un patch parcial JSON sin race conditions)
+    var rGet = await sb.from('work_orders').select('checklist_data').eq('id', st.workOrderId).maybeSingle();
+    if (rGet.error) throw new Error(rGet.error.message);
+    var cd = (rGet.data && rGet.data.checklist_data) ? rGet.data.checklist_data : {};
+    if (!Array.isArray(cd.live_findings)) cd.live_findings = [];
+    var entry = {
+      at: new Date().toISOString(),
+      by_id: CU ? CU.id : null,
+      by_name: CU ? CU.name : null,
+      by_username: CU ? CU.username : null,
+      session_key: st.sessionKey || null,
+      text: text
+    };
+    if (st.photoDataUrl) entry.photo = st.photoDataUrl;
+    cd.live_findings.push(entry);
+    // Si por alguna razón el shell del informe aún no se había creado (caso edge: sesión iniciada
+    // antes del deploy de FASE 4.0), lo creamos ahora para que el informe quede consistente.
+    if (!cd.report_started_at) {
+      cd.report_started_at = new Date().toISOString();
+      cd.report_started_by = CU ? CU.id : null;
+      cd.report_started_by_name = CU ? CU.name : null;
+      cd.report_state = 'en_desarrollo';
+    }
+    var rUp = await sb.from('work_orders').update({
+      checklist_data: cd,
+      updated_by: CU ? CU.id : null
+    }).eq('id', st.workOrderId);
+    if (rUp.error) throw new Error(rUp.error.message);
+    // Notificar al gestor comercial de la OT (si lo hay) sobre el nuevo hallazgo,
+    // así puede comunicar al cliente sin esperar al cierre.
+    try {
+      var rOt = await sb.from('work_orders').select('commercial_manager_id, ot_number, plate').eq('id', st.workOrderId).maybeSingle();
+      if (rOt && rOt.data && rOt.data.commercial_manager_id) {
+        var preview = text.length > 80 ? text.slice(0, 77) + '...' : text;
+        await sb.from('notifications').insert({
+          type: 'finding',
+          title: '🔍 Nuevo hallazgo · OT-' + (rOt.data.ot_number || '?'),
+          sub: (rOt.data.plate ? rOt.data.plate + ' · ' : '') + preview,
+          target_user_id: rOt.data.commercial_manager_id,
+          work_order_id: st.workOrderId
+        });
+      }
+    } catch(eN) { logR('FINDING_NOTIF_ERR', {msg: eN.message}, 'warn'); }
+    logServiceEvent({
+      plate: st.plate,
+      workOrderId: st.workOrderId,
+      action: 'live_finding_added',
+      origin: 'tech_card',
+      detail: {chars: text.length, has_photo: !!st.photoDataUrl},
+      sessionKey: st.sessionKey
+    });
+    closeModal('m-finding');
+    _findingState = null;
+    showGlobalError('✓ Hallazgo registrado en el informe.', 3000);
+  } catch(e) {
+    if (err) { err.textContent = 'Error: ' + (e.message || e); err.style.display = 'block'; }
+    if (btn) { btn.disabled = false; btn.innerHTML = 'Guardar hallazgo'; }
+    logR('SAVE_FINDING_ERR', {msg: e.message, wo: st.workOrderId}, 'err');
   }
 }
 
@@ -4081,6 +4567,17 @@ async function fetchLive() {
     var woIds = liveData.map(function(s){ return s.work_order_id; }).filter(Boolean);
     if (woIds.length) refreshOTTotals(woIds);
   } catch(_){}
+  // FASE 4.0: precargar marca/modelo de las patentes activas para que las
+  // cards de "en curso" muestren MARCA MODELO + patente sin queries individuales.
+  try {
+    var plates = liveData.map(function(s){ return s.plate; }).filter(Boolean);
+    if (plates.length) await preloadPlateInfo(plates);
+  } catch(_){}
+  // FEATURE 2026-04-30: actualizar el dot del tab 'En curso' aunque no
+  // estemos en esa pestaña. Si el admin esta en Calendario o Historial y se
+  // acumulan pausados, el dot rojo aparece en la pestaña 'En curso' como
+  // recordatorio visual sin necesidad de cambiar de pantalla.
+  try { if (typeof refreshPausedAlert === 'function') refreshPausedAlert(); } catch(_){}
   refreshLiveUI();
 }
 
@@ -4543,10 +5040,41 @@ async function _doStartSessionInner() {
       // Subir work_orders a in_progress si seguía en open/assigned
       if (workOrderId) {
         try {
-          var rGetWO = await sb.from('work_orders').select('status').eq('id', workOrderId).maybeSingle();
+          var rGetWO = await sb.from('work_orders').select('status,checklist_data').eq('id', workOrderId).maybeSingle();
           if (rGetWO && rGetWO.data && (rGetWO.data.status === 'open' || rGetWO.data.status === 'assigned')) {
             await sb.from('work_orders').update({status:'in_progress', updated_by: CU?CU.id:null}).eq('id', workOrderId);
           }
+          // FASE 4.0: AUTO-CREAR EL INFORME EN ESTADO "EN DESARROLLO" al iniciar el cronómetro.
+          // Si la OT aún no tenía report_started_at, lo seteamos ahora. Esto convierte el informe
+          // en un objeto de primera clase desde el momento exacto en que el técnico arranca:
+          //   - aparece en la pestaña Informes con badge "EN DESARROLLO"
+          //   - acepta hallazgos en vivo (live_findings)
+          //   - puede ser editado/comentado desde la card "En curso" antes de cerrar el servicio
+          // Si ya tiene tech_completed_at o ya tiene report_started_at, no lo pisamos (idempotente).
+          try {
+            var cdNow = (rGetWO && rGetWO.data && rGetWO.data.checklist_data) ? rGetWO.data.checklist_data : {};
+            if (!cdNow.report_started_at && !cdNow.tech_completed_at) {
+              cdNow.report_started_at = new Date().toISOString();
+              cdNow.report_started_by = CU ? CU.id : null;
+              cdNow.report_started_by_name = CU ? CU.name : null;
+              cdNow.report_state = 'en_desarrollo';
+              // live_findings: array de hallazgos en tiempo real durante el servicio.
+              // Cada entrada: {at, by_id, by_name, text, photo (dataUrl optional)}
+              if (!Array.isArray(cdNow.live_findings)) cdNow.live_findings = [];
+              await sb.from('work_orders').update({
+                checklist_data: cdNow,
+                updated_by: CU ? CU.id : null
+              }).eq('id', workOrderId);
+              logServiceEvent({
+                plate: selPlate,
+                workOrderId: workOrderId,
+                action: 'report_shell_created',
+                origin: 'session_start',
+                serviceLabel: label,
+                sessionKey: key
+              });
+            }
+          } catch(eRep) { logR('REPORT_SHELL_CREATE_ERR', {msg: eRep.message, wo: workOrderId}, 'warn'); }
         } catch(_){}
       }
     } else {
@@ -4597,15 +5125,19 @@ function renderTimerCard(body, sess) {
   var pct = sess.goal_minutes ? Math.min(100, Math.round(sec / (sess.goal_minutes * 60) * 100)) : null;
   
   var wrap = mk('div','timer-wrap');
-  wrap.innerHTML = '<div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111;margin-bottom:4px">' + sess.service + '</div>'
-    + (sess.plate ? '<div style="margin-bottom:8px"><span class="plate-tag">' + sess.plate + '</span></div>' : '')
+  // FIX QW-3 (2026-04-30): escapeHtml en sess.service, sess.plate y
+  // lastPause.reason. Estos datos pueden contener < y > si un tecnico
+  // tipea HTML (intencional o accidentalmente) en motivo de pausa o
+  // descripcion. Antes se inyectaban como innerHTML crudo => XSS.
+  wrap.innerHTML = '<div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111;margin-bottom:4px">' + escapeHtml(sess.service) + '</div>'
+    + (sess.plate ? '<div style="margin-bottom:8px"><span class="plate-tag">' + escapeHtml(sess.plate) + '</span></div>' : '')
     + '<div class="timer-num' + (over?' over':isPaused?' paused':'') + '" id="timer-disp">' + fmtT(sec) + '</div>'
-    + (sess.goal_minutes ? '<div style="font-size:10px;color:var(--wh4);margin-top:4px">OBJ: ' + sess.goal_minutes + ' min</div>'
+    + (sess.goal_minutes ? '<div style="font-size:10px;color:var(--wh4);margin-top:4px">OBJ: ' + escapeHtml(String(sess.goal_minutes)) + ' min</div>'
       + '<div class="prog-bar"><div class="prog-fill" id="timer-prog" style="width:' + pct + '%;background:' + (over ? 'var(--red)' : 'var(--green)') + '"></div></div>' : '')
     + '<div style="margin-top:10px">'
     + (over ? '<span class="badge b-over">Tiempo superado</span>' : isPaused ? '<span class="badge b-pau">Pausado</span>' : '<span class="badge b-run">En curso</span>')
     + '</div>'
-    + (lastPause ? '<div style="background:var(--gold2);border:1px solid var(--gold);border-radius:3px;padding:6px 10px;margin-top:8px;font-size:11px;color:var(--gold3);font-weight:600">Motivo: ' + lastPause.reason + '</div>' : '');
+    + (lastPause ? '<div style="background:var(--gold2);border:1px solid var(--gold);border-radius:3px;padding:6px 10px;margin-top:8px;font-size:11px;color:var(--gold3);font-weight:600">Motivo: ' + escapeHtml(lastPause.reason || '') + '</div>' : '');
   body.appendChild(wrap);
 
   // Desglose por día (solo si la sesión cruzó al menos un día) — se
@@ -4621,11 +5153,24 @@ function renderTimerCard(body, sess) {
 
   if (sess.pauses && sess.pauses.length) {
     var pl = mk('div','card');
+    // FIX QW-3 (2026-04-30): escapar reason y at de cada pausa
     pl.innerHTML = '<div class="lbl">Pausas registradas</div>'
-      + sess.pauses.map(function(p) { return '<div style="font-size:12px;color:var(--wh3);padding:3px 0">• ' + p.reason + ' (' + p.at + ')</div>'; }).join('');
+      + sess.pauses.map(function(p) { return '<div style="font-size:12px;color:var(--wh3);padding:3px 0">• ' + escapeHtml(p.reason || '') + ' (' + escapeHtml(p.at || '') + ')</div>'; }).join('');
     body.appendChild(pl);
   }
-  
+
+  // FASE 4.0: botón rápido "+ Hallazgo" — solo si la sesión está vinculada a una OT
+  // (sin OT no hay informe que actualizar). Visible tanto en running como en paused.
+  if (sess.work_order_id) {
+    var findingBtn = mk('button','btn btn-blue');
+    findingBtn.style.cssText = 'margin-bottom:8px;font-size:13px;padding:10px';
+    findingBtn.innerHTML = '+ Agregar hallazgo al informe';
+    findingBtn.onclick = function() {
+      openLiveFindingModal(sess.work_order_id, sess.plate || '', sess.session_key);
+    };
+    body.appendChild(findingBtn);
+  }
+
   var btnWrap = mk('div','g3');
   if (!isPaused) {
     var bp = mk('button','btn btn-gold'); bp.textContent = 'Pausar';
@@ -4681,10 +5226,12 @@ async function confirmPause(reason) {
   // FIX 2026-04-29: guard contra doble-click.
   if (_pausing) { logR('PAUSE_GUARD_BLOCKED', {}); return; }
   _pausing = true;
+  startOp(); // FIX QW-9: bloquea polling mientras la operacion esta en vuelo
   try {
     await _confirmPauseInner(reason);
   } finally {
     _pausing = false;
+    endOp();
   }
 }
 
@@ -4755,10 +5302,12 @@ async function doResume() {
   // FIX 2026-04-29: guard contra doble-click.
   if (_resuming) { logR('RESUME_GUARD_BLOCKED', {}); return; }
   _resuming = true;
+  startOp(); // FIX QW-9: bloquea polling mientras la operacion esta en vuelo
   try {
     await _doResumeInner();
   } finally {
     _resuming = false;
+    endOp();
   }
 }
 
@@ -5063,6 +5612,7 @@ var _visando = false;
 async function doFinish(checklist, sessionKey) {
   if (_finishing) { logR('FINISH_GUARD_BLOCKED', {}); return false; }
   _finishing = true;
+  startOp(); // FIX QW-9: bloquea polling mientras la operacion esta en vuelo
 
   try {
     var useKey = sessionKey || T.sessionKey;
@@ -5152,9 +5702,37 @@ async function doFinish(checklist, sessionKey) {
       // KPI "Hoy". Si la columna no existe en Supabase, el fallback de abajo
       // reintenta sin ella (datos viejos siguen funcionando aproximados).
       started_at: (sess && sess.started_at) || null,
-      ended_at: new Date().toISOString()
+      ended_at: new Date().toISOString(),
+      // FIX idempotencia (2026-04-30): persistir session_key en history para
+      // poder detectar duplicados ANTES de re-insertar. Si la columna no
+      // existe en BD, el fallback de columnas faltantes la limpia y reintenta.
+      session_key: useKey
     };
     logR('FINISH_HISTORY_PAYLOAD', histPayload);
+
+    // FIX idempotencia (2026-04-30): si esta sesion ya esta en history (por
+    // ejemplo el INSERT anterior pudo escribir pero la respuesta nunca llego
+    // por red intermitente), NO duplicamos: marcamos como ya registrada y
+    // limpiamos active_sessions. Resuelve el riesgo de doble registro que
+    // estaba abierto en la auditoria. Idealmente esto se cierra del todo con
+    // RPC transaccional + UNIQUE(session_key) en BD (ver Sprint 2).
+    try {
+      var rExist = await sb.from('history').select('id').eq('session_key', useKey).limit(1).maybeSingle();
+      if (rExist && rExist.data && rExist.data.id) {
+        logR('FINISH_IDEMPOTENT', {key: useKey, history_id: rExist.data.id}, 'warn');
+        // Igual borramos active_sessions y limpiamos UI; el servicio ya estaba
+        // registrado por un intento previo.
+        try { await sb.from('active_sessions').delete().eq('session_key', useKey); } catch(_){}
+        resetT();
+        await fetchLive();
+        techTab('t-nuevo');
+        showGlobalError('El servicio ya estaba registrado. Cierre confirmado.', 4000);
+        return true;
+      }
+    } catch(_) {
+      // Si la columna session_key aun no existe en history, el chequeo falla
+      // silencioso y caemos al INSERT normal (comportamiento legacy).
+    }
 
     var {error: hErr} = await sb.from('history').insert(histPayload);
     logR('FINISH_HISTORY_RESULT', {error: hErr ? hErr.message : null});
@@ -5164,7 +5742,7 @@ async function doFinish(checklist, sessionKey) {
       // también started_at. Si en el futuro se agregan más columnas, esta
       // lista crece sin necesidad de tocar la lógica.
       var msgLower = (hErr.message || '').toLowerCase();
-      var optionalCols = ['work_order_id', 'started_at'];
+      var optionalCols = ['work_order_id', 'started_at', 'session_key'];
       var missingCol = optionalCols.find(function(c){ return msgLower.indexOf(c) !== -1; });
       if (missingCol) {
         logR('HIST_MISSING_COL', {col: missingCol, msg: hErr.message}, 'warn');
@@ -5255,20 +5833,26 @@ async function doFinish(checklist, sessionKey) {
             // FIX bug 2026-04-29: getUsersWithExplicitPerm es async; sin await
             // devolvía una Promise (no un array) y el for nunca entraba, por
             // lo que las notificaciones a visadores nunca llegaban.
+            // FIX QW-7 (2026-04-30): un solo INSERT con array, en vez de N
+            // round-trips secuenciales (antes con 5 visadores eran 1.5-3s
+            // extra al cierre del servicio).
             try {
               var visadores = [];
               if (typeof getUsersWithExplicitPerm === 'function') {
                 try { visadores = await getUsersWithExplicitPerm('can_visar') || []; }
                 catch(_) { visadores = []; }
               }
-              for (var iv = 0; iv < visadores.length; iv++) {
-                await sb.from('notifications').insert({
-                  type: 'visado',
-                  title: 'Nueva OT pendiente de visado',
-                  sub: 'OT-' + (rGet.data.ot_number || '?') + ' · ' + (rGet.data.service_classification || '?') + ' · ' + (finPlate || '?') + ' por ' + CU.name,
-                  target_user_id: visadores[iv].id,
-                  work_order_id: woId
-                });
+              if (visadores.length) {
+                var subText = 'OT-' + (rGet.data.ot_number || '?') + ' · ' + (rGet.data.service_classification || '?') + ' · ' + (finPlate || '?') + ' por ' + CU.name;
+                await sb.from('notifications').insert(visadores.map(function(v) {
+                  return {
+                    type: 'visado',
+                    title: 'Nueva OT pendiente de visado',
+                    sub: subText,
+                    target_user_id: v.id,
+                    work_order_id: woId
+                  };
+                }));
               }
             } catch(_){}
           }
@@ -5310,6 +5894,7 @@ async function doFinish(checklist, sessionKey) {
     return false;
   } finally {
     _finishing = false;
+    endOp(); // FIX QW-9: libera el lock para que polling vuelva a correr
   }
 }
 
@@ -5325,6 +5910,41 @@ function resetT() {
 // ═══════════════════════════════════════════════
 // MIS SERVICIOS TAB - Central tech view
 // ═══════════════════════════════════════════════
+// FEATURE 2026-04-30: filtro arriba para enfocar una categoria. A diferencia
+// de la pestaña boss 'En curso' (que era una lista plana), aqui el render ya
+// estaba seccionado (En curso / Pausados / Checklist pendiente / Proximos).
+// El filtro NO reemplaza las secciones — las oculta cuando se elige una
+// categoria especifica. Default 'all' = comportamiento original.
+let _misServiciosFilter = 'all'; // 'all' | 'running' | 'paused' | 'checklist_pending' | 'scheduled'
+function setMisServiciosFilter(f) {
+  if (['all','running','paused','checklist_pending','scheduled'].indexOf(f) === -1) f = 'all';
+  _misServiciosFilter = f;
+  logR('MIS_SERV_FILTER', {filter: f});
+  // Re-renderizar la pestaña actual si todavia es Mis Servicios
+  if (typeof techTab === 'function' && curTechTab === 't-misservicios') {
+    techTab('t-misservicios');
+  }
+}
+function _misServChip(key, label, count, dotColor) {
+  var active = (_misServiciosFilter === key);
+  var bg = active ? 'var(--red)' : '#fff';
+  var color = active ? '#fff' : '#222';
+  var border = active ? 'var(--red)' : 'var(--border)';
+  var countBg = active ? 'rgba(255,255,255,.22)' : '#f4f4f4';
+  var countColor = active ? '#fff' : '#444';
+  return '<button type="button" onclick="setMisServiciosFilter(\'' + key + '\')" '
+    + 'style="display:inline-flex;align-items:center;gap:7px;background:' + bg + ';color:' + color + ';'
+    + 'border:1px solid ' + border + ';border-radius:18px;padding:6px 12px;font-size:12px;'
+    + 'font-weight:700;font-family:var(--head);text-transform:uppercase;letter-spacing:.04em;'
+    + 'cursor:pointer;line-height:1">'
+    + '<span style="width:8px;height:8px;border-radius:50%;background:' + dotColor + ';display:inline-block"></span>'
+    + escapeHtml(label)
+    + '<span style="background:' + countBg + ';color:' + countColor + ';border-radius:10px;'
+    + 'padding:1px 7px;font-size:11px;font-family:var(--mono);font-weight:700;min-width:18px;text-align:center">'
+    + count + '</span>'
+    + '</button>';
+}
+
 async function renderMisServicios(body) {
   body.innerHTML = '<div class="empty"><span class="spin"></span>Cargando...</div>';
 
@@ -5342,29 +5962,49 @@ async function renderMisServicios(body) {
   var running = myRows.filter(function(s) { return s.status === 'running'; });
   var paused = myRows.filter(function(s) { return s.status === 'paused'; });
   var ckPend = myRows.filter(function(s) { return s.status === 'checklist_pending'; });
+  var schedCount = schedData ? schedData.length : 0;
   var sumCard = mk('div','card-red');
   sumCard.innerHTML = '<div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center">'
     + '<div style="text-align:center"><div style="font-size:22px;font-weight:700;color:var(--green);font-family:var(--head)">' + running.length + '</div><div style="font-size:9px;color:#999;text-transform:uppercase;letter-spacing:.05em">En curso</div></div>'
     + '<div style="text-align:center"><div style="font-size:22px;font-weight:700;color:var(--gold);font-family:var(--head)">' + paused.length + '</div><div style="font-size:9px;color:#999;text-transform:uppercase;letter-spacing:.05em">Pausados</div></div>'
     + '<div style="text-align:center"><div style="font-size:22px;font-weight:700;color:var(--blue);font-family:var(--head)">' + ckPend.length + '</div><div style="font-size:9px;color:#999;text-transform:uppercase;letter-spacing:.05em">Checklist pend.</div></div>'
-    + '<div style="text-align:center"><div style="font-size:22px;font-weight:700;color:var(--red);font-family:var(--head)">' + (schedData ? schedData.length : 0) + '</div><div style="font-size:9px;color:#999;text-transform:uppercase;letter-spacing:.05em">Proximos</div></div>'
+    + '<div style="text-align:center"><div style="font-size:22px;font-weight:700;color:var(--red);font-family:var(--head)">' + schedCount + '</div><div style="font-size:9px;color:#999;text-transform:uppercase;letter-spacing:.05em">Proximos</div></div>'
     + '</div>';
   body.appendChild(sumCard);
 
+  // FEATURE 2026-04-30: barra de chips para filtrar las secciones.
+  var filterBar = mk('div','');
+  filterBar.style.cssText = 'display:flex;gap:6px;margin:10px 0 4px 0;flex-wrap:wrap';
+  filterBar.innerHTML = ''
+    + _misServChip('all',                'Todos',    running.length + paused.length + ckPend.length + schedCount, '#666')
+    + _misServChip('running',            'En curso', running.length, 'var(--green)')
+    + _misServChip('paused',             'Pausados', paused.length,  'var(--gold)')
+    + _misServChip('checklist_pending',  'Checklist',ckPend.length,  'var(--blue)')
+    + _misServChip('scheduled',          'Proximos', schedCount,     'var(--red)');
+  body.appendChild(filterBar);
+
+  // Helpers que respetan el filtro: muestran la seccion si el filtro es
+  // 'all' o si coincide con la categoria pedida.
+  var f = _misServiciosFilter;
+  var showRunning  = (f === 'all' || f === 'running');
+  var showPaused   = (f === 'all' || f === 'paused');
+  var showCkPend   = (f === 'all' || f === 'checklist_pending');
+  var showSched    = (f === 'all' || f === 'scheduled');
+
   // RUNNING
-  if (running.length) {
+  if (showRunning && running.length) {
     body.appendChild(sectionHdr('En curso', 'var(--green)', running.length));
     running.forEach(function(s) { body.appendChild(buildMisServCard(s, 'running')); });
   }
 
   // PAUSED
-  if (paused.length) {
+  if (showPaused && paused.length) {
     body.appendChild(sectionHdr('Pausados', 'var(--gold)', paused.length));
     paused.forEach(function(s) { body.appendChild(buildMisServCard(s, 'paused')); });
   }
 
   // CHECKLIST PENDING
-  if (ckPend.length) {
+  if (showCkPend && ckPend.length) {
     body.appendChild(sectionHdr('Checklist pendiente', 'var(--blue)', ckPend.length));
     ckPend.forEach(function(s) { body.appendChild(buildMisServCard(s, 'checklist_pending')); });
   }
@@ -5377,8 +6017,9 @@ async function renderMisServicios(body) {
   // AHORA: para cada servicio agendado, calculamos su estado REAL cruzando
   // patente con sesiones activas y registros del historial. Solo se muestra
   // "Atrasado" cuando NO hay actividad real asociada a la patente.
+  // FEATURE 2026-04-30: respetar filtro de seccion (showSched).
   var now = new Date();
-  if (schedData && schedData.length) {
+  if (showSched && schedData && schedData.length) {
     // Construir índices por patente normalizada
     var liveByPlate = {};
     (liveData || []).forEach(function(s){
@@ -5457,7 +6098,11 @@ async function renderMisServicios(body) {
   }
 
   // RECENT HISTORY
-  if (histData && histData.length) {
+  // FEATURE 2026-04-30: solo mostrar cuando el filtro es 'all'. Cuando el
+  // tecnico filtra por una categoria especifica (ej. 'paused'), quiere
+  // enfocarse en eso — el historial reciente es ruido. Para ver historial
+  // siempre puede ir a la pestaña Historial.
+  if (f === 'all' && histData && histData.length) {
     body.appendChild(sectionHdr('Finalizados recientes', '#aaa', histData.length));
     var card = mk('div','card');
     histData.slice(0,8).forEach(function(r) {
@@ -5481,6 +6126,29 @@ async function renderMisServicios(body) {
 
   if (!myRows.length && (!schedData || !schedData.length) && (!histData || !histData.length)) {
     body.innerHTML += '<div class="empty">No tienes servicios registrados aun</div>';
+  } else if (f !== 'all') {
+    // FEATURE 2026-04-30: estado vacio contextual cuando un filtro deja la
+    // lista sin items. Antes mostraba los chips y nada mas debajo, lo que
+    // confundia. Ahora muestra mensaje claro y sugiere volver a 'Todos'.
+    var visibleCount = 0;
+    if (showRunning) visibleCount += running.length;
+    if (showPaused)  visibleCount += paused.length;
+    if (showCkPend)  visibleCount += ckPend.length;
+    if (showSched && schedData) visibleCount += schedData.length;
+    if (visibleCount === 0) {
+      var lbl = (f === 'paused') ? 'pausados'
+              : (f === 'running') ? 'en curso'
+              : (f === 'checklist_pending') ? 'con checklist pendiente'
+              : (f === 'scheduled') ? 'proximos asignados'
+              : '';
+      body.innerHTML += '<div class="empty" style="padding-top:16px">'
+        + 'No hay servicios ' + lbl + '. '
+        + '<button type="button" onclick="setMisServiciosFilter(\'all\')" '
+        + 'style="background:transparent;border:0;color:var(--red);text-decoration:underline;'
+        + 'cursor:pointer;font-family:inherit;font-size:13px;font-weight:700;padding:0;text-transform:uppercase;letter-spacing:.05em">'
+        + 'Ver todos</button>'
+        + '</div>';
+    }
   }
 }
 
@@ -5506,8 +6174,16 @@ function buildMisServCard(s, status) {
 
   var h = '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px">'
     + '<div style="flex:1">'
-    + '<div style="font-size:13px;font-weight:700;font-family:var(--head);text-transform:uppercase;color:#111">' + s.service + '</div>'
-    + (s.plate ? '<span class="plate-tag">' + s.plate + '</span> ' : '');
+    + '<div style="font-size:13px;font-weight:700;font-family:var(--head);text-transform:uppercase;color:#111">' + s.service + '</div>';
+
+  // FASE 4.0: patente + marca/modelo en bloque inline
+  if (s.plate) {
+    var bmMs = plateBrandModel(s.plate);
+    h += '<div style="margin:3px 0;display:flex;align-items:center;gap:5px;flex-wrap:wrap">';
+    h += '<span class="plate-tag">' + s.plate + '</span>';
+    if (bmMs) h += '<span style="font-size:11px;color:var(--wh3);font-weight:600;text-transform:uppercase;letter-spacing:.02em">' + escapeHtml(bmMs) + '</span>';
+    h += '</div>';
+  }
 
   if (over) h += '<span class="badge b-over">Tiempo superado</span>';
   else if (isPaused) h += '<span class="badge b-pau">Pausado</span>';
@@ -5558,6 +6234,12 @@ function buildMisServCard(s, status) {
   }
 
   h += '<button class="btn-sm" onclick="openCommentModal(\'' + s.session_key + '\')">Comentar</button>';
+  // FASE 4.0: hallazgo en vivo (solo si hay OT vinculada).
+  // La patente se sanitiza para inline-onclick (alfanumérico + guion).
+  if (s.work_order_id) {
+    var plateSafe = String(s.plate || '').replace(/[^A-Za-z0-9\-]/g, '');
+    h += '<button class="btn-sm" style="border-color:var(--blue);color:var(--blue)" onclick="openLiveFindingModal(\'' + s.work_order_id + '\',\'' + plateSafe + '\',\'' + s.session_key + '\')">+ Hallazgo</button>';
+  }
   h += '</div>';
 
   card.innerHTML = h;
@@ -5706,6 +6388,12 @@ async function renderTechMiDia(body) {
   rows = rows || [];
 
   var active = liveData.filter(function(s) { return s.username === CU.username; });
+
+  // FASE 4.0: precargar marca/modelo
+  try {
+    var midiaPlates = rows.map(function(r){ return r.plate; }).concat(active.map(function(s){ return s.plate; })).filter(Boolean);
+    if (midiaPlates.length) await preloadPlateInfo(midiaPlates);
+  } catch(_){}
   var kpis = computeKPIs(rows);
 
   body.innerHTML = '';
@@ -5741,7 +6429,9 @@ async function renderTechMiDia(body) {
       card.style.borderLeft = '4px solid ' + (s.status === 'running' ? 'var(--green)' : 'var(--gold)');
       card.style.marginBottom = '6px';
       card.innerHTML = '<div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111">' + s.service + '</div>'
-        + (s.plate ? '<span class="plate-tag" style="margin-top:4px">' + s.plate + '</span>' : '')
+        + (s.plate ? '<div style="margin-top:4px;display:flex;align-items:center;gap:5px;flex-wrap:wrap"><span class="plate-tag">' + s.plate + '</span>'
+            + (plateBrandModel(s.plate) ? '<span style="font-size:10px;color:var(--wh3);font-weight:600;text-transform:uppercase">' + escapeHtml(plateBrandModel(s.plate)) + '</span>' : '')
+            + '</div>' : '')
         + '<div style="font-size:10px;color:var(--wh3);margin-top:4px;text-transform:uppercase">' + (s.status === 'running' ? 'En curso' : 'Pausado') + '</div>';
       actCard.appendChild(card);
     });
@@ -5762,7 +6452,9 @@ async function renderTechMiDia(body) {
       var row = mk('div','row');
       row.innerHTML = '<div style="flex:1;min-width:0">'
         + '<div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111">' + r.service + '</div>'
-        + (r.plate ? '<span class="plate-tag">' + r.plate + '</span>' : '')
+        + (r.plate ? '<div style="margin-top:3px;display:flex;align-items:center;gap:5px;flex-wrap:wrap"><span class="plate-tag">' + r.plate + '</span>'
+            + (plateBrandModel(r.plate) ? '<span style="font-size:10px;color:var(--wh3);font-weight:600;text-transform:uppercase">' + escapeHtml(plateBrandModel(r.plate)) + '</span>' : '')
+            + '</div>' : '')
         + '</div>'
         + '<div style="text-align:right;flex-shrink:0">'
         + '<div style="font-size:16px;font-weight:700;font-family:var(--mono);color:' + (over?'var(--red)':'var(--green)') + '">' + r.duration + '</div>'
@@ -5800,6 +6492,21 @@ function renderTechOnline() {
 // ═══════════════════════════════════════════════
 // BOSS: ONLINE
 // ═══════════════════════════════════════════════
+// FEATURE 2026-04-30: filtro arriba para separar 'En curso' de 'En pausa'.
+// Estado se persiste entre re-renders del polling (variable de modulo).
+// Default: 'all' para no cambiar comportamiento previo si el admin no toca
+// el filtro. La eleccion se mantiene al cambiar de pestaña y volver, pero
+// se resetea al cerrar sesion (porque _bossOnlineFilter se vuelve a leer
+// con su default cada carga).
+let _bossOnlineFilter = 'all'; // 'all' | 'running' | 'paused'
+
+function setBossOnlineFilter(f) {
+  if (f !== 'all' && f !== 'running' && f !== 'paused') f = 'all';
+  _bossOnlineFilter = f;
+  logR('BOSS_ONLINE_FILTER', {filter: f});
+  renderBossOnline();
+}
+
 function renderBossOnline() {
   var body = document.getElementById('boss-body');
   if (curBossTab !== 'b-online') return;
@@ -5813,10 +6520,111 @@ function renderBossOnline() {
     return;
   }
 
-  logR('RENDER_BOSS_ONLINE', {liveCount: liveData.length});
-  if (!liveData.length) { body.innerHTML = '<div class="empty">Sin servicios en curso</div>'; return; }
-  body.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><div class="lbl" style="margin-bottom:0">' + liveData.length + ' activo' + (liveData.length>1?'s':'') + '</div></div>';
-  liveData.forEach(function(s) { body.appendChild(buildSessCard(s, false)); });
+  // FEATURE 2026-04-30: clasificar por status para los chips de filtro.
+  // Usamos status === 'paused' como criterio canonico (BD), con fallback a
+  // !running para sesiones legacy que aun no tengan el campo populado.
+  var arrRunning = liveData.filter(function(s){ return s.status === 'running' || (s.status !== 'paused' && s.running === true); });
+  var arrPaused  = liveData.filter(function(s){ return s.status === 'paused' || (s.status !== 'running' && s.running === false); });
+  var visible;
+  if (_bossOnlineFilter === 'running') visible = arrRunning;
+  else if (_bossOnlineFilter === 'paused') visible = arrPaused;
+  else visible = liveData;
+
+  // FEATURE 2026-04-30: alerta visual cuando hay muchos servicios pausados.
+  // El umbral se configura en RossoConfig.PAUSED_ALERT_THRESHOLD (default: 3).
+  // Activa el dot rojo en la pestaña 'En curso' (visible incluso en otras
+  // pestañas) y agrega un banner explicativo arriba del listado.
+  refreshPausedAlert(arrPaused.length);
+
+  logR('RENDER_BOSS_ONLINE', {liveCount: liveData.length, running: arrRunning.length, paused: arrPaused.length, filter: _bossOnlineFilter});
+
+  // Banner de alerta cuando paused supera el umbral. Se muestra arriba de
+  // los chips para que el admin lo vea apenas entra a la pestaña.
+  var threshold = (window.RossoConfig && window.RossoConfig.PAUSED_ALERT_THRESHOLD) || 3;
+  var alertBanner = '';
+  if (arrPaused.length >= threshold) {
+    alertBanner = ''
+      + '<div role="alert" style="background:#fff3cd;border:1px solid var(--gold);border-left:4px solid var(--gold);'
+      + 'border-radius:4px;padding:9px 12px;margin-bottom:10px;font-size:12px;color:#5b4500;font-family:var(--head);'
+      + 'display:flex;align-items:center;gap:9px">'
+      + '<span style="font-size:16px;line-height:1">⚠</span>'
+      + '<span><strong>' + arrPaused.length + ' servicios pausados</strong> &mdash; revisa si alguno requiere accion. '
+      + '<button type="button" onclick="setBossOnlineFilter(\'paused\')" style="background:transparent;border:0;'
+      + 'color:var(--gold3);text-decoration:underline;cursor:pointer;font-family:inherit;font-size:12px;font-weight:700;padding:0">Ver pausados</button>'
+      + '</span>'
+      + '</div>';
+  }
+
+  // Header con chips de filtro (siempre visible, incluso con 0 servicios).
+  var pausedHighlight = (arrPaused.length >= threshold);
+  var chipBar = ''
+    + '<div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap">'
+    +   _bossOnlineChip('all',     'Todos',    liveData.length, '#666',         false)
+    +   _bossOnlineChip('running', 'En curso', arrRunning.length, 'var(--green)', false)
+    +   _bossOnlineChip('paused',  'En pausa', arrPaused.length,  'var(--gold)',  pausedHighlight)
+    + '</div>';
+
+  if (!liveData.length) {
+    body.innerHTML = alertBanner + chipBar + '<div class="empty">Sin servicios en curso</div>';
+    return;
+  }
+  if (!visible.length) {
+    var emptyMsg = (_bossOnlineFilter === 'paused') ? 'No hay servicios en pausa'
+                 : (_bossOnlineFilter === 'running') ? 'No hay servicios activos en este momento'
+                 : 'Sin servicios en curso';
+    body.innerHTML = alertBanner + chipBar + '<div class="empty">' + emptyMsg + '</div>';
+    return;
+  }
+  body.innerHTML = alertBanner + chipBar;
+  visible.forEach(function(s) { body.appendChild(buildSessCard(s, false)); });
+}
+
+// FEATURE 2026-04-30: helper independiente del render para mantener
+// sincronizado el dot rojo del tab 'En curso' con la cantidad de pausados.
+// Se llama tambien desde fetchLive() para que el dot se actualice en TIEMPO
+// REAL cuando el admin esta en otras pestañas (Calendario, Historial, etc.).
+function refreshPausedAlert(pausedCount) {
+  var threshold = (window.RossoConfig && window.RossoConfig.PAUSED_ALERT_THRESHOLD) || 3;
+  if (typeof pausedCount !== 'number') {
+    pausedCount = (liveData || []).filter(function(s){
+      return s.status === 'paused' || (s.status !== 'running' && s.running === false);
+    }).length;
+  }
+  var dot = document.getElementById('boss-online-dot');
+  if (!dot) return;
+  if (pausedCount >= threshold) {
+    dot.classList.add('show');
+    dot.setAttribute('title', pausedCount + ' servicios pausados - revisa');
+  } else {
+    dot.classList.remove('show');
+    dot.removeAttribute('title');
+  }
+}
+
+// Helper: dibuja un chip de filtro con su contador y dot de color.
+// El chip activo se pinta en rojo Rosso; los inactivos en blanco con borde.
+// highlight=true: el chip 'En pausa' se enmarca en gold cuando supera el
+// threshold, para que llame la atencion incluso si esta inactivo.
+function _bossOnlineChip(key, label, count, dotColor, highlight) {
+  var active = (_bossOnlineFilter === key);
+  var bg = active ? 'var(--red)' : '#fff';
+  var color = active ? '#fff' : '#222';
+  var border = active ? 'var(--red)' : (highlight ? 'var(--gold)' : 'var(--border)');
+  var borderWidth = (highlight && !active) ? '2px' : '1px';
+  var countBg = active ? 'rgba(255,255,255,.22)' : (highlight ? 'var(--gold)' : '#f4f4f4');
+  var countColor = active ? '#fff' : (highlight ? '#fff' : '#444');
+  var pulse = (highlight && !active) ? 'animation:rosso-pulse-gold 1.6s ease-in-out infinite;' : '';
+  return '<button type="button" onclick="setBossOnlineFilter(\'' + key + '\')" '
+    + 'style="display:inline-flex;align-items:center;gap:7px;background:' + bg + ';color:' + color + ';'
+    + 'border:' + borderWidth + ' solid ' + border + ';border-radius:18px;padding:6px 12px;font-size:12px;'
+    + 'font-weight:700;font-family:var(--head);text-transform:uppercase;letter-spacing:.04em;'
+    + 'cursor:pointer;line-height:1;' + pulse + '">'
+    + '<span style="width:8px;height:8px;border-radius:50%;background:' + dotColor + ';display:inline-block"></span>'
+    + escapeHtml(label)
+    + '<span style="background:' + countBg + ';color:' + countColor + ';border-radius:10px;'
+    + 'padding:1px 7px;font-size:11px;font-family:var(--mono);font-weight:700;min-width:18px;text-align:center">'
+    + count + '</span>'
+    + '</button>';
 }
 
 function buildSessCard(s, isTech) {
@@ -5840,9 +6648,19 @@ function buildSessCard(s, isTech) {
   if (over && !paused) h += '<div style="position:absolute;top:-5px;right:-5px;background:var(--red);border-radius:50%;width:14px;height:14px;border:2px solid #fff;display:flex;align-items:center;justify-content:center;font-size:8px;color:#fff;font-weight:700">!</div>';
   h += '</div>';
   h += '<div style="flex:1">';
-  h += '<div style="font-size:13px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.03em;color:#111">' + s.technician + '</div>';
-  h += '<div style="font-size:11px;color:#666;text-transform:uppercase">' + s.service + '</div>';
-  if (s.plate) h += '<span class="plate-tag" style="display:inline-block;margin-top:3px">' + s.plate + '</span>';
+  // FIX QW-3 (2026-04-30): escapeHtml en technician, service, plate y reason
+  // de pausa. Esta card aparece en En Curso de jefatura y todos los tecnicos
+  // la ven; un payload XSS aqui afecta a TODA la operacion del taller.
+  h += '<div style="font-size:13px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.03em;color:#111">' + escapeHtml(s.technician || '') + '</div>';
+  h += '<div style="font-size:11px;color:#666;text-transform:uppercase">' + escapeHtml(s.service || '') + '</div>';
+  if (s.plate) {
+    // FASE 4.0: marca + modelo junto a la patente
+    var bm = plateBrandModel(s.plate);
+    h += '<div style="margin-top:3px;display:flex;align-items:center;gap:5px;flex-wrap:wrap">';
+    h += '<span class="plate-tag">' + escapeHtml(s.plate) + '</span>';
+    if (bm) h += '<span style="font-size:11px;color:var(--wh3);font-weight:600;text-transform:uppercase;letter-spacing:.02em">' + escapeHtml(bm) + '</span>';
+    h += '</div>';
+  }
   // FASE 2.6: si la sesion esta vinculada a una OT, mostrar el total acumulado (multi-tecnico)
   if (s.work_order_id) {
     var totalCached = otTotalCached(s.work_order_id);
@@ -5850,7 +6668,7 @@ function buildSessCard(s, isTech) {
       h += '<div style="font-size:10px;color:var(--blue);margin-top:3px;font-family:var(--mono)">⏱ Total OT: ' + fmtT(totalCached) + '</div>';
     }
   }
-  if (lastPause) h += '<div style="background:var(--gold2);border:1px solid var(--gold);border-radius:3px;padding:2px 7px;margin-top:4px;font-size:10px;color:var(--gold3);font-weight:700;display:inline-block">PAUSA: ' + lastPause.reason + '</div>';
+  if (lastPause) h += '<div style="background:var(--gold2);border:1px solid var(--gold);border-radius:3px;padding:2px 7px;margin-top:4px;font-size:10px;color:var(--gold3);font-weight:700;display:inline-block">PAUSA: ' + escapeHtml(lastPause.reason || '') + '</div>';
   // Marcador para inyectar el menu admin inline, al lado del badge PAUSA o de la patente
   h += '<span class="adm-inline-slot" style="display:inline-block;vertical-align:middle;margin-left:6px"></span>';
   h += '</div></div>';
@@ -5859,7 +6677,7 @@ function buildSessCard(s, isTech) {
   // FASE 2.6: si liveSecondsNow detecto drift sospechoso, marcar el cronometro
   var driftWarn = s.__suspect_drift ? '<span title="Tiempo sospechoso (sesion sin pausa formal). Revisar." style="color:var(--red);font-size:11px;margin-right:4px">⚠</span>' : '';
   h += '<div style="font-size:26px;font-weight:700;font-family:var(--mono);color:' + (over?'var(--red)':paused?'var(--gold)':'#111') + ';letter-spacing:2px;margin-top:3px">' + driftWarn + fmtT(sec) + '</div>';
-  if (s.goal_minutes) h += '<div style="font-size:9px;color:#aaa;text-transform:uppercase">OBJ:' + s.goal_minutes + 'm</div>';
+  if (s.goal_minutes) h += '<div style="font-size:9px;color:#aaa;text-transform:uppercase">OBJ:' + escapeHtml(String(s.goal_minutes)) + 'm</div>';
   h += '</div></div>';
   if (pct !== null) h += '<div class="prog-bar" style="margin-top:8px"><div class="prog-fill" style="width:' + pct + '%;background:' + (over?'var(--red)':'var(--green)') + '"></div></div>';
 
@@ -5971,6 +6789,36 @@ function buildSessCard(s, isTech) {
       admSlot.appendChild(admToggle);
       admSlot.appendChild(admDropdown);
     }
+  }
+
+  // FASE 4.0: enlace al informe en desarrollo (visible para todos, en cualquier
+  // momento mientras la sesión esté abierta). Permite a la jefatura, técnicos y
+  // gestor comercial ver/editar el informe sin esperar al cierre del servicio.
+  if (s.work_order_id) {
+    var infoSlot = document.createElement('div');
+    infoSlot.style.cssText = 'margin-top:8px;display:flex;gap:6px;flex-wrap:wrap';
+    var viewBtn = document.createElement('button');
+    viewBtn.className = 'btn-sm';
+    viewBtn.style.cssText = 'border-color:var(--blue);color:var(--blue);font-size:11px';
+    viewBtn.innerHTML = '📝 Ver informe';
+    viewBtn.onclick = function(e) {
+      e.stopPropagation();
+      openInformeEditor(s.work_order_id);
+    };
+    infoSlot.appendChild(viewBtn);
+    if (!isTech) {
+      // Para boss: también el botón "+ Hallazgo" (técnicos lo tienen en su card de Mis Servicios)
+      var addFindingBtn = document.createElement('button');
+      addFindingBtn.className = 'btn-sm';
+      addFindingBtn.style.cssText = 'border-color:var(--blue);color:var(--blue);font-size:11px';
+      addFindingBtn.innerHTML = '+ Hallazgo';
+      addFindingBtn.onclick = function(e) {
+        e.stopPropagation();
+        openLiveFindingModal(s.work_order_id, s.plate || '', s.session_key);
+      };
+      infoSlot.appendChild(addFindingBtn);
+    }
+    card.appendChild(infoSlot);
   }
 
   return card;
@@ -6258,7 +7106,7 @@ async function adminForceFinish(sessionKey, techName, serviceLabel, plate) {
   var {error: hErr} = await sb.from('history').insert(histPayload);
   if (hErr) {
     var msgLower = (hErr.message || '').toLowerCase();
-    var optionalCols = ['work_order_id', 'started_at'];
+    var optionalCols = ['work_order_id', 'started_at', 'session_key'];
     var missingCol = optionalCols.find(function(c){ return msgLower.indexOf(c) !== -1; });
     if (missingCol) {
       logR('ADMIN_FINISH_HIST_MISSING_COL', {col: missingCol, msg: hErr.message}, 'warn');
@@ -6633,6 +7481,12 @@ async function renderCalWeek(body) {
     .order('scheduled_at');
   var evts = data || [];
 
+  // FASE 4.0: precargar marca/modelo
+  try {
+    var weekPlates = evts.map(function(e){ return e.plate; }).filter(Boolean);
+    if (weekPlates.length) await preloadPlateInfo(weekPlates);
+  } catch(_){}
+
   body.innerHTML = '';
   body.appendChild(buildCalToolbar());
 
@@ -6722,6 +7576,12 @@ async function renderCalDay(body) {
     .lte('scheduled_at', dEnd.toISOString())
     .order('scheduled_at');
   var evts = data || [];
+
+  // FASE 4.0: precargar marca/modelo
+  try {
+    var calPlates = evts.map(function(e){ return e.plate; }).filter(Boolean);
+    if (calPlates.length) await preloadPlateInfo(calPlates);
+  } catch(_){}
 
   body.innerHTML = '';
   body.appendChild(buildCalToolbar());
@@ -6836,6 +7696,7 @@ function buildCalEventRow(e, mode) {
       + '<div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111;letter-spacing:.03em">' + e.service + '</div>'
       + '<div style="display:flex;align-items:center;gap:6px;margin-top:4px;flex-wrap:wrap">'
       + (e.plate ? '<span class="plate-tag">' + e.plate + '</span>' : '')
+      + (e.plate && plateBrandModel(e.plate) ? '<span style="font-size:10px;color:var(--wh3);font-weight:600;text-transform:uppercase">' + escapeHtml(plateBrandModel(e.plate)) + '</span>' : '')
       + '<span style="font-size:11px;color:var(--wh3)">' + (e.technician_name || 'Sin asignar') + '</span>'
       + '</div>'
       + (e.notes ? '<div style="font-size:10px;color:#888;margin-top:4px;font-style:italic;line-height:1.4">' + escapeHTML(e.notes) + '</div>' : '')
@@ -6846,15 +7707,18 @@ function buildCalEventRow(e, mode) {
       + '</div>';
   } else {
     // Compact para vista semana
+    var bmCmp = e.plate ? plateBrandModel(e.plate) : null;
+    var subLine = '';
+    if (e.plate) subLine += e.plate;
+    if (bmCmp) subLine += (subLine ? ' · ' : '') + bmCmp;
+    if (e.technician_name) subLine += (subLine ? ' · ' : '') + e.technician_name;
+    else subLine += (subLine ? ' · ' : '') + 'Sin asignar';
     row.innerHTML =
       '<div style="display:flex;align-items:center;gap:8px">'
       + '<span style="font-size:12px;font-weight:700;font-family:var(--mono);color:#111;min-width:40px">' + timeStr + '</span>'
       + '<div style="flex:1;min-width:0">'
       + '<div style="font-size:11px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + e.service + statusBadge + '</div>'
-      + '<div style="font-size:10px;color:var(--wh3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'
-      + (e.plate ? e.plate + ' · ' : '')
-      + (e.technician_name || 'Sin asignar')
-      + '</div>'
+      + '<div style="font-size:10px;color:var(--wh3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(subLine) + '</div>'
       + '</div>'
       + '</div>';
   }
@@ -6897,6 +7761,12 @@ async function renderBossPlan(body) {
 
   var r1 = await sb.from('scheduled_services').select('*').gte('scheduled_at',today.toISOString()).lte('scheduled_at',in7.toISOString()).neq('status','cancelado').order('scheduled_at');
   var events = r1.data || [];
+
+  // FASE 4.0: precargar marca/modelo de patentes agendadas
+  try {
+    var planPlates = events.map(function(e){ return e.plate; }).filter(Boolean);
+    if (planPlates.length) await preloadPlateInfo(planPlates);
+  } catch(_){}
 
   // FASE 2.6 FIX (v4): Cruce en vivo con active_sessions y history.
   // Para CADA evento, miramos si hay una sesion activa o finalizada hoy con la
@@ -6946,6 +7816,45 @@ async function renderBossPlan(body) {
     logR('PLAN_LIVE_CROSS', {events: events.length, live_keys: Object.keys(liveByPlate).length, hist_keys: Object.keys(histByPlate).length});
   } catch(e){ logR('PLAN_CROSS_ERR', {msg: e.message}, 'warn'); }
   body.innerHTML = '';
+
+  // FASE 4.0: ALERTA — servicios agendados para HOY que aún no tienen técnico asignado.
+  // Aparecen pegados arriba en planificación para que la jefatura los corrija antes
+  // de que el cliente llegue al taller. Si no hay ninguno, no se muestra el bloque.
+  try {
+    var todayEnd = new Date(); todayEnd.setHours(23,59,59,999);
+    var todayUnassigned = events.filter(function(e){
+      if (!e.scheduled_at) return false;
+      if (e.status === 'cancelado' || e.status === 'completado') return false;
+      var sdt = new Date(e.scheduled_at);
+      var isToday = sdt >= today && sdt <= todayEnd;
+      return isToday && !e.technician_id;
+    });
+    if (todayUnassigned.length) {
+      var alertBox = mk('div','card-red');
+      alertBox.style.cssText = 'border-left:4px solid var(--red);background:#fff8f8;margin-bottom:14px;padding:12px';
+      var alertHTML = '<div style="font-size:13px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.04em;color:var(--red);margin-bottom:6px">⚠ ' + todayUnassigned.length + ' servicio' + (todayUnassigned.length>1?'s':'') + ' de hoy sin técnico asignado</div>'
+        + '<div style="font-size:11px;color:var(--wh3);line-height:1.4;margin-bottom:8px">Estos vehículos están agendados para hoy pero no tienen técnico designado. Asigna a cada uno antes del ingreso al taller — la regla operacional no permite servicios sin designación el mismo día.</div>';
+      todayUnassigned.forEach(function(e){
+        var sdt = new Date(e.scheduled_at);
+        var hh = sdt.toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'});
+        var bm = e.plate ? plateBrandModel(e.plate) : null;
+        alertHTML += '<div onclick="openEditEvent(\'' + e.id + '\')" style="background:#fff;border:1px solid #f4d4d4;border-radius:3px;padding:8px 10px;margin-bottom:5px;cursor:pointer;display:flex;align-items:center;gap:8px">'
+          + '<span style="font-size:14px;font-weight:700;font-family:var(--mono);color:var(--red);min-width:46px">' + hh + '</span>'
+          + '<div style="flex:1;min-width:0">'
+          +   '<div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111">' + escapeHtml(e.service || '?') + '</div>'
+          +   '<div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-top:2px">'
+          +     (e.plate ? '<span class="plate-tag">' + escapeHtml(e.plate) + '</span>' : '<span style="font-size:10px;color:var(--wh4)">sin patente</span>')
+          +     (bm ? '<span style="font-size:10px;color:var(--wh3);font-weight:600;text-transform:uppercase">' + escapeHtml(bm) + '</span>' : '')
+          +   '</div>'
+          + '</div>'
+          + '<button class="btn-sm" style="background:var(--red);color:#fff;border-color:var(--red);flex-shrink:0" onclick="event.stopPropagation();openEditEvent(\'' + e.id + '\')">Asignar</button>'
+          + '</div>';
+      });
+      alertBox.innerHTML = alertHTML;
+      body.appendChild(alertBox);
+    }
+  } catch(eAlert) { logR('PLAN_TODAY_ALERT_ERR', {msg: eAlert.message}, 'warn'); }
+
   var addBtn = mk('button','btn btn-red'); addBtn.textContent = '+ Agendar servicio'; addBtn.style.marginBottom = '12px';
   addBtn.onclick = function() { openNewEvent(null); };
   applyPermToControl(addBtn, 'can_schedule_services', 'No tienes permiso para agendar servicios');
@@ -6995,7 +7904,12 @@ async function renderBossPlan(body) {
       h += '<div style="display:flex;justify-content:space-between;align-items:flex-start">';
       h += '<div><div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111">' + e.service + '</div>';
       h += '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:3px">';
-      if (e.plate) h += '<span class="plate-tag">' + e.plate + '</span>';
+      if (e.plate) {
+        h += '<span class="plate-tag">' + e.plate + '</span>';
+        // FASE 4.0: marca + modelo
+        var bmPlan = plateBrandModel(e.plate);
+        if (bmPlan) h += '<span style="font-size:10px;color:var(--wh3);font-weight:600;text-transform:uppercase">' + escapeHtml(bmPlan) + '</span>';
+      }
       h += '<span style="font-size:10px;color:#666">' + dt.toLocaleDateString('es-CL',{weekday:'short',day:'2-digit',month:'short'}) + ' ' + dt.toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'}) + '</span>';
       if (e.goal_minutes) h += '<span style="font-size:9px;color:#aaa;text-transform:uppercase">OBJ:' + e.goal_minutes + 'm</span>';
       h += '</div>' + (e.notes ? '<div style="font-size:10px;color:#999;margin-top:3px">' + e.notes + '</div>' : '') + '</div>';
@@ -7070,6 +7984,12 @@ async function renderBossHist(body) {
   });
   _histSelected = {};
 
+  // FASE 4.0: precargar marca/modelo de las patentes del historial
+  try {
+    var histPlates = _histData.map(function(h){ return h.plate; }).filter(Boolean);
+    if (histPlates.length) await preloadPlateInfo(histPlates);
+  } catch(_){}
+
   body.innerHTML = '';
   // Toolbar fija arriba
   var bar = mk('div','');
@@ -7104,7 +8024,9 @@ async function renderBossHist(body) {
       + '<div style="flex:1;min-width:0">'
       + '<div style="font-size:13px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111">' + escapeHTML(r.technician) + '</div>'
       + '<div style="font-size:11px;color:#666;text-transform:uppercase">' + escapeHTML(r.service) + '</div>'
-      + (r.plate ? '<span class="plate-tag" style="margin-top:3px;display:inline-block">' + escapeHTML(r.plate) + '</span>' : '')
+      + (r.plate ? '<div style="margin-top:3px;display:flex;align-items:center;gap:5px;flex-wrap:wrap"><span class="plate-tag">' + escapeHTML(r.plate) + '</span>'
+          + (plateBrandModel(r.plate) ? '<span style="font-size:10px;color:var(--wh3);font-weight:600;text-transform:uppercase">' + escapeHtml(plateBrandModel(r.plate)) + '</span>' : '')
+          + '</div>' : '')
       + (r.pauses && r.pauses.length ? '<div style="font-size:10px;color:var(--gold3);margin-top:2px">' + r.pauses.length + ' pausa(s)</div>' : '')
       + (r._checklist ? '<div style="font-size:10px;color:var(--blue);margin-top:2px">📋 con checklist</div>' : '')
       + '</div>'
@@ -14422,6 +15344,7 @@ async function openNewEvent(date) {
   document.getElementById('m-ev-err').style.display = 'none';
   await loadEvTechs(null);
   applyEvAssignPermLock();
+  refreshEventTechHint();
   openModal('m-event');
 }
 
@@ -14446,6 +15369,7 @@ async function openEditEvent(id) {
   document.getElementById('m-ev-err').style.display = 'none';
   await loadEvTechs(data.technician_id);
   applyEvAssignPermLock();
+  refreshEventTechHint();
   openModal('m-event');
 }
 
@@ -14538,6 +15462,27 @@ async function saveEvent() {
   if (!wsCheck.valid) { err.textContent = 'Horario fuera del taller: ' + wsCheck.reason + '. Ajustá la fecha y hora.'; err.style.display='block'; return; }
   // FASE 2.4.D-fix: tiempo objetivo obligatorio (para que el sistema pueda medir y alertar)
   if (!goal || goal < 1) { err.textContent = 'Indica un tiempo objetivo en minutos. Es obligatorio para que el sistema mida y alerte si el técnico se excede.'; err.style.display='block'; return; }
+  // FASE 4.0: BLOQUEO — no puede haber un servicio sin técnico asignado el día del servicio.
+  // Reglas:
+  //   - Servicio para HOY sin técnico  → BLOQUEADO (la jefatura debe asignar antes de agendar)
+  //   - Servicio futuro sin técnico    → permitido, pero genera alerta visible y notificación
+  //   - Servicio cancelado             → no aplica
+  // Esto evita que un vehículo llegue al taller sin nadie planificado, que es justo el dolor
+  // operacional reportado por la jefatura.
+  if (status !== 'cancelado' && !techId) {
+    var schedDate = new Date(dt);
+    var todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    var todayEnd = new Date();
+    todayEnd.setHours(23, 59, 59, 999);
+    var isToday = schedDate >= todayStart && schedDate <= todayEnd;
+    if (isToday) {
+      err.innerHTML = '<b>No se puede agendar para hoy sin técnico asignado.</b><br/>'
+        + 'Antes de guardar, designa un técnico responsable. Si aún no sabes quién, agenda primero para una fecha posterior y vuelve a editar el servicio cuando tengas la asignación.';
+      err.style.display = 'block';
+      return;
+    }
+  }
   btn.innerHTML = '<span class="spin"></span>'; btn.disabled = true;
   var payload = {service, plate, scheduled_at:new Date(dt).toISOString(), technician_id:techId, technician_name:techName, goal_minutes:goal, notes, status, created_by:CU.name};
   logR('SAVE_EVENT_PAYLOAD', payload);
@@ -15741,6 +16686,49 @@ async function generateInformePdf(woId) {
       y += 2;
     }
 
+    // FASE 4.0 — 7c) Hallazgos en vivo (capturados durante el servicio)
+    var liveFindings = Array.isArray(cd.live_findings) ? cd.live_findings : [];
+    if (liveFindings.length) {
+      if (y > pageH - 30) { doc.addPage(); y = 18; }
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(11);
+      doc.setTextColor(20, 20, 20);
+      doc.text('Hallazgos registrados durante el servicio', marginX, y);
+      y += 5;
+      doc.setFont('helvetica', 'italic');
+      doc.setFontSize(8);
+      doc.setTextColor(110, 110, 110);
+      doc.text('Reportados por el técnico mientras el servicio estaba en curso. Cada entrada queda con autor y hora.',
+        marginX, y, {maxWidth: contentW});
+      y += 6;
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(10);
+      doc.setTextColor(40, 40, 40);
+      liveFindings.forEach(function(lf){
+        var stamp = '';
+        try { stamp = new Date(lf.at).toLocaleString('es-CL'); } catch(_){}
+        var header = (lf.by_name || 'Técnico') + (stamp ? ' · ' + stamp : '');
+        var hLines = doc.splitTextToSize('• ' + header, contentW);
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(9);
+        hLines.forEach(function(ln){
+          if (y > pageH - 20) { doc.addPage(); y = 18; }
+          doc.text(ln, marginX, y);
+          y += 4;
+        });
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(10);
+        var bLines = doc.splitTextToSize('   ' + (lf.text || ''), contentW);
+        bLines.forEach(function(ln){
+          if (y > pageH - 20) { doc.addPage(); y = 18; }
+          doc.text(ln, marginX, y);
+          y += 5;
+        });
+        y += 2;
+      });
+      y += 2;
+    }
+
     // 8) Pie con firma/visado
     if (cd.double_check_completed_by_name || cd.visado_by_name) {
       if (y > pageH - 30) { doc.addPage(); y = 18; }
@@ -16778,6 +17766,11 @@ async function loadInformeExtras(woId) {
   var ex = cd.report_extras || {};
   return {
     checklist_data: cd,
+    // FASE 4.0: exponer también los hallazgos en vivo y la metadata del shell del informe
+    live_findings: Array.isArray(cd.live_findings) ? cd.live_findings.slice() : [],
+    report_started_at: cd.report_started_at || null,
+    report_started_by_name: cd.report_started_by_name || null,
+    report_state: cd.report_state || null,
     extras: {
       edited_observations: ex.edited_observations || '',
       extra_findings: Array.isArray(ex.extra_findings) ? ex.extra_findings.slice() : [],
@@ -16835,7 +17828,12 @@ async function openInformeEditor(woId) {
       woId: woId,
       otNumber: o.ot_number || '',
       origObs: origObs,
-      extras: loaded.extras
+      extras: loaded.extras,
+      // FASE 4.0: hallazgos en vivo + metadata del informe en desarrollo
+      liveFindings: loaded.live_findings || [],
+      reportStartedAt: loaded.report_started_at,
+      reportStartedByName: loaded.report_started_by_name,
+      reportState: loaded.report_state
     };
     renderInformeEditorBody();
   } catch(e) {
@@ -16852,6 +17850,40 @@ function renderInformeEditorBody() {
   if (!body) return;
   var ex = st.extras;
   var html = '';
+
+  // FASE 4.0: bloque "EN DESARROLLO" — banner superior + lista de hallazgos en vivo
+  // Estos se muestran en orden cronológico, no son editables aquí (el técnico los
+  // capturó durante el servicio); se pueden "promover" a hallazgo formal del informe
+  // con un botón. También se incluyen automáticamente al generar el PDF.
+  if (st.reportStartedAt || (st.liveFindings && st.liveFindings.length)) {
+    var startedStr = '';
+    try { startedStr = new Date(st.reportStartedAt).toLocaleString('es-CL'); } catch(_){}
+    html += '<div style="background:#eef5ff;border:1px solid #cfe0f5;border-left:4px solid var(--blue);border-radius:4px;padding:10px 12px;margin-bottom:14px">'
+      + '<div style="font-size:11px;font-weight:700;color:var(--blue);text-transform:uppercase;letter-spacing:.04em;font-family:\'Rajdhani\',sans-serif">'
+      + (st.reportState === 'en_desarrollo' ? '● Informe en desarrollo' : '● Informe iniciado')
+      + '</div>'
+      + (startedStr ? '<div style="font-size:10px;color:#666;margin-top:2px">Inicio del servicio: ' + escapeHtml(startedStr) + (st.reportStartedByName ? ' · por ' + escapeHtml(st.reportStartedByName) : '') + '</div>' : '')
+      + '</div>';
+
+    if (st.liveFindings && st.liveFindings.length) {
+      html += '<div style="margin-bottom:14px">'
+        + '<div style="font-weight:700;font-size:12px;margin-bottom:6px;color:#222">Hallazgos registrados durante el servicio (' + st.liveFindings.length + ')</div>'
+        + '<div style="font-size:10px;color:#888;margin-bottom:8px">Los hallazgos en vivo se incluyen automáticamente en el informe final. Si quieres reorganizarlos como hallazgos formales del informe, usa "Promover".</div>';
+      st.liveFindings.forEach(function(lf, idx){
+        var lfAt = '';
+        try { lfAt = new Date(lf.at).toLocaleString('es-CL'); } catch(_){}
+        html += '<div style="background:#fff;border:1px solid #e5e5e5;border-left:3px solid var(--blue);border-radius:3px;padding:8px 10px;margin-bottom:6px">'
+          + '<div style="font-size:10px;color:#666;margin-bottom:4px;font-family:var(--mono)">'
+          +   escapeHtml(lf.by_name || '?') + ' · ' + escapeHtml(lfAt)
+          + '</div>'
+          + '<div style="font-size:12px;color:#222;line-height:1.4;white-space:pre-wrap">' + escapeHtml(lf.text || '') + '</div>'
+          + (lf.photo ? '<img src="' + lf.photo + '" style="max-width:100%;max-height:180px;margin-top:6px;border-radius:3px;border:1px solid var(--border)"/>' : '')
+          + '<div style="margin-top:6px"><button class="btn-sm" style="font-size:10px;padding:3px 8px;border-color:var(--red);color:var(--red)" onclick="promoteLiveFindingToExtra(' + idx + ')">↑ Promover a hallazgo formal</button></div>'
+          + '</div>';
+      });
+      html += '</div>';
+    }
+  }
 
   // 1) Observaciones (editables)
   html += '<div style="margin-bottom:14px">'
@@ -16983,6 +18015,22 @@ function removeInformeFinding(idx) {
   if (!_INFORME_EDITOR_STATE) return;
   _INFORME_EDITOR_STATE.extras.extra_findings.splice(idx, 1);
   renderInformeEditorBody();
+}
+
+// FASE 4.0: Promueve un hallazgo en vivo (capturado durante el servicio) a
+// hallazgo formal del informe. El texto se copia con prefijo de autoría/hora;
+// el original sigue en live_findings (no se borra) para no perder el log.
+function promoteLiveFindingToExtra(idx) {
+  if (!_INFORME_EDITOR_STATE) return;
+  var lf = (_INFORME_EDITOR_STATE.liveFindings || [])[idx];
+  if (!lf) return;
+  var stamp = '';
+  try { stamp = new Date(lf.at).toLocaleString('es-CL'); } catch(_){}
+  var prefix = '[' + (lf.by_name || 'Técnico') + (stamp ? ' · ' + stamp : '') + '] ';
+  var text = prefix + (lf.text || '');
+  _INFORME_EDITOR_STATE.extras.extra_findings.push(text);
+  renderInformeEditorBody();
+  showGlobalError('✓ Hallazgo promovido a hallazgo formal del informe.', 2500);
 }
 
 async function handleInformeImageInput(e) {
@@ -17126,14 +18174,19 @@ async function renderBossInformes(body) {
 
   var allOTs = (rOTs.data || []).filter(function(o){
     var cd = o.checklist_data || {};
-    return cd.tech_checklist && Object.keys(cd.tech_checklist).length > 0;
+    // FASE 4.0: incluir también los informes "en desarrollo" (con report_started_at
+    // pero sin tech_checklist completo todavía). Antes solo aparecían los cerrados.
+    var hasChk = cd.tech_checklist && Object.keys(cd.tech_checklist).length > 0;
+    var inDev  = !!cd.report_started_at;
+    var hasFindings = Array.isArray(cd.live_findings) && cd.live_findings.length > 0;
+    return hasChk || inDev || hasFindings;
   });
 
-  // Filtro técnico: solo ver los suyos
+  // Filtro técnico: solo ver los suyos (los que él inició o cerró)
   if (_informesFilters.onlyMine && CU) {
     allOTs = allOTs.filter(function(o){
       var cd = o.checklist_data || {};
-      return cd.tech_completed_by === CU.id;
+      return cd.tech_completed_by === CU.id || cd.report_started_by === CU.id;
     });
   }
 
@@ -17275,7 +18328,15 @@ function renderInformesList(body, clientsMap, vehiclesMap) {
     row.onclick = function(){ openInformePreview(o.id); };
     var stateBadge = '';
     var stateColor = '#888';
-    if (o.status === 'closed') { stateBadge = 'Finalizada'; stateColor = '#2a7a2a'; }
+    // FASE 4.0: detectar "EN DESARROLLO" (informe abierto, sin checklist técnico cerrado)
+    var isInDev = !!cd.report_started_at && !cd.tech_completed_at;
+    var liveCount = Array.isArray(cd.live_findings) ? cd.live_findings.length : 0;
+    if (isInDev) {
+      stateBadge = 'EN DESARROLLO';
+      stateColor = 'var(--blue)';
+      // El borde izquierdo del card cambia a azul para que destaque
+      row.style.borderLeft = '4px solid var(--blue)';
+    } else if (o.status === 'closed') { stateBadge = 'Finalizada'; stateColor = '#2a7a2a'; }
     else if (o.status === 'pending_visado') { stateBadge = 'Pendiente visado'; stateColor = '#a07000'; }
     else if (o.status === 'pending_double_check') { stateBadge = 'Pendiente doble ctrl'; stateColor = '#a07000'; }
     else if (o.status === 'in_progress') { stateBadge = 'En curso'; stateColor = '#1f6fbf'; }
@@ -17294,6 +18355,7 @@ function renderInformesList(body, clientsMap, vehiclesMap) {
       +   (o.ot_number ? 'OT-' + escapeHtml(o.ot_number) + ' · ' : '')
       +   escapeHtml(fechaStr)
       +   ' · <span style="color:' + stateColor + ';font-weight:600">' + escapeHtml(stateBadge) + '</span>'
+      +   (liveCount ? ' · <span style="color:var(--blue);font-weight:600">🔍 ' + liveCount + ' hallazgo(s) en vivo</span>' : '')
       +   (extrasCount ? ' · <span style="color:#1f6fbf;font-weight:600">📎 ' + extrasCount + ' extra(s)</span>' : '')
       + '</div>'
       + '</div>'
@@ -17532,11 +18594,12 @@ function fmtD(d) {
 <script>
 // HARD FALLBACK: garantizar que el splash NUNCA quede pegado mas de 15s.
 // Coordinado con SDK_TIMEOUT_MS (8s) + CONN_TIMEOUT_MS (5s) + margen.
-// FIX 2026-04-29: usar la misma constante (15000) declarada arriba como
-// EMERGENCY_TIMEOUT_MS en el script principal. Como este bloque es un IIFE
-// separado y no comparte scope, replicamos el valor pero documentado.
+// FIX QW-12 (2026-04-30): leer de window.RossoConfig en vez de duplicar el
+// numero. Si alguien sube el timeout en el script principal, el fallback
+// se ajusta automaticamente. Si por alguna razon RossoConfig no esta cargado
+// (parse error en script anterior), el fallback de 15s se mantiene.
 (function () {
-  var EMERGENCY_FALLBACK_MS = 15000; // mantener en sincronía con EMERGENCY_TIMEOUT_MS
+  var EMERGENCY_FALLBACK_MS = (window.RossoConfig && window.RossoConfig.EMERGENCY_TIMEOUT_MS) || 15000;
   function forceShowApp() {
     try {
       var ls = document.getElementById('load-screen');
@@ -17613,7 +18676,21 @@ function fmtD(d) {
 
 window.addEventListener('online', function() {
   console.log('[NET] online');
-  if (typeof showGlobalError === 'function') showGlobalError('Conexion recuperada. Toca Reintentar si la app no responde.', 4000);
+  // FIX QW-5 (2026-04-30): antes solo mostrabamos un toast pidiendo al
+  // usuario "tocar Reintentar". Ahora intentamos auto-recuperar la conexion:
+  // (a) si el cliente Supabase aun no esta listo, llamamos retryConn().
+  // (b) si CU esta logueado, reanudamos polling (que estaba en backoff).
+  if (typeof showGlobalError === 'function') showGlobalError('Conexion recuperada. Reconectando...', 3000);
+  try {
+    if (typeof _supabaseReady !== 'undefined' && !_supabaseReady && typeof retryConn === 'function') {
+      retryConn();
+    }
+    if (typeof CU !== 'undefined' && CU && typeof _schedulePoll === 'function') {
+      _pollFailures = 0;
+      _schedulePoll();
+      if (typeof pollAll === 'function') pollAll().catch(function(){});
+    }
+  } catch(e) { console.warn('[NET] auto-recovery error', e); }
 });
 window.addEventListener('offline', function() {
   console.warn('[NET] offline');
