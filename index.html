@@ -12782,31 +12782,48 @@ async function openVisadoModal(otId) {
   // Antes el visado podía aparecer "vacío" (solo botones) si tech_checklist
   // estaba ausente. Ahora el visador SIEMPRE marca su propio checklist y eso
   // es lo que valida la calidad del trabajo.
-  var prevVisado = cd.visado_checklist || {};
+  //
+  // BUG-FIX 2026-04-30 (reportado por Nicolas Cisternas): el checklist se
+  // pre-llenaba con `cd.visado_checklist` de intentos anteriores. Si por
+  // cualquier motivo ahi habia un `false` antiguo, el visador veia el item
+  // pre-marcado como "No" sin notarlo (especialmente items de arriba que
+  // quedan fuera del scroll), y luego al aprobar la app rechazaba con
+  // "No puedes aprobar con No marcado en: 1. Montaje y torque correctos"
+  // mientras el visador estaba seguro de haber marcado todo en Si.
+  //
+  // SOLUCION: el visado SIEMPRE empieza fresco (sin pre-fill). Es mas
+  // seguro para la calidad: cada visado obliga a re-verificar cada item.
+  // Si el visador queria continuar un intento anterior, las observaciones
+  // del rechazo previo se muestran arriba en su propio bloque.
   html += '<div style="border-top:3px solid var(--red);margin-top:14px;padding-top:10px;background:#fffbf2;padding:10px;border-radius:3px">'
     + '<div style="font-size:13px;font-weight:800;color:var(--red);font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">⚖️ Checklist de visado — OBLIGATORIO</div>'
-    + '<div style="font-size:11px;color:var(--wh2);margin-bottom:10px;line-height:1.4">Marca cada ítem revisado físicamente en el vehículo. <b>No podrás aprobar si falta alguno.</b></div>';
+    + '<div style="font-size:11px;color:var(--wh2);margin-bottom:8px;line-height:1.4">Marca cada ítem revisado físicamente en el vehículo. <b>No podrás aprobar si falta alguno o si alguno está en NO.</b></div>'
+    // Contador en vivo: se actualiza con cada click via _refreshVisadoSummary()
+    + '<div id="m-visado-summary" style="display:flex;gap:10px;font-size:11px;font-weight:700;font-family:var(--mono);background:#fff;border:1px solid var(--border);border-radius:3px;padding:6px 9px;margin-bottom:10px">'
+    +   '<span style="color:var(--green)">✓ Sí: <span id="m-vs-cnt-yes">0</span></span>'
+    +   '<span style="color:var(--red)">✗ No: <span id="m-vs-cnt-no">0</span></span>'
+    +   '<span style="color:var(--wh4)">Sin marcar: <span id="m-vs-cnt-pending">0</span></span>'
+    + '</div>';
   CHECKLIST_VISADO.forEach(function(it){
     var lbl = it.label + (it.required ? ' <span style="color:var(--red)">*</span>' : '');
-    var cur = prevVisado[it.key];
     if (it.type === 'bool') {
-      var checkedYes = cur === true ? 'checked' : '';
-      var checkedNo  = cur === false ? 'checked' : '';
-      html += '<div style="margin-bottom:8px">'
-        + '<div style="font-size:11px;font-weight:600;color:#111;margin-bottom:4px">' + lbl + '</div>'
+      // BUG-FIX 2026-04-30: NO pre-llenar. checkedYes/checkedNo siempre vacios.
+      // Ver comentario arriba sobre por que el pre-fill desde cd.visado_checklist
+      // estaba causando que items aparecieran como "No" sin que el visador lo notara.
+      html += '<div style="margin-bottom:8px" data-vs-row="' + it.key + '">'
+        + '<div style="font-size:11px;font-weight:600;color:#111;margin-bottom:4px" data-vs-label="' + it.key + '">' + lbl + '</div>'
         + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:5px">'
-        +   '<label style="display:flex;align-items:center;gap:5px;cursor:pointer;padding:7px;border:1px solid var(--border);border-radius:3px;background:#fff;font-size:11px"><input type="radio" name="vs_' + it.key + '" value="true" ' + checkedYes + '/> ✓ Sí</label>'
-        +   '<label style="display:flex;align-items:center;gap:5px;cursor:pointer;padding:7px;border:1px solid var(--border);border-radius:3px;background:#fff;font-size:11px"><input type="radio" name="vs_' + it.key + '" value="false" ' + checkedNo + '/> ✗ No</label>'
+        +   '<label style="display:flex;align-items:center;gap:5px;cursor:pointer;padding:7px;border:1px solid var(--border);border-radius:3px;background:#fff;font-size:11px"><input type="radio" name="vs_' + it.key + '" value="true" onchange="_refreshVisadoSummary()"/> ✓ Sí</label>'
+        +   '<label style="display:flex;align-items:center;gap:5px;cursor:pointer;padding:7px;border:1px solid var(--border);border-radius:3px;background:#fff;font-size:11px"><input type="radio" name="vs_' + it.key + '" value="false" onchange="_refreshVisadoSummary()"/> ✗ No</label>'
         + '</div></div>';
     } else if (it.type === 'textarea') {
       var rows = it.rows || 2;
-      var v2 = cur != null ? String(cur) : '';
       html += '<div style="margin-bottom:8px">'
         + '<div style="font-size:11px;font-weight:600;color:#111;margin-bottom:4px">' + lbl + '</div>'
-        + '<textarea class="inp" data-vs-key="' + it.key + '" rows="' + rows + '" data-no-upper>' + escapeHtml(v2) + '</textarea></div>';
+        + '<textarea class="inp" data-vs-key="' + it.key + '" rows="' + rows + '" data-no-upper></textarea></div>';
     }
   });
-  html += '<div id="m-visado-chk-err" style="display:none;color:var(--red);font-size:12px;margin-top:8px;font-weight:600;padding:7px;background:var(--red4,#ffeaea);border-radius:3px"></div>';
+  html += '<div id="m-visado-chk-err" style="display:none;color:var(--red);font-size:12px;margin-top:8px;font-weight:600;padding:7px;background:var(--red4,#ffeaea);border-radius:3px;line-height:1.5"></div>';
   html += '</div>';
 
   html += '<div style="margin-top:14px"><button class="btn-sm" onclick="generateOTPdf(\'' + o.id + '\')">📄 Descargar PDF</button></div>';
@@ -12814,29 +12831,91 @@ async function openVisadoModal(otId) {
   document.getElementById('m-visado-body').innerHTML = html;
   document.getElementById('m-visado-rejection').value = '';
   document.getElementById('m-visado-rejection-wrap').style.display = 'none';
+  // BUG-FIX 2026-04-30: inicializar contador en vivo del checklist de visado.
+  try { if (typeof _refreshVisadoSummary === 'function') _refreshVisadoSummary(); } catch(_){}
   openModal('m-visado');
 }
 
 // FASE 3.0: helper para leer y validar el checklist de visado.
-// Retorna {ok:true, data} o {ok:false, missing:'label del item faltante'}.
+// Retorna {ok:true, data} o {ok:false, missing:[...labels]} (lista de items faltantes).
+// BUG-FIX 2026-04-30: ahora retorna ARRAY de missing en vez de un solo string,
+// para que el visador vea TODOS los items que faltan (antes solo se mostraba
+// el primero, lo que era confuso si faltaban varios).
 function _collectVisadoChecklist() {
   var data = {};
+  var missing = [];
+  var failed = []; // items marcados como No (con su label)
   for (var i = 0; i < CHECKLIST_VISADO.length; i++) {
     var it = CHECKLIST_VISADO[i];
     var val;
     if (it.type === 'bool') {
       var rad = document.querySelector('#m-visado-body input[name="vs_' + it.key + '"]:checked');
       val = rad ? rad.value === 'true' : null;
+      if (val === false) failed.push({key: it.key, label: it.label});
     } else if (it.type === 'textarea') {
       var ta = document.querySelector('#m-visado-body textarea[data-vs-key="' + it.key + '"]');
       val = ta ? (ta.value || '').trim() : '';
     }
     if (it.required && (val == null || (it.type === 'bool' && val !== true && val !== false))) {
-      return {ok: false, missing: it.label};
+      missing.push({key: it.key, label: it.label});
     }
     data[it.key] = val;
   }
-  return {ok: true, data: data};
+  if (missing.length > 0) {
+    return {ok: false, missing: missing, failed: failed, data: data};
+  }
+  return {ok: true, data: data, failed: failed};
+}
+
+// BUG-FIX 2026-04-30: contador en vivo arriba del checklist.
+// Cada radio dispara onchange="_refreshVisadoSummary()" y este helper recuenta
+// y actualiza la fila de "Sí: X · No: Y · Sin marcar: Z" para que el visador
+// vea en tiempo real cuantos lleva en cada categoria, sin tener que volver a
+// recorrer todo el formulario.
+function _refreshVisadoSummary() {
+  var yes = 0, no = 0, pending = 0;
+  for (var i = 0; i < CHECKLIST_VISADO.length; i++) {
+    var it = CHECKLIST_VISADO[i];
+    if (it.type !== 'bool') continue;
+    var rad = document.querySelector('#m-visado-body input[name="vs_' + it.key + '"]:checked');
+    if (!rad) pending++;
+    else if (rad.value === 'true') yes++;
+    else if (rad.value === 'false') no++;
+  }
+  var elY = document.getElementById('m-vs-cnt-yes');
+  var elN = document.getElementById('m-vs-cnt-no');
+  var elP = document.getElementById('m-vs-cnt-pending');
+  if (elY) elY.textContent = yes;
+  if (elN) elN.textContent = no;
+  if (elP) elP.textContent = pending;
+  // Si el contador No > 0, resaltar visualmente la fila de resumen
+  var sumBox = document.getElementById('m-visado-summary');
+  if (sumBox) {
+    if (no > 0) sumBox.style.borderColor = 'var(--red)';
+    else if (pending === 0) sumBox.style.borderColor = 'var(--green)';
+    else sumBox.style.borderColor = 'var(--border)';
+  }
+}
+
+// BUG-FIX 2026-04-30: helper para limpiar resaltados rojos previos en el
+// checklist de visado. Se llama antes de cada validacion para no acumular.
+function _clearVisadoHighlights() {
+  var rows = document.querySelectorAll('#m-visado-body [data-vs-row]');
+  rows.forEach(function(r) {
+    r.style.background = '';
+    r.style.outline = '';
+    r.style.borderRadius = '';
+    r.style.padding = '';
+  });
+}
+function _highlightVisadoRow(key) {
+  var row = document.querySelector('#m-visado-body [data-vs-row="' + key + '"]');
+  if (row) {
+    row.style.background = '#ffeaea';
+    row.style.outline = '2px solid var(--red)';
+    row.style.borderRadius = '3px';
+    row.style.padding = '4px';
+  }
 }
 
 function showRejectionForm() {
@@ -12887,32 +12966,57 @@ async function _approveVisadoInner() {
 
   // FASE 3.0 FIX CRÍTICO: validar el checklist de visado ANTES de aprobar.
   // No se permite aprobación sin que el visador haya marcado todos los items.
+  // BUG-FIX 2026-04-30: ahora listamos TODOS los items con problemas y hacemos
+  // scroll al primero. Antes solo se mostraba el primer item con error, lo
+  // que confundia cuando habia mas de uno (Nicolas reportaba "marca como No
+  // un item que yo marque como Si"; en realidad habia mas de uno en No y solo
+  // veia el primer label).
+  _clearVisadoHighlights();
   var chk = _collectVisadoChecklist();
   var errBox = document.getElementById('m-visado-chk-err');
-  if (!chk.ok) {
+
+  // Log diagnostico siempre que se intente aprobar — util si el bug recurre.
+  logR('VISADO_VALIDATE', {
+    ot_id: o.id,
+    ot_number: o.ot_number,
+    data: chk.data,
+    missing: (chk.missing || []).map(function(m){return m.key;}),
+    failed: (chk.failed || []).map(function(f){return f.key;})
+  });
+
+  if (!chk.ok && chk.missing && chk.missing.length) {
+    // Faltan items por marcar
     if (errBox) {
-      errBox.textContent = 'Falta marcar: ' + chk.missing + '. El checklist de visado debe estar completo.';
+      var missList = chk.missing.map(function(m){ return '• ' + m.label; }).join('<br/>');
+      errBox.innerHTML = '<b>Falta marcar ' + chk.missing.length + ' ' + (chk.missing.length === 1 ? 'item' : 'items') + ':</b><br/>' + missList;
       errBox.style.display = 'block';
-      errBox.scrollIntoView({behavior:'smooth', block:'center'});
+      // Resaltar y scrollear al primero
+      chk.missing.forEach(function(m){ _highlightVisadoRow(m.key); });
+      var firstRow = document.querySelector('#m-visado-body [data-vs-row="' + chk.missing[0].key + '"]');
+      if (firstRow) firstRow.scrollIntoView({behavior:'smooth', block:'center'});
     } else {
-      showGlobalError('Falta marcar en el checklist de visado: ' + chk.missing, 5000);
+      showGlobalError('Falta marcar en el checklist de visado: ' + chk.missing.map(function(m){return m.label;}).join(', '), 5000);
     }
     return;
   }
   // Regla de calidad: si algún item está en NO, no se puede aprobar — hay que rechazar.
-  var hasFail = false, failKey = null;
-  CHECKLIST_VISADO.forEach(function(it){
-    if (it.type === 'bool' && chk.data[it.key] === false) { hasFail = true; failKey = failKey || it.label; }
-  });
-  if (hasFail) {
+  // BUG-FIX 2026-04-30: ahora listamos TODOS los items en No, no solo el primero.
+  if (chk.failed && chk.failed.length > 0) {
     if (errBox) {
-      errBox.textContent = 'No puedes aprobar con "No" marcado en: ' + failKey + '. Usa "Rechazar con observaciones" para devolver al técnico.';
+      var noList = chk.failed.map(function(f){ return '• ' + f.label; }).join('<br/>');
+      errBox.innerHTML = '<b>No puedes aprobar: ' + chk.failed.length + ' ' + (chk.failed.length === 1 ? 'item esta' : 'items estan') + ' marcados como NO:</b><br/>'
+        + noList
+        + '<br/><br/>Si los items realmente estan OK, marcalos como "Si". Si tienen problemas, usa <b>"Rechazar con observaciones"</b> para devolver al tecnico.';
       errBox.style.display = 'block';
-      errBox.scrollIntoView({behavior:'smooth', block:'center'});
+      // Resaltar todos los problematicos y scrollear al primero
+      chk.failed.forEach(function(f){ _highlightVisadoRow(f.key); });
+      var firstFailedRow = document.querySelector('#m-visado-body [data-vs-row="' + chk.failed[0].key + '"]');
+      if (firstFailedRow) firstFailedRow.scrollIntoView({behavior:'smooth', block:'center'});
     }
     return;
   }
   if (errBox) errBox.style.display = 'none';
+  _clearVisadoHighlights();
 
   var btn = document.getElementById('m-visado-approve-btn');
   btn.innerHTML = '<span class="spin"></span> Aprobando...'; btn.disabled = true;
