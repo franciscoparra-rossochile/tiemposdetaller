@@ -2169,7 +2169,7 @@ const SERVICES_INGRESO = [
 const CHECKLIST_PRUEBA_RUTA = [
   {key:'rt_km_arrival', label:'Kilometraje de llegada (post prueba)', type:'number', required:true},
   {key:'rt_type',       label:'Tipo de prueba de ruta', type:'select', options:['A (corta — obligatoria para este servicio)'], default:'A (corta — obligatoria para este servicio)', required:true},
-  {key:'rt_anomalies',  label:'¿Encontró ruidos o anomalías?', type:'bool', required:true},
+  {key:'rt_anomalies',  label:'¿Encontró ruidos o anomalías?', type:'bool', required:true, allow_na:true},
   {key:'rt_anomalies_desc', label:'Detalle de anomalías encontradas', type:'text', required_if:'rt_anomalies'}
 ];
 
@@ -2198,22 +2198,32 @@ function serviceExpectsOil(serviceClassification) {
   return SERVICES_OIL_EXPECTED.indexOf(serviceClassification) !== -1;
 }
 
+// FIX 2026-05-04 (re-aplicación): allow_na:true en dc_clean. Workaround legítimo
+// para servicios sin zona de trabajo mecánica (lavado, revisión documental, etc.)
+// y vía de escape si el técnico encuentra algún problema de UI residual.
 const CHECKLIST_DOBLE_CONTROL = [
   {key:'dc_torque_filter',  label:'Marcaje torque filtro de aceite',     type:'bool',   required:true, allow_na:true},
   {key:'dc_apriete_filter', label:'Marcaje apriete filtro de aceite',    type:'bool',   required:true, allow_na:true},
   {key:'dc_label',          label:'Etiqueta de cambio de aceite pegada', type:'bool',   required:true, allow_na:true},
-  {key:'dc_clean',          label:'Limpieza zona de trabajo',            type:'bool',   required:true},
+  {key:'dc_clean',          label:'Limpieza zona de trabajo',            type:'bool',   required:true, allow_na:true},
   {key:'dc_km_exit',        label:'Kilometraje de salida',               type:'number', required:true},
-  {key:'dc_na_reason',      label:'Motivo de la no aplicación (N/A)',    type:'textarea', required_if_na:true, rows:2, placeholder:'Ej: cliente excluyó cambio de aceite, reparación general sin aceite, etc.'},
+  {key:'dc_na_reason',      label:'Observaciones generales del doble control (opcional)',    type:'textarea', required:false, rows:2, placeholder:'Espacio libre para comentarios adicionales del cierre. Cada item con No o N/A ya tiene su propio motivo arriba.'},
   {key:'dc_observations',   label:'Observaciones (opcional)',            type:'textarea', required:false, rows:2}
 ];
 
-// Devuelve true si el doble control tiene items aceite-dependientes en N/A.
-// Útil para destacar el caso al visador.
+// FIX 2026-05-04: lista explícita de items aceite-dependientes. Antes hasOilNa
+// retornaba true para CUALQUIER item con allow_na en N/A. Ahora que dc_clean
+// también tiene allow_na (que NO es aceite-dependiente), debemos discriminar
+// para que el visador solo vea la advertencia "N/A en items de aceite" cuando
+// realmente sea relevante.
+const DC_OIL_DEPENDENT_KEYS = ['dc_torque_filter', 'dc_apriete_filter', 'dc_label'];
+
+// Devuelve true si el doble control tiene items ACEITE-DEPENDIENTES en N/A.
+// Útil para destacar el caso al visador (cliente excluyó cambio de aceite, etc.)
 function hasOilNa(doubleCheckData) {
   if (!doubleCheckData) return false;
-  return CHECKLIST_DOBLE_CONTROL.some(function(it){
-    return it.allow_na && doubleCheckData[it.key] === 'N/A';
+  return DC_OIL_DEPENDENT_KEYS.some(function(key){
+    return doubleCheckData[key] === 'N/A';
   });
 }
 
@@ -2223,16 +2233,16 @@ function hasOilNa(doubleCheckData) {
 // FASE 3.0: 10 secciones según estándar operativo Rosso.
 // ═══════════════════════════════════════════════════════════════
 const CHECKLIST_VISADO = [
-  {key:'vs_montaje_torque',  label:'1. Montaje y torque correctos',                       type:'bool', required:true},
-  {key:'vs_niveles_fugas',   label:'2. Niveles y ausencia de fugas',                       type:'bool', required:true},
-  {key:'vs_motor_funciona',  label:'3. Motor y funcionamiento',                            type:'bool', required:true},
-  {key:'vs_tablero_escaner', label:'4. Tablero limpio (sin testigos) y escáner sin DTC',   type:'bool', required:true},
-  {key:'vs_seguridad',       label:'5. Seguridad — frenos y dirección',                    type:'bool', required:true},
-  {key:'vs_electrico',       label:'6. Sistema eléctrico operativo',                       type:'bool', required:true},
-  {key:'vs_luces',           label:'7. Luces (altas, bajas, freno, intermitentes)',        type:'bool', required:true},
-  {key:'vs_alineacion',      label:'8. Alineación (volante centrado / sin tirones)',       type:'bool', required:true},
-  {key:'vs_prueba_ruta',     label:'9. Prueba de ruta realizada conforme',                 type:'bool', required:true},
-  {key:'vs_cierre',          label:'10. Cierre — vehículo limpio, llaves y documentos OK', type:'bool', required:true},
+  {key:'vs_montaje_torque',  label:'1. Montaje y torque correctos',                       type:'bool', required:true, allow_na:true},
+  {key:'vs_niveles_fugas',   label:'2. Niveles y ausencia de fugas',                       type:'bool', required:true, allow_na:true},
+  {key:'vs_motor_funciona',  label:'3. Motor y funcionamiento',                            type:'bool', required:true, allow_na:true},
+  {key:'vs_tablero_escaner', label:'4. Tablero limpio (sin testigos) y escáner sin DTC',   type:'bool', required:true, allow_na:true},
+  {key:'vs_seguridad',       label:'5. Seguridad — frenos y dirección',                    type:'bool', required:true, allow_na:true},
+  {key:'vs_electrico',       label:'6. Sistema eléctrico operativo',                       type:'bool', required:true, allow_na:true},
+  {key:'vs_luces',           label:'7. Luces (altas, bajas, freno, intermitentes)',        type:'bool', required:true, allow_na:true},
+  {key:'vs_alineacion',      label:'8. Alineación (volante centrado / sin tirones)',       type:'bool', required:true, allow_na:true},
+  {key:'vs_prueba_ruta',     label:'9. Prueba de ruta realizada conforme',                 type:'bool', required:true, allow_na:true},
+  {key:'vs_cierre',          label:'10. Cierre — vehículo limpio, llaves y documentos OK', type:'bool', required:true, allow_na:true},
   {key:'vs_observations',    label:'Observaciones del visador (opcional)',                 type:'textarea', required:false, rows:2}
 ];
 
@@ -2295,7 +2305,7 @@ const CHECKLISTS_TECH = {
         {key:'oil_brand',       label:'Marca de aceite', type:'text', required:true}
       ]},
       {title: 'Niveles', items: [
-        {key:'wiper_fluid', label:'Relleno de líquido limpiaparabrisas', type:'bool', required:true}
+        {key:'wiper_fluid', label:'Relleno de líquido limpiaparabrisas', type:'bool', required:true, allow_na:true}
       ]},
       {title: 'Prueba de ruta', items: CHECKLIST_PRUEBA_RUTA},
       {title: 'Observaciones del mecánico', items: [
@@ -2332,13 +2342,13 @@ const CHECKLISTS_TECH = {
         {key:'oil_brand',          label:'Marca de aceite', type:'text', required:true}
       ]},
       {title: 'Relleno de niveles', items: [
-        {key:'wiper_fluid',     label:'Líquido limpiaparabrisas', type:'bool', required:true},
-        {key:'coolant',         label:'Refrigerante', type:'bool', required:true},
-        {key:'brake_fluid',     label:'Líquido de frenos', type:'bool', required:true}
+        {key:'wiper_fluid',     label:'Líquido limpiaparabrisas', type:'bool', required:true, allow_na:true},
+        {key:'coolant',         label:'Refrigerante', type:'bool', required:true, allow_na:true},
+        {key:'brake_fluid',     label:'Líquido de frenos', type:'bool', required:true, allow_na:true}
       ]},
       {title: 'Diagnóstico y reset', items: [
-        {key:'scanner_read',    label:'Lectura de escáner realizada', type:'bool', required:true},
-        {key:'service_reset',   label:'Reinicio de intervalo de mantenimiento', type:'bool', required:true}
+        {key:'scanner_read',    label:'Lectura de escáner realizada', type:'bool', required:true, allow_na:true},
+        {key:'service_reset',   label:'Reinicio de intervalo de mantenimiento', type:'bool', required:true, allow_na:true}
       ]},
       {title: 'Prueba de ruta', items: CHECKLIST_PRUEBA_RUTA},
       {title: 'Observaciones del mecánico', items: [
@@ -2399,13 +2409,13 @@ const CHECKLISTS_TECH = {
       ]},
       {title: 'Estado de neumáticos', items: tireItems()},
       {title: 'Relleno de niveles', items: [
-        {key:'wiper_fluid', label:'Líquido limpiaparabrisas', type:'bool', required:true},
-        {key:'coolant',     label:'Refrigerante', type:'bool', required:true},
-        {key:'brake_fluid_refill', label:'Líquido de frenos', type:'bool', required:true}
+        {key:'wiper_fluid', label:'Líquido limpiaparabrisas', type:'bool', required:true, allow_na:true},
+        {key:'coolant',     label:'Refrigerante', type:'bool', required:true, allow_na:true},
+        {key:'brake_fluid_refill', label:'Líquido de frenos', type:'bool', required:true, allow_na:true}
       ]},
       {title: 'Diagnóstico y reset', items: [
-        {key:'scanner_read',  label:'Lectura de escáner realizada', type:'bool', required:true},
-        {key:'service_reset', label:'Reinicio de intervalo de mantenimiento', type:'bool', required:true}
+        {key:'scanner_read',  label:'Lectura de escáner realizada', type:'bool', required:true, allow_na:true},
+        {key:'service_reset', label:'Reinicio de intervalo de mantenimiento', type:'bool', required:true, allow_na:true}
       ]},
       {title: 'Prueba de ruta', items: CHECKLIST_PRUEBA_RUTA},
       {title: 'Diagnóstico técnico', items: [
@@ -2430,7 +2440,7 @@ const CHECKLISTS_TECH = {
     ],
     sections: [
       {title: 'Procedimiento ejecutado', items: [
-        {key:'dpf_proc_realizado',   label:'Procedimiento de limpieza realizado', type:'bool', required:true},
+        {key:'dpf_proc_realizado',   label:'Procedimiento de limpieza realizado', type:'bool', required:true, allow_na:true},
         {key:'dpf_lectura_pre',      label:'Lectura escáner ANTES del servicio', type:'textarea', rows:2, required:true, placeholder:'Códigos / hollín / suciedad %'},
         {key:'dpf_lectura_post',     label:'Lectura escáner DESPUÉS del servicio', type:'textarea', rows:2, required:true, placeholder:'Códigos / hollín / suciedad %'},
         {key:'dpf_observaciones',    label:'Observaciones del estado del DPF', type:'textarea', rows:2}
@@ -2450,10 +2460,10 @@ const CHECKLISTS_TECH = {
     ],
     sections: [
       {title: 'Procedimiento ejecutado', items: [
-        {key:'dpf_proc_realizado',   label:'Procedimiento Avanzado realizado (limpieza profunda)', type:'bool', required:true},
+        {key:'dpf_proc_realizado',   label:'Procedimiento Avanzado realizado (limpieza profunda)', type:'bool', required:true, allow_na:true},
         {key:'dpf_lectura_pre',      label:'Lectura escáner ANTES', type:'textarea', rows:2, required:true},
         {key:'dpf_lectura_post',     label:'Lectura escáner DESPUÉS', type:'textarea', rows:2, required:true},
-        {key:'dpf_regen_forzada',    label:'¿Se realizó regeneración forzada post-servicio?', type:'bool', required:true},
+        {key:'dpf_regen_forzada',    label:'¿Se realizó regeneración forzada post-servicio?', type:'bool', required:true, allow_na:true},
         {key:'dpf_observaciones',    label:'Observaciones', type:'textarea', rows:2}
       ]},
       {title: 'Prueba de ruta', items: CHECKLIST_PRUEBA_RUTA}
@@ -2472,11 +2482,11 @@ const CHECKLISTS_TECH = {
     ],
     sections: [
       {title: 'Procedimiento ejecutado', items: [
-        {key:'dpf_proc_realizado',   label:'Procedimiento Premium realizado (limpieza profunda + admisión)', type:'bool', required:true},
-        {key:'dpf_limpieza_admision',label:'Limpieza de admisión realizada', type:'bool', required:true},
+        {key:'dpf_proc_realizado',   label:'Procedimiento Premium realizado (limpieza profunda + admisión)', type:'bool', required:true, allow_na:true},
+        {key:'dpf_limpieza_admision',label:'Limpieza de admisión realizada', type:'bool', required:true, allow_na:true},
         {key:'dpf_lectura_pre',      label:'Lectura escáner ANTES', type:'textarea', rows:2, required:true},
         {key:'dpf_lectura_post',     label:'Lectura escáner DESPUÉS', type:'textarea', rows:2, required:true},
-        {key:'dpf_regen_forzada',    label:'¿Se realizó regeneración forzada post-servicio?', type:'bool', required:true},
+        {key:'dpf_regen_forzada',    label:'¿Se realizó regeneración forzada post-servicio?', type:'bool', required:true, allow_na:true},
         {key:'dpf_observaciones',    label:'Observaciones', type:'textarea', rows:2}
       ]},
       {title: 'Prueba de ruta', items: CHECKLIST_PRUEBA_RUTA}
@@ -2501,8 +2511,8 @@ const CHECKLISTS_TECH = {
         {key:'dpf_proceso_externo',  label:'Proceso externo seleccionado', type:'text', required:true, placeholder:'Lab / proveedor de recuperación'}
       ]},
       {title: 'Reinstalación', items: [
-        {key:'dpf_reinstalado',      label:'¿DPF reinstalado en este servicio?', type:'bool', required:true},
-        {key:'dpf_codigos_reset',    label:'Códigos / contadores reseteados', type:'bool', required:true},
+        {key:'dpf_reinstalado',      label:'¿DPF reinstalado en este servicio?', type:'bool', required:true, allow_na:true},
+        {key:'dpf_codigos_reset',    label:'Códigos / contadores reseteados', type:'bool', required:true, allow_na:true},
         {key:'dpf_observaciones_final', label:'Observaciones finales', type:'textarea', rows:2}
       ]}
     ]
@@ -2530,7 +2540,7 @@ const CHECKLISTS_TECH = {
         {key:'diag_recomendaciones', label:'Recomendaciones / próximos pasos', type:'textarea', rows:2, required:true}
       ]},
       {title: 'Uso de aceite', items: [
-        {key:'oil_used',             label:'¿Se usó aceite en este servicio?', type:'bool', required:true},
+        {key:'oil_used',             label:'¿Se usó aceite en este servicio?', type:'bool', required:true, allow_na:true},
         {key:'oil_filter_code',      label:'Código del filtro de aceite', type:'text', required_if:'oil_used', placeholder:'Solo si se usó aceite'},
         {key:'oil_liters',           label:'Litros de aceite usados', type:'number', step:0.1, required_if:'oil_used', placeholder:'Solo si se usó aceite'},
         {key:'oil_brand',            label:'Marca y tipo de aceite', type:'text', required_if:'oil_used', placeholder:'Ej: Liqui Moly 5W30'}
@@ -2563,7 +2573,7 @@ const CHECKLISTS_TECH = {
       ]},
       {title: 'Reprogramación', items: [
         {key:'ecu_archivo',          label:'Archivo / mapa cargado', type:'text', required:true, placeholder:'Identificación del archivo'},
-        {key:'ecu_resultado',        label:'¿Reprogramación exitosa?', type:'bool', required:true},
+        {key:'ecu_resultado',        label:'¿Reprogramación exitosa?', type:'bool', required:true, allow_na:true},
         {key:'ecu_software_post',    label:'Versión de software posterior', type:'text', required:true}
       ]},
       {title: 'Verificación', items: [
@@ -2571,7 +2581,7 @@ const CHECKLISTS_TECH = {
         {key:'ecu_observaciones',    label:'Observaciones técnicas', type:'textarea', rows:2}
       ]},
       {title: 'Uso de aceite', items: [
-        {key:'oil_used',             label:'¿Se usó aceite en este servicio?', type:'bool', required:true},
+        {key:'oil_used',             label:'¿Se usó aceite en este servicio?', type:'bool', required:true, allow_na:true},
         {key:'oil_filter_code',      label:'Código del filtro de aceite', type:'text', required_if:'oil_used', placeholder:'Solo si se usó aceite'},
         {key:'oil_liters',           label:'Litros de aceite usados', type:'number', step:0.1, required_if:'oil_used', placeholder:'Solo si se usó aceite'},
         {key:'oil_brand',            label:'Marca y tipo de aceite', type:'text', required_if:'oil_used', placeholder:'Ej: Liqui Moly 5W30'}
@@ -2602,10 +2612,10 @@ const CHECKLISTS_TECH = {
       {title: 'Mediciones finales', items: [
         {key:'fr_disc_front_mm',     label:'Espesor disco delantero post-servicio (mm)', type:'number', step:0.1, unit:'mm'},
         {key:'fr_disc_rear_mm',      label:'Espesor disco/tambor trasero post-servicio (mm)', type:'number', step:0.1, unit:'mm'},
-        {key:'fr_fluid_changed',     label:'¿Se cambió líquido de frenos?', type:'bool', required:true}
+        {key:'fr_fluid_changed',     label:'¿Se cambió líquido de frenos?', type:'bool', required:true, allow_na:true}
       ]},
       {title: 'Uso de aceite', items: [
-        {key:'oil_used',             label:'¿Se usó aceite en este servicio?', type:'bool', required:true},
+        {key:'oil_used',             label:'¿Se usó aceite en este servicio?', type:'bool', required:true, allow_na:true},
         {key:'oil_filter_code',      label:'Código del filtro de aceite', type:'text', required_if:'oil_used', placeholder:'Solo si se usó aceite'},
         {key:'oil_liters',           label:'Litros de aceite usados', type:'number', step:0.1, required_if:'oil_used', placeholder:'Solo si se usó aceite'},
         {key:'oil_brand',            label:'Marca y tipo de aceite', type:'text', required_if:'oil_used', placeholder:'Ej: Liqui Moly 5W30'}
@@ -2638,13 +2648,13 @@ const CHECKLISTS_TECH = {
         {key:'rg_observaciones',     label:'Observaciones / recomendaciones', type:'textarea', rows:2}
       ]},
       {title: 'Uso de aceite', items: [
-        {key:'oil_used',             label:'¿Se usó aceite en este servicio?', type:'bool', required:true},
+        {key:'oil_used',             label:'¿Se usó aceite en este servicio?', type:'bool', required:true, allow_na:true},
         {key:'oil_filter_code',      label:'Código del filtro de aceite', type:'text', required_if:'oil_used', placeholder:'Solo si se usó aceite'},
         {key:'oil_liters',           label:'Litros de aceite usados', type:'number', step:0.1, required_if:'oil_used', placeholder:'Solo si se usó aceite'},
         {key:'oil_brand',            label:'Marca y tipo de aceite', type:'text', required_if:'oil_used', placeholder:'Ej: Liqui Moly 5W30'}
       ]},
       {title: 'Prueba de ruta (si aplica)', items: [
-        {key:'rg_test_realizada',    label:'¿Se realizó prueba de ruta?', type:'bool', required:true},
+        {key:'rg_test_realizada',    label:'¿Se realizó prueba de ruta?', type:'bool', required:true, allow_na:true},
         {key:'rg_test_anomalies',    label:'Anomalías encontradas en prueba', type:'textarea', rows:2, required_if:'rg_test_realizada'}
       ]}
     ]
@@ -2669,13 +2679,13 @@ const CHECKLISTS_TECH = {
         {key:'gar_servicio_origen',  label:'¿OT original (si conoce)?', type:'text', placeholder:'Ej: OT-123 o fecha aproximada'}
       ]},
       {title: 'Diagnóstico', items: [
-        {key:'gar_es_garantia',      label:'¿La falla aplica a garantía?', type:'bool', required:true},
+        {key:'gar_es_garantia',      label:'¿La falla aplica a garantía?', type:'bool', required:true, allow_na:true},
         {key:'gar_diagnostico',      label:'Diagnóstico técnico', type:'textarea', rows:3, required:true},
         {key:'gar_solucion',         label:'Solución aplicada', type:'textarea', rows:2, required:true},
         {key:'gar_repuestos',        label:'Repuestos usados (cubiertos por garantía)', type:'textarea', rows:2}
       ]},
       {title: 'Uso de aceite', items: [
-        {key:'oil_used',             label:'¿Se usó aceite en este servicio?', type:'bool', required:true},
+        {key:'oil_used',             label:'¿Se usó aceite en este servicio?', type:'bool', required:true, allow_na:true},
         {key:'oil_filter_code',      label:'Código del filtro de aceite', type:'text', required_if:'oil_used', placeholder:'Solo si se usó aceite'},
         {key:'oil_liters',           label:'Litros de aceite usados', type:'number', step:0.1, required_if:'oil_used', placeholder:'Solo si se usó aceite'},
         {key:'oil_brand',            label:'Marca y tipo de aceite', type:'text', required_if:'oil_used', placeholder:'Ej: Liqui Moly 5W30'}
@@ -8360,7 +8370,7 @@ async function exportSelectedHist(mode) {
         DC_Torque_Filtro: dc.dc_torque_filter === true ? 'SÍ' : dc.dc_torque_filter === false ? 'NO' : dc.dc_torque_filter === 'N/A' ? 'N/A' : '',
         DC_Apriete_Filtro: dc.dc_apriete_filter === true ? 'SÍ' : dc.dc_apriete_filter === false ? 'NO' : dc.dc_apriete_filter === 'N/A' ? 'N/A' : '',
         DC_Etiqueta: dc.dc_label === true ? 'SÍ' : dc.dc_label === false ? 'NO' : dc.dc_label === 'N/A' ? 'N/A' : '',
-        DC_Limpieza: dc.dc_clean === true ? 'SÍ' : dc.dc_clean === false ? 'NO' : '',
+        DC_Limpieza: dc.dc_clean === true ? 'SÍ' : dc.dc_clean === false ? 'NO' : dc.dc_clean === 'N/A' ? 'N/A' : '',
         DC_Motivo_NA: dc.dc_na_reason || '',
         // Visado
         Visado_Por: (cd && cd.visado_by_name) || '',
@@ -11735,7 +11745,9 @@ function openTechChecklist(otId) {
     html += '<div style="border-top:2px solid var(--red);margin:14px -2px 8px;padding-top:10px">'
          + '<div style="font-size:12px;font-weight:700;color:#111;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px">' + escapeHtml(sec.title) + '</div>';
     sec.items.forEach(function(it) {
-      html += renderChecklistItem(it, existing[it.key]);
+      // FIX 2026-05-04: pasar también el motivo previo (<key>_reason) al
+      // re-abrir el checklist con datos persistidos.
+      html += renderChecklistItem(it, existing[it.key], existing[it.key + '_reason']);
     });
     html += '</div>';
   });
@@ -11746,20 +11758,20 @@ function openTechChecklist(otId) {
   setTimeout(applyChecklistConditionals, 50);
 }
 
-function renderChecklistItem(it, currentValue) {
+function renderChecklistItem(it, currentValue, currentReason) {
   var key = it.key;
   var lbl = it.label + (it.required ? ' <span style="color:var(--red)">*</span>' : '');
   var req = it.required ? 'data-required="1"' : '';
   if (it.required_if) req += ' data-required-if="' + it.required_if + '"';
-  var html = '<div data-chk-item="' + key + '" style="margin-bottom:10px">';
+  var html = '<div data-chk-item="' + key + '" style="margin-bottom:10px"' + (req ? ' ' + req : '') + '>';
   if (it.type === 'bool') {
-    var checkedYes = currentValue === true ? 'checked' : '';
-    var checkedNo  = currentValue === false ? 'checked' : '';
-    html += '<div class="lbl" style="margin-bottom:4px">' + lbl + '</div>'
-      + '<div class="g2" style="gap:6px">'
-      +   '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;padding:8px;border:1px solid var(--border);border-radius:3px;background:#fff;font-size:12px"><input type="radio" name="chk_' + key + '" value="true" ' + checkedYes + ' onchange="onChecklistChange()"/> Sí</label>'
-      +   '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;padding:8px;border:1px solid var(--border);border-radius:3px;background:#fff;font-size:12px"><input type="radio" name="chk_' + key + '" value="false" ' + checkedNo + ' onchange="onChecklistChange()"/> No</label>'
-      + '</div>';
+    // FIX DEFINITIVO 2026-05-04: usar el helper universal renderBoolButtonsHTML.
+    // Sí/No/N/A en TODOS los items bool. Si elige No o N/A, motivo inline obligatorio.
+    // Eliminados los <input type="radio"> que generaban el bug de iOS Safari.
+    html += renderBoolButtonsHTML(key, it.label, !!it.required, currentValue, currentReason || '', {
+      btnFontSize: '12px',
+      rowMargin: '4px'
+    });
   } else if (it.type === 'na_text') {
     var isNa = currentValue === 'N/A';
     html += '<div class="lbl" style="margin-bottom:4px">' + lbl + '</div>'
@@ -11817,20 +11829,46 @@ function applyChecklistConditionals() {
     });
     if (def && def.required_if) {
       var refVal = getChecklistValue(def.required_if);
-      div.style.display = (refVal === true || (refVal && refVal !== '' && refVal !== false)) ? '' : 'none';
+      // FIX 2026-05-04: si el campo referenciado es bool, mostrar SOLO cuando
+      // está en true. N/A se trata como "no aplica" → no mostrar dependientes.
+      var refDef = null;
+      Object.values(CHECKLISTS_TECH).forEach(function(c) {
+        c.sections.forEach(function(s) {
+          s.items.forEach(function(it) { if (it.key === def.required_if) refDef = it; });
+        });
+      });
+      var show;
+      if (refDef && refDef.type === 'bool') {
+        show = (refVal === true);
+      } else {
+        show = (refVal && refVal !== '' && refVal !== false && refVal !== 'N/A');
+      }
+      div.style.display = show ? '' : 'none';
     }
   });
 }
 
 function getChecklistValue(key) {
-  // Bool (radio)
-  var rad = document.querySelector('#m-techchk-body input[name="chk_' + key + '"]:checked');
-  if (rad) return rad.value === 'true';
+  // FIX 2026-05-04: bool ahora vive en data-bc-state (sin radio inputs).
+  var bcRow = document.querySelector('#m-techchk-body [data-bc-item-row="' + key + '"]');
+  if (bcRow) {
+    var s = bcRow.getAttribute('data-bc-state') || '';
+    if (s === 'true')  return true;
+    if (s === 'false') return false;
+    if (s === 'N/A')   return 'N/A';
+    return null;
+  }
   // Otros tipos
   var inp = document.querySelector('#m-techchk-body [data-chk-key="' + key + '"]');
   if (!inp) return null;
   if (inp.disabled) return 'N/A';
   return inp.value;
+}
+
+// Lee el motivo inline (<key>_reason) de un item bool del checklist técnico.
+function getChecklistReason(key) {
+  var ta = document.querySelector('#m-techchk-body [data-bc-item-row="' + key + '"] textarea[data-bc-reason-key="' + key + '"]');
+  return ta ? (ta.value || '').trim() : '';
 }
 
 async function saveTechChecklist() {
@@ -11840,8 +11878,10 @@ async function saveTechChecklist() {
   if (!def) return;
   var err = document.getElementById('m-techchk-err');
   err.style.display = 'none';
-  // Validar campos required y required_if visibles
+  err.innerHTML = '';
+  // FIX 2026-05-04: validación con motivos inline para items bool en No/N/A.
   var data = {};
+  var problems = []; // {key, label, kind: 'no_selection' | 'no_reason'}
   var allItems = [];
   def.sections.forEach(function(sec){ sec.items.forEach(function(it){ allItems.push(it); }); });
   for (var i = 0; i < allItems.length; i++) {
@@ -11849,15 +11889,48 @@ async function saveTechChecklist() {
     var div = document.querySelector('#m-techchk-body [data-chk-item="' + it.key + '"]');
     if (div && div.style.display === 'none') continue; // condicional oculto, no validar
     var val = getChecklistValue(it.key);
-    if (it.required && (val == null || val === '' || (it.type === 'bool' && val !== true && val !== false))) {
-      err.textContent = 'Falta llenar: ' + it.label;
-      err.style.display = 'block';
-      return;
+    var isBool = (it.type === 'bool');
+    if (it.required) {
+      if (isBool) {
+        if (val !== true && val !== false && val !== 'N/A') {
+          problems.push({key: it.key, label: it.label, kind: 'no_selection'});
+        }
+      } else if (val == null || val === '') {
+        problems.push({key: it.key, label: it.label, kind: 'no_selection'});
+      }
+    }
+    if (isBool && (val === false || val === 'N/A')) {
+      var reason = getChecklistReason(it.key);
+      if (!reason) {
+        problems.push({key: it.key, label: it.label, kind: 'no_reason'});
+      }
+      data[it.key + '_reason'] = reason;
     }
     data[it.key] = val;
   }
+  if (problems.length) {
+    var missingSel = problems.filter(function(p){ return p.kind === 'no_selection'; });
+    var missingReason = problems.filter(function(p){ return p.kind === 'no_reason'; });
+    var msgParts = [];
+    if (missingSel.length) {
+      msgParts.push('<b>Falta completar ' + missingSel.length + ' ' + (missingSel.length === 1 ? 'item' : 'items') + ':</b><br/>'
+        + missingSel.map(function(p){ return '• ' + escapeHtml(p.label); }).join('<br/>'));
+    }
+    if (missingReason.length) {
+      msgParts.push('<b>Falta el motivo en ' + missingReason.length + ' ' + (missingReason.length === 1 ? 'item marcado' : 'items marcados') + ' como No o N/A:</b><br/>'
+        + missingReason.map(function(p){ return '• ' + escapeHtml(p.label); }).join('<br/>'));
+    }
+    err.innerHTML = msgParts.join('<br/><br/>');
+    err.style.display = 'block';
+    // Scroll al primer item con problema
+    var firstKey = problems[0].key;
+    var firstRow = document.querySelector('#m-techchk-body [data-bc-item-row="' + firstKey + '"], #m-techchk-body [data-chk-item="' + firstKey + '"]');
+    if (firstRow && firstRow.scrollIntoView) firstRow.scrollIntoView({behavior:'smooth', block:'center'});
+    return;
+  }
   // Auto-uppercase para campos texto/na_text
   Object.keys(data).forEach(function(k){
+    if (k.indexOf('_reason') !== -1) return; // los motivos no se uppercase
     var def2 = allItems.find(function(x){return x.key===k;});
     if (def2 && (def2.type === 'text' || def2.type === 'na_text') && typeof data[k] === 'string' && data[k] !== 'N/A') {
       data[k] = data[k].toUpperCase();
@@ -11952,60 +12025,144 @@ function openDoubleCheck(otId) {
     +   (plateView ? '<br/><b>Patente:</b> ' + escapeHtml(plateView) : '')
     + '</div>'
     + '<div style="margin-top:12px">'
-    + CHECKLIST_DOBLE_CONTROL.map(function(it){ return renderDCItem(it, existing[it.key]); }).join('')
+    + CHECKLIST_DOBLE_CONTROL.map(function(it){
+        // FIX 2026-05-04: pasar también el motivo previo (<key>_reason) al
+        // re-abrir un doble control con datos persistidos.
+        return renderDCItem(it, existing[it.key], existing[it.key + '_reason']);
+      }).join('')
     + '</div>';
   body.innerHTML = html;
   closeModal('m-my-ot');
   openModal('m-double-check');
-  // FASE 3.3: si hay valores previos con N/A, mostrar el motivo desde el inicio.
+  // FIX 2026-05-04: el render aplica las clases dc-opt-selected/yes/no/na
+  // directamente en el HTML según currentValue, y el atributo data-bc-state
+  // del contenedor [data-bc-item-row] ya viene seteado. La llamada a
+  // updateDcNaReasonVisibility queda como no-op (el campo dc_na_reason ahora
+  // siempre está visible y opcional).
   updateDcNaReasonVisibility();
-  // FASE 3.4: aplicar highlights iniciales para todos los radios ya marcados.
-  // Esencial si la OT tiene estado previo (reapertura tras error o edición):
-  // así un valor "No" preexistente se ve rojo desde el primer momento, evitando
-  // que el técnico crea que está vacío y se confunda con el valor real.
-  var preMarked = body.querySelectorAll('input[type="radio"]:checked');
-  preMarked.forEach(function(r){ updateDcRadioHighlight(r); });
 }
 
-function renderDCItem(it, currentValue) {
+// ═══════════════════════════════════════════════════════════════
+// FIX DEFINITIVO 2026-05-04: helpers UNIVERSALES para items bool en TODOS los
+// checklists (doble control, visado, técnico, prueba de ruta). Sin radios →
+// sin bug de iOS Safari posible. El estado vive en data-bc-state del
+// contenedor [data-bc-item-row]. Cada item con allow_na muestra Sí/No/N/A; al
+// elegir No o N/A aparece un mini-textarea inline para el motivo, obligatorio.
+// ═══════════════════════════════════════════════════════════════
+//
+// ATRIBUTOS DE DATOS:
+//   [data-bc-item-row="<key>"]      contenedor de cada item bool
+//   [data-bc-state="true|false|N/A|"]  fuente de verdad del valor
+//   [data-bc-allow-na="1"]          si el N/A está habilitado para este item
+//   button[data-bc-value]           cada botón Sí/No/N/A
+//   [data-bc-reason-wrap]           wrapper del motivo inline (se muestra/oculta)
+//   textarea[data-bc-reason-key]    motivo inline (su valor se guarda como <key>_reason)
+
+function renderBoolButtonsHTML(itemKey, label, required, currentValue, currentReason, opts) {
+  // opts puede contener:
+  //   - extraAttrs: string con atributos extra para el contenedor (legacy)
+  //   - rowMargin: margen del contenedor (default '12px')
+  //   - btnFontSize: '13px' (DC), '11px' (visado), '12px' (técnico)
+  //   - reasonRows: filas del textarea de motivo (default 2)
+  //   - reasonPlaceholder: placeholder del motivo
+  opts = opts || {};
+  var extraAttrs = opts.extraAttrs || '';
+  var rowMargin = opts.rowMargin || '12px';
+  var btnFontSize = opts.btnFontSize || '13px';
+  var reasonRows = opts.reasonRows || 2;
+  var reasonPh = opts.reasonPlaceholder || 'Explica brevemente por qué se marcó No o N/A';
+  var lblHtml = label + (required ? ' <span style="color:var(--red)">*</span>' : '');
+  var stateRaw = (currentValue === true) ? 'true'
+               : (currentValue === false) ? 'false'
+               : (currentValue === 'N/A') ? 'N/A'
+               : '';
+  var yesCls = stateRaw === 'true' ? ' dc-opt-selected dc-opt-yes' : '';
+  var noCls  = stateRaw === 'false' ? ' dc-opt-selected dc-opt-no'  : '';
+  var naCls  = stateRaw === 'N/A' ? ' dc-opt-selected dc-opt-na'  : '';
+  var btnStyle = 'display:flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;padding:10px 6px;border:1px solid var(--border);border-radius:3px;background:#fff;font-size:' + btnFontSize + ';min-height:44px;font-weight:600;font-family:var(--body);color:#222;touch-action:manipulation;-webkit-tap-highlight-color:transparent;user-select:none';
+  var reason = currentReason != null ? String(currentReason) : '';
+  var reasonShow = (stateRaw === 'false' || stateRaw === 'N/A');
+  var reasonStyle = 'margin-top:8px;' + (reasonShow ? '' : 'display:none');
+  return '<div style="margin-bottom:' + rowMargin + '" data-bc-item-row="' + itemKey + '" data-bc-state="' + stateRaw + '" data-bc-allow-na="1"' + (extraAttrs ? ' ' + extraAttrs : '') + '>'
+    + '<div class="lbl" style="margin-bottom:6px">' + lblHtml + '</div>'
+    + '<div class="g3" style="gap:6px">'
+    +   '<button type="button" class="dc-opt' + yesCls + '" data-bc-value="true" onclick="bcSetBool(this)" style="' + btnStyle + '">✓ Sí</button>'
+    +   '<button type="button" class="dc-opt' + noCls + '" data-bc-value="false" onclick="bcSetBool(this)" style="' + btnStyle + '">✗ No</button>'
+    +   '<button type="button" class="dc-opt' + naCls + '" data-bc-value="N/A" onclick="bcSetBool(this)" style="' + btnStyle + '">N/A</button>'
+    + '</div>'
+    + '<div data-bc-reason-wrap style="' + reasonStyle + '">'
+    +   '<div style="font-size:10px;color:var(--red);margin-bottom:3px;text-transform:uppercase;letter-spacing:.05em;font-weight:700">Motivo (obligatorio si No o N/A) <span style="color:var(--red)">*</span></div>'
+    +   '<textarea class="inp" data-bc-reason-key="' + itemKey + '" rows="' + reasonRows + '" placeholder="' + escapeHtml(reasonPh) + '" data-no-upper style="margin-bottom:0">' + escapeHtml(reason) + '</textarea>'
+    + '</div>'
+    + '</div>';
+}
+window.renderBoolButtonsHTML = renderBoolButtonsHTML;
+
+// Handler universal: se invoca desde onclick de cada botón Sí/No/N/A.
+function bcSetBool(btn) {
+  if (!btn) return;
+  var row = btn.closest('[data-bc-item-row]');
+  if (!row) return;
+  var val = btn.getAttribute('data-bc-value');
+  if (val !== 'true' && val !== 'false' && val !== 'N/A') return;
+  // 1) Persistir estado en el contenedor (única fuente de verdad)
+  row.setAttribute('data-bc-state', val);
+  // 2) Repintar todos los botones de la fila
+  var btns = row.querySelectorAll('button[data-bc-value]');
+  btns.forEach(function(b){
+    b.classList.remove('dc-opt-selected', 'dc-opt-yes', 'dc-opt-no', 'dc-opt-na');
+  });
+  btn.classList.add('dc-opt-selected');
+  if (val === 'true')  btn.classList.add('dc-opt-yes');
+  if (val === 'false') btn.classList.add('dc-opt-no');
+  if (val === 'N/A')   btn.classList.add('dc-opt-na');
+  // 3) Mostrar/ocultar textarea de motivo inline
+  var reasonWrap = row.querySelector('[data-bc-reason-wrap]');
+  if (reasonWrap) {
+    reasonWrap.style.display = (val === 'false' || val === 'N/A') ? '' : 'none';
+  }
+  // 4) Limpiar mensajes de error visibles en el modal padre (cualquiera de los 4)
+  ['m-dc-err', 'm-techchk-err', 'm-visado-chk-err', 'crear-inf-err'].forEach(function(id){
+    var e = document.getElementById(id);
+    if (e && e.style.display !== 'none') { e.style.display = 'none'; e.innerHTML = ''; e.textContent = ''; }
+  });
+  // 5) Quitar flash dorado si quedó del scroll-to-error previo
+  row.style.boxShadow = '';
+  row.style.outline = '';
+  row.style.background = '';
+  // 6) Notificar a listeners legacy (DC visibility, contador del visado, conditionals tech)
+  if (typeof updateDcNaReasonVisibility === 'function') { try { updateDcNaReasonVisibility(); } catch(_){} }
+  if (typeof _refreshVisadoSummary === 'function')      { try { _refreshVisadoSummary(); } catch(_){} }
+  if (typeof onChecklistChange === 'function')          { try { onChecklistChange(); } catch(_){} }
+}
+window.bcSetBool = bcSetBool;
+
+// Lector universal: dado un scope (modal body) y un key, retorna { value, reason }.
+// value: true | false | 'N/A' | null   (null = sin marcar)
+// reason: string del motivo inline (puede ser '' aunque value sea false/N/A)
+function bcReadItem(scope, key) {
+  var root = (typeof scope === 'string') ? document.querySelector(scope) : scope;
+  if (!root) return { value: null, reason: '' };
+  var row = root.querySelector('[data-bc-item-row="' + key + '"]');
+  if (!row) return { value: null, reason: '' };
+  var s = row.getAttribute('data-bc-state') || '';
+  var val = s === 'true' ? true : s === 'false' ? false : s === 'N/A' ? 'N/A' : null;
+  var ta = row.querySelector('textarea[data-bc-reason-key="' + key + '"]');
+  var reason = ta ? (ta.value || '').trim() : '';
+  return { value: val, reason: reason };
+}
+window.bcReadItem = bcReadItem;
+
+function renderDCItem(it, currentValue, currentReason) {
   var lbl = it.label + (it.required ? ' <span style="color:var(--red)">*</span>' : '');
   if (it.type === 'bool') {
-    var checkedYes = currentValue === true ? 'checked' : '';
-    var checkedNo  = currentValue === false ? 'checked' : '';
-    var checkedNa  = currentValue === 'N/A' ? 'checked' : '';
-    // FASE 3.3: items con allow_na muestran un tercer botón N/A.
-    // FASE 3.4 (bugfix doble control): se cambió el render para resolver dos bugs
-    // reportados ("marqué Sí pero el sistema dice No"):
-    //   1. El handler onchange antes solo se aplicaba a items con allow_na, así
-    //      que en dc_clean (sin allow_na) no había ninguna actualización visual
-    //      tras tocar el radio. Ahora aplica a todos los items.
-    //   2. El único indicador de selección era el dot nativo del radio, casi
-    //      invisible en mobile (especialmente en iOS). Ahora el label completo
-    //      cambia de color de fondo (verde Sí / rojo No / ámbar N/A).
-    //   3. min-height:44px alcanza el target táctil mínimo recomendado (Apple
-    //      HIG / Material), antes los labels eran de ~30px y favorecían toques
-    //      cruzados entre filas adyacentes en viewports angostos (393px).
-    var baseHandler = ' onchange="updateDcRadioHighlight(this);' + (it.allow_na ? 'updateDcNaReasonVisibility();' : '') + '"';
-    var yesCls = checkedYes ? ' dc-opt-selected dc-opt-yes' : '';
-    var noCls  = checkedNo  ? ' dc-opt-selected dc-opt-no'  : '';
-    var naCls  = checkedNa  ? ' dc-opt-selected dc-opt-na'  : '';
-    var naBtn = it.allow_na
-      ? '<label class="dc-opt' + naCls + '" data-dc-opt="N/A" onclick="dcLabelClick(this, event)" style="display:flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;padding:12px 8px;border:1px solid var(--border);border-radius:3px;background:#fff;font-size:13px;min-height:44px;font-weight:600"><input type="radio" name="dc_' + it.key + '" value="N/A" ' + checkedNa + baseHandler + '/> N/A</label>'
-      : '';
-    var gridCols = it.allow_na ? 'g3' : 'g2';
-    // FIX 2026-04-29 (bug 5ac1df6d): onclick en el label fuerza la sincronización
-    // del radio antes del onchange. En iOS, cuando el input está envuelto por el
-    // label, el tap a veces dispara `change` en el orden incorrecto o no actualiza
-    // .checked si hay un valor preseleccionado del HTML inicial. Con dcLabelClick
-    // garantizamos que el radio correcto quede como el único .checked = true.
-    var labelHandler = ' onclick="dcLabelClick(this, event)"';
-    return '<div style="margin-bottom:12px" data-dc-item-row="' + it.key + '">'
-      + '<div class="lbl" style="margin-bottom:6px">' + lbl + '</div>'
-      + '<div class="' + gridCols + '" style="gap:8px">'
-      +   '<label class="dc-opt' + yesCls + '" data-dc-opt="true"' + labelHandler + ' style="display:flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;padding:12px 8px;border:1px solid var(--border);border-radius:3px;background:#fff;font-size:13px;min-height:44px;font-weight:600"><input type="radio" name="dc_' + it.key + '" value="true" ' + checkedYes + baseHandler + '/> Sí</label>'
-      +   '<label class="dc-opt' + noCls + '" data-dc-opt="false"' + labelHandler + ' style="display:flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;padding:12px 8px;border:1px solid var(--border);border-radius:3px;background:#fff;font-size:13px;min-height:44px;font-weight:600"><input type="radio" name="dc_' + it.key + '" value="false" ' + checkedNo + baseHandler + '/> No</label>'
-      +   naBtn
-      + '</div></div>';
+    // Wrapper sobre el helper universal. Mantenemos el atributo legacy
+    // data-dc-item-row para que scrollDcItemIntoView siga funcionando.
+    return renderBoolButtonsHTML(it.key, it.label, !!it.required, currentValue, currentReason || '', {
+      extraAttrs: 'data-dc-item-row="' + it.key + '"',
+      btnFontSize: '13px',
+      rowMargin: '12px'
+    });
   } else if (it.type === 'number') {
     return '<div style="margin-bottom:10px">'
       + '<div class="lbl" style="margin-bottom:4px">' + lbl + '</div>'
@@ -12014,98 +12171,34 @@ function renderDCItem(it, currentValue) {
     var rows = it.rows || 2;
     var v = currentValue != null ? String(currentValue) : '';
     var ph = it.placeholder ? ' placeholder="' + escapeHtml(it.placeholder) + '"' : '';
-    // FASE 3.3: el textarea de motivo N/A se identifica con clase para
-    // mostrar/ocultar dinámicamente según el estado de los items aceite.
-    var wrapperAttrs = it.required_if_na ? ' data-dc-na-reason="1" style="margin-bottom:10px;display:none"' : ' style="margin-bottom:10px"';
-    return '<div' + wrapperAttrs + '>'
+    // Nota: dc_na_reason quedó obsoleto (ahora cada item bool tiene su propio
+    // motivo inline). Se mantiene como campo libre opcional por compat.
+    return '<div style="margin-bottom:10px">'
       + '<div class="lbl" style="margin-bottom:4px">' + lbl + '</div>'
       + '<textarea class="inp" data-dc-key="' + it.key + '" rows="' + rows + '"' + ph + ' data-no-upper>' + escapeHtml(v) + '</textarea></div>';
   }
   return '';
 }
 
-// FASE 3.3: muestra/oculta el campo motivo N/A según si hay items en N/A.
+// updateDcNaReasonVisibility: el campo dc_na_reason se mantiene siempre visible
+// porque ahora es opcional. Esta función queda como no-op por compat con
+// llamadas heredadas que pueda haber en el código.
 function updateDcNaReasonVisibility() {
-  var anyNa = false;
-  CHECKLIST_DOBLE_CONTROL.forEach(function(it){
-    if (!it.allow_na) return;
-    // FIX 2026-04-29: usar .checked en lugar del pseudo :checked, por consistencia
-    // con la validación de saveDoubleCheck (ver fix bug 5ac1df6d).
-    var rads = document.querySelectorAll('#m-dc-body input[name="dc_' + it.key + '"]');
-    for (var ri = 0; ri < rads.length; ri++) {
-      if (rads[ri].checked && rads[ri].value === 'N/A') { anyNa = true; break; }
-    }
-  });
   var wrap = document.querySelector('#m-dc-body [data-dc-na-reason="1"]');
-  if (wrap) wrap.style.display = anyNa ? '' : 'none';
+  if (wrap) wrap.style.display = '';
 }
+window.updateDcNaReasonVisibility = updateDcNaReasonVisibility;
 
-// FASE 3.4: feedback visual fuerte tras tocar un radio. Antes el técnico no
-// tenía forma rápida de verificar visualmente cuál opción quedó realmente
-// registrada (verde/rojo/ámbar son inmediatos; el dot del radio nativo no).
-// Esta función limpia el highlight de TODA la fila del item y aplica la clase
-// al label seleccionado. Se invoca desde el onchange de cada radio.
-//
-// FIX 2026-04-29 (bug 5ac1df6d): handler explícito en el click del label.
-// Síntoma reportado: técnico marcaba "Sí" en "Limpieza zona de trabajo" y al
-// intentar cerrar el doble control el sistema decía "quedó en No". Causa
-// raíz: en iOS Safari, cuando el <input type="radio"> está envuelto por el
-// <label>, el tap sobre el label dispara el evento `click` antes de que el
-// browser actualice la propiedad .checked, especialmente cuando el HTML
-// inicial trae otro radio del mismo grupo con el atributo `checked`. En esos
-// casos, leer el estado vía querySelector(':checked') durante la validación
-// devolvía el radio antiguo o ninguno. Solución: forzar la sincronización
-// explícitamente al click del label (.checked = true en el input correcto)
-// y luego aplicar el highlight visual. El onchange del input también dispara
-// updateDcRadioHighlight, pero este onclick garantiza el estado incluso si
-// el navegador no emite change en algún edge-case.
-function dcLabelClick(labelEl, ev) {
-  if (!labelEl) return;
-  var input = labelEl.querySelector('input[type="radio"]');
-  if (!input) return;
-  // Si el tap fue directamente sobre el <input>, dejar que el comportamiento
-  // nativo gestione (el onchange del input ya se encargará). Esto evita un
-  // doble-toggle que podría desmarcar el radio recién marcado.
-  if (ev && ev.target && ev.target.tagName === 'INPUT') return;
-  input.checked = true;
-  updateDcRadioHighlight(input);
-  // Ítems con allow_na también deben actualizar la visibilidad del motivo.
-  if (input.value === 'N/A' || labelEl.parentNode.querySelector('input[value="N/A"]')) {
-    updateDcNaReasonVisibility();
+// Wrappers de back-compat para los nombres antiguos.
+function dcSetBool(btn) { return bcSetBool(btn); }
+window.dcSetBool = dcSetBool;
+function dcLabelClick(el, ev) {
+  if (el && el.tagName === 'BUTTON' && el.hasAttribute('data-bc-value')) {
+    bcSetBool(el);
   }
 }
 window.dcLabelClick = dcLabelClick;
-
-function updateDcRadioHighlight(radioEl) {
-  if (!radioEl || !radioEl.name) return;
-  // FIX 2026-04-29 (bug 5ac1df6d): forzar la propiedad .checked del radio que
-  // disparó el onchange. En iOS Safari, después de varios taps sobre labels que
-  // envuelven el input, la propiedad .checked puede quedar fuera de sync con la
-  // selección visual. Aquí garantizamos que el radio que recibió el evento sea
-  // el único con .checked = true en su grupo, antes de actualizar los estilos.
-  var group = document.querySelectorAll('#m-dc-body input[name="' + radioEl.name + '"]');
-  group.forEach(function(r){
-    r.checked = (r === radioEl);
-    var lbl = r.closest('label.dc-opt');
-    if (!lbl) return;
-    lbl.classList.remove('dc-opt-selected', 'dc-opt-yes', 'dc-opt-no', 'dc-opt-na');
-    if (r.checked) {
-      lbl.classList.add('dc-opt-selected');
-      if (r.value === 'true')  lbl.classList.add('dc-opt-yes');
-      if (r.value === 'false') lbl.classList.add('dc-opt-no');
-      if (r.value === 'N/A')   lbl.classList.add('dc-opt-na');
-    }
-  });
-  // FIX 2026-04-29 (bug 5ac1df6d): limpiar mensaje de error pegado al cambiar
-  // selección. Antes el mensaje rojo "quedó en No" seguía visible aunque el
-  // técnico ya hubiera corregido a "Sí", confundiéndolo y haciéndolo creer que
-  // el sistema seguía rechazando su entrada.
-  var errBox = document.getElementById('m-dc-err');
-  if (errBox && errBox.style.display !== 'none') {
-    errBox.style.display = 'none';
-    errBox.textContent = '';
-  }
-}
+function updateDcRadioHighlight(_el) { /* no-op */ }
 window.updateDcRadioHighlight = updateDcRadioHighlight;
 
 // FASE 3.4: scroll al ítem del doble control que generó error de validación.
@@ -12152,86 +12245,73 @@ async function _saveDoubleCheckInner() {
     return;
   }
 
-  // FASE 3.3: items con allow_na soportan tri-estado (Sí / No / N/A).
-  // Si algún item queda en N/A, dc_na_reason pasa a ser obligatorio.
+  // FIX 2026-05-04: nuevo modelo unificado.
+  //   - Cada item bool puede ser Sí / No / N/A (todos con allow_na).
+  //   - Si un item queda en No o N/A, el motivo INLINE es obligatorio
+  //     (campo <key>_reason guardado en checklist_data.double_check).
+  //   - "No" YA NO bloquea el cierre — el técnico puede registrar un hallazgo
+  //     legítimo siempre que explique. La revisión final corre por cuenta del
+  //     visador, que ve el item marcado en rojo + el motivo.
+  //   - dc_na_reason queda como campo opcional (sin required_if_na).
+  // Se eliminó la regla anterior "no permite cerrar con No" que en combinación
+  // con el bug de iOS Safari trababa cierres legítimos.
 
   var data = {};
-  var anyNa = false;
+  var problems = []; // {key, label, kind: 'no_selection' | 'no_reason'}
   for (var i = 0; i < CHECKLIST_DOBLE_CONTROL.length; i++) {
     var it = CHECKLIST_DOBLE_CONTROL[i];
     var val;
     if (it.type === 'bool') {
-      // FIX 2026-04-29 (bug 5ac1df6d): en iOS Safari, ocasionalmente la pseudo-clase
-      // :checked queda desincronizada de la propiedad .checked tras varios taps en
-      // el label (especialmente cuando el ítem traía un `checked` precargado del
-      // HTML inicial y el técnico cambia la selección). Resultado: el radio "Sí"
-      // se ve marcado visualmente pero el querySelector(':checked') devuelve el
-      // "No" antiguo o null, y la validación bloquea con "quedó en No".
-      // Solución: leer TODOS los radios del grupo y usar la propiedad .checked
-      // (estado JS real del DOM, no el pseudo-CSS).
-      var allRads = document.querySelectorAll('#m-dc-body input[name="dc_' + it.key + '"]');
-      var rad = null;
-      for (var rj = 0; rj < allRads.length; rj++) {
-        if (allRads[rj].checked) { rad = allRads[rj]; break; }
-      }
-      if (!rad) {
-        val = null;
-      } else if (rad.value === 'N/A') {
-        val = 'N/A';
-        anyNa = true;
-      } else {
-        val = rad.value === 'true';
+      // Lectura desde data-bc-state. Sin radios → sin bug iOS Safari.
+      var bc = bcReadItem('#m-dc-body', it.key);
+      val = bc.value;
+      if (it.required && val == null) {
+        problems.push({key: it.key, label: it.label, kind: 'no_selection'});
+      } else if (val === false || val === 'N/A') {
+        // Motivo obligatorio inline
+        if (!bc.reason) {
+          problems.push({key: it.key, label: it.label, kind: 'no_reason'});
+        }
+        data[it.key + '_reason'] = bc.reason;
       }
     } else if (it.type === 'textarea') {
       var ta = document.querySelector('#m-dc-body textarea[data-dc-key="' + it.key + '"]');
       val = ta ? (ta.value || '').trim() : '';
+      if (it.required && !val) {
+        problems.push({key: it.key, label: it.label, kind: 'no_selection'});
+      }
     } else {
       var inp = document.querySelector('#m-dc-body [data-dc-key="' + it.key + '"]');
       val = inp ? (inp.value === '' ? null : (it.type === 'number' ? Number(inp.value) : inp.value)) : null;
-    }
-    // required normal: val no debe ser null (bool sin selección, number vacío, etc.)
-    // 'N/A' cuenta como respuesta válida para items con allow_na.
-    if (it.required) {
-      var missing = (val == null);
-      if (it.type === 'bool' && val !== true && val !== false && val !== 'N/A') missing = true;
-      if (missing) {
-        err.textContent = 'Falta: ' + it.label;
-        err.style.display = 'block';
-        // FASE 3.4: scroll al item faltante para que el técnico vea cuál es.
-        scrollDcItemIntoView(it.key);
-        return;
+      if (it.required && val == null) {
+        problems.push({key: it.key, label: it.label, kind: 'no_selection'});
       }
-    }
-    // FASE 3.0: regla de calidad — si algún ítem bool obligatorio está en NO,
-    // no permitir cierre. El doble control debe quedar 100% conforme.
-    // (N/A no cuenta como No: significa que el item no aplica a este servicio.)
-    if (it.required && it.type === 'bool' && val === false) {
-      // FASE 3.4 (bugfix doble control): cuando el técnico reportaba "marqué Sí
-      // pero el sistema dice No", el flujo viejo solo mostraba un mensaje rojo
-      // arriba y el técnico no podía verificar visualmente qué pasó. Ahora:
-      //   1. Mensaje pide confirmar visualmente el ítem (apunta al destino).
-      //   2. Scroll automático al ítem para que el técnico LO VEA.
-      //   3. El ítem ya tiene fondo rojo por la clase dc-opt-no aplicada en
-      //      el render/onchange, así que el técnico distingue al toque si
-      //      realmente quedó en "No" o si fue un error de tap.
-      //   4. NO se cierra el modal: el técnico puede tocar "Sí" directamente.
-      err.textContent = 'El ítem "' + it.label + '" quedó en "No". Si fue un error, tócalo de nuevo en "Sí". Si realmente está mal, no puedes cerrar el doble control hasta corregirlo.';
-      err.style.display = 'block';
-      scrollDcItemIntoView(it.key);
-      return;
     }
     data[it.key] = val;
   }
-  // FASE 3.3: si algún item está en N/A, el motivo es obligatorio.
-  if (anyNa) {
-    var reason = (data.dc_na_reason || '').trim();
-    if (!reason) {
-      err.textContent = 'Indica el motivo de la no aplicación (N/A). Ej: cliente excluyó cambio de aceite, reparación general sin aceite, etc.';
-      err.style.display = 'block';
-      return;
+
+  if (problems.length) {
+    var missingSel = problems.filter(function(p){ return p.kind === 'no_selection'; });
+    var missingReason = problems.filter(function(p){ return p.kind === 'no_reason'; });
+    var msgParts = [];
+    if (missingSel.length) {
+      msgParts.push('<b>Falta completar ' + missingSel.length + ' ' + (missingSel.length === 1 ? 'item' : 'items') + ':</b><br/>'
+        + missingSel.map(function(p){ return '• ' + escapeHtml(p.label); }).join('<br/>'));
     }
-    data.dc_na_reason = reason;
+    if (missingReason.length) {
+      msgParts.push('<b>Falta el motivo en ' + missingReason.length + ' ' + (missingReason.length === 1 ? 'item marcado' : 'items marcados') + ' como No o N/A:</b><br/>'
+        + missingReason.map(function(p){ return '• ' + escapeHtml(p.label); }).join('<br/>'));
+    }
+    err.innerHTML = msgParts.join('<br/><br/>');
+    err.style.display = 'block';
+    // Scroll al primer problema
+    var firstKey = problems[0].key;
+    scrollDcItemIntoView(firstKey);
+    return;
   }
+  // dc_na_reason: ya no es obligatorio. Si el técnico lo llenó, lo conservamos
+  // como observación general adicional. No bloquea por estar vacío.
+  data.dc_na_reason = (data.dc_na_reason || '').trim();
   var btn = document.getElementById('m-dc-btn');
   btn.innerHTML = '<span class="spin"></span> Guardando...'; btn.disabled = true;
 
@@ -12778,46 +12858,33 @@ async function openVisadoModal(otId) {
   }
 
   // ─── Bloque 4: CHECKLIST DE VISADO (SIEMPRE OBLIGATORIO) ───
-  // FASE 3.0 FIX CRÍTICO: este checklist se renderiza SIEMPRE, sin condicionales.
-  // Antes el visado podía aparecer "vacío" (solo botones) si tech_checklist
-  // estaba ausente. Ahora el visador SIEMPRE marca su propio checklist y eso
-  // es lo que valida la calidad del trabajo.
-  //
-  // BUG-FIX 2026-04-30 (reportado por Nicolas Cisternas): el checklist se
-  // pre-llenaba con `cd.visado_checklist` de intentos anteriores. Si por
-  // cualquier motivo ahi habia un `false` antiguo, el visador veia el item
-  // pre-marcado como "No" sin notarlo (especialmente items de arriba que
-  // quedan fuera del scroll), y luego al aprobar la app rechazaba con
-  // "No puedes aprobar con No marcado en: 1. Montaje y torque correctos"
-  // mientras el visador estaba seguro de haber marcado todo en Si.
-  //
-  // SOLUCION: el visado SIEMPRE empieza fresco (sin pre-fill). Es mas
-  // seguro para la calidad: cada visado obliga a re-verificar cada item.
-  // Si el visador queria continuar un intento anterior, las observaciones
-  // del rechazo previo se muestran arriba en su propio bloque.
+  // FIX DEFINITIVO 2026-05-04: usa helper universal renderBoolButtonsHTML.
+  // Cada item es Sí / No / N/A. Si elige No o N/A, se exige motivo inline.
+  // "No" ya NO bloquea aprobación: el visador puede aprobar igual marcando un
+  // hallazgo con motivo, pero la responsabilidad queda registrada. La regla
+  // anterior (No → Rechazar) trababa cierres legítimos por el bug iOS Safari.
   html += '<div style="border-top:3px solid var(--red);margin-top:14px;padding-top:10px;background:#fffbf2;padding:10px;border-radius:3px">'
     + '<div style="font-size:13px;font-weight:800;color:var(--red);font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">⚖️ Checklist de visado — OBLIGATORIO</div>'
-    + '<div style="font-size:11px;color:var(--wh2);margin-bottom:8px;line-height:1.4">Marca cada ítem revisado físicamente en el vehículo. <b>No podrás aprobar si falta alguno o si alguno está en NO.</b></div>'
-    // Contador en vivo: se actualiza con cada click via _refreshVisadoSummary()
-    + '<div id="m-visado-summary" style="display:flex;gap:10px;font-size:11px;font-weight:700;font-family:var(--mono);background:#fff;border:1px solid var(--border);border-radius:3px;padding:6px 9px;margin-bottom:10px">'
+    + '<div style="font-size:11px;color:var(--wh2);margin-bottom:8px;line-height:1.4">Marca cada ítem revisado físicamente. <b>Si seleccionas No o N/A, debes explicar el motivo</b> en el campo que aparece abajo del item.</div>'
+    + '<div id="m-visado-summary" style="display:flex;gap:10px;font-size:11px;font-weight:700;font-family:var(--mono);background:#fff;border:1px solid var(--border);border-radius:3px;padding:6px 9px;margin-bottom:10px;flex-wrap:wrap">'
     +   '<span style="color:var(--green)">✓ Sí: <span id="m-vs-cnt-yes">0</span></span>'
     +   '<span style="color:var(--red)">✗ No: <span id="m-vs-cnt-no">0</span></span>'
+    +   '<span style="color:#7a4a00">N/A: <span id="m-vs-cnt-na">0</span></span>'
     +   '<span style="color:var(--wh4)">Sin marcar: <span id="m-vs-cnt-pending">0</span></span>'
     + '</div>';
   CHECKLIST_VISADO.forEach(function(it){
-    var lbl = it.label + (it.required ? ' <span style="color:var(--red)">*</span>' : '');
     if (it.type === 'bool') {
-      // BUG-FIX 2026-04-30: NO pre-llenar. checkedYes/checkedNo siempre vacios.
-      // Ver comentario arriba sobre por que el pre-fill desde cd.visado_checklist
-      // estaba causando que items aparecieran como "No" sin que el visador lo notara.
-      html += '<div style="margin-bottom:8px" data-vs-row="' + it.key + '">'
-        + '<div style="font-size:11px;font-weight:600;color:#111;margin-bottom:4px" data-vs-label="' + it.key + '">' + lbl + '</div>'
-        + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:5px">'
-        +   '<label style="display:flex;align-items:center;gap:5px;cursor:pointer;padding:7px;border:1px solid var(--border);border-radius:3px;background:#fff;font-size:11px"><input type="radio" name="vs_' + it.key + '" value="true" onchange="_refreshVisadoSummary()"/> ✓ Sí</label>'
-        +   '<label style="display:flex;align-items:center;gap:5px;cursor:pointer;padding:7px;border:1px solid var(--border);border-radius:3px;background:#fff;font-size:11px"><input type="radio" name="vs_' + it.key + '" value="false" onchange="_refreshVisadoSummary()"/> ✗ No</label>'
-        + '</div></div>';
+      // FIX 2026-05-04: helper universal. Mantenemos el atributo legacy
+      // data-vs-row para que _highlightVisadoRow / _clearVisadoHighlights
+      // sigan funcionando.
+      html += renderBoolButtonsHTML(it.key, it.label, !!it.required, undefined, '', {
+        extraAttrs: 'data-vs-row="' + it.key + '"',
+        btnFontSize: '11px',
+        rowMargin: '8px'
+      });
     } else if (it.type === 'textarea') {
       var rows = it.rows || 2;
+      var lbl = it.label + (it.required ? ' <span style="color:var(--red)">*</span>' : '');
       html += '<div style="margin-bottom:8px">'
         + '<div style="font-size:11px;font-weight:600;color:#111;margin-bottom:4px">' + lbl + '</div>'
         + '<textarea class="inp" data-vs-key="' + it.key + '" rows="' + rows + '" data-no-upper></textarea></div>';
@@ -12841,59 +12908,69 @@ async function openVisadoModal(otId) {
 // BUG-FIX 2026-04-30: ahora retorna ARRAY de missing en vez de un solo string,
 // para que el visador vea TODOS los items que faltan (antes solo se mostraba
 // el primero, lo que era confuso si faltaban varios).
+// FIX DEFINITIVO 2026-05-04: ahora cada item bool puede ser Sí / No / N/A.
+// Si elige No o N/A, se exige motivo inline en <key>_reason.
+// "missing" agrupa items sin selección, items con N/A sin motivo, items con
+// No sin motivo. "failed" se elimina como concepto bloqueante.
 function _collectVisadoChecklist() {
   var data = {};
-  var missing = [];
-  var failed = []; // items marcados como No (con su label)
+  var missing = [];     // items sin selección
+  var missingReason = []; // items en No o N/A sin motivo
   for (var i = 0; i < CHECKLIST_VISADO.length; i++) {
     var it = CHECKLIST_VISADO[i];
     var val;
     if (it.type === 'bool') {
-      var rad = document.querySelector('#m-visado-body input[name="vs_' + it.key + '"]:checked');
-      val = rad ? rad.value === 'true' : null;
-      if (val === false) failed.push({key: it.key, label: it.label});
+      var bc = bcReadItem('#m-visado-body', it.key);
+      val = bc.value;
+      if (it.required && val == null) {
+        missing.push({key: it.key, label: it.label});
+      } else if (val === false || val === 'N/A') {
+        if (!bc.reason) {
+          missingReason.push({key: it.key, label: it.label});
+        }
+        data[it.key + '_reason'] = bc.reason;
+      }
     } else if (it.type === 'textarea') {
       var ta = document.querySelector('#m-visado-body textarea[data-vs-key="' + it.key + '"]');
       val = ta ? (ta.value || '').trim() : '';
-    }
-    if (it.required && (val == null || (it.type === 'bool' && val !== true && val !== false))) {
-      missing.push({key: it.key, label: it.label});
+      if (it.required && !val) {
+        missing.push({key: it.key, label: it.label});
+      }
     }
     data[it.key] = val;
   }
-  if (missing.length > 0) {
-    return {ok: false, missing: missing, failed: failed, data: data};
-  }
-  return {ok: true, data: data, failed: failed};
+  var ok = (missing.length === 0 && missingReason.length === 0);
+  return {ok: ok, missing: missing, missingReason: missingReason, data: data};
 }
 
-// BUG-FIX 2026-04-30: contador en vivo arriba del checklist.
-// Cada radio dispara onchange="_refreshVisadoSummary()" y este helper recuenta
-// y actualiza la fila de "Sí: X · No: Y · Sin marcar: Z" para que el visador
-// vea en tiempo real cuantos lleva en cada categoria, sin tener que volver a
-// recorrer todo el formulario.
+// FIX 2026-05-04: contador en vivo extendido con N/A.
+// Se invoca desde bcSetBool() automáticamente.
 function _refreshVisadoSummary() {
-  var yes = 0, no = 0, pending = 0;
+  var yes = 0, no = 0, na = 0, pending = 0;
   for (var i = 0; i < CHECKLIST_VISADO.length; i++) {
     var it = CHECKLIST_VISADO[i];
     if (it.type !== 'bool') continue;
-    var rad = document.querySelector('#m-visado-body input[name="vs_' + it.key + '"]:checked');
-    if (!rad) pending++;
-    else if (rad.value === 'true') yes++;
-    else if (rad.value === 'false') no++;
+    var row = document.querySelector('#m-visado-body [data-bc-item-row="' + it.key + '"]');
+    var s = row ? (row.getAttribute('data-bc-state') || '') : '';
+    if (s === 'true')      yes++;
+    else if (s === 'false') no++;
+    else if (s === 'N/A')   na++;
+    else                    pending++;
   }
   var elY = document.getElementById('m-vs-cnt-yes');
   var elN = document.getElementById('m-vs-cnt-no');
+  var elNa = document.getElementById('m-vs-cnt-na');
   var elP = document.getElementById('m-vs-cnt-pending');
   if (elY) elY.textContent = yes;
   if (elN) elN.textContent = no;
+  if (elNa) elNa.textContent = na;
   if (elP) elP.textContent = pending;
-  // Si el contador No > 0, resaltar visualmente la fila de resumen
   var sumBox = document.getElementById('m-visado-summary');
   if (sumBox) {
-    if (no > 0) sumBox.style.borderColor = 'var(--red)';
+    if (no > 0)            sumBox.style.borderColor = 'var(--red)';
+    else if (na > 0)       sumBox.style.borderColor = 'var(--gold)';
     else if (pending === 0) sumBox.style.borderColor = 'var(--green)';
-    else sumBox.style.borderColor = 'var(--border)';
+    else                   sumBox.style.borderColor = 'var(--border)';
   }
 }
 
@@ -12964,13 +13041,14 @@ async function _approveVisadoInner() {
     return;
   }
 
-  // FASE 3.0 FIX CRÍTICO: validar el checklist de visado ANTES de aprobar.
-  // No se permite aprobación sin que el visador haya marcado todos los items.
-  // BUG-FIX 2026-04-30: ahora listamos TODOS los items con problemas y hacemos
-  // scroll al primero. Antes solo se mostraba el primer item con error, lo
-  // que confundia cuando habia mas de uno (Nicolas reportaba "marca como No
-  // un item que yo marque como Si"; en realidad habia mas de uno en No y solo
-  // veia el primer label).
+  // FIX DEFINITIVO 2026-05-04: validación nueva del checklist de visado.
+  //   - Cada item bool puede ser Sí / No / N/A.
+  //   - Si elige No o N/A, motivo inline obligatorio (campo <key>_reason).
+  //   - "No" YA NO bloquea aprobación. El visador puede aprobar con hallazgos
+  //     legítimos siempre que estén explicados. El "No" queda registrado en
+  //     visado_checklist y aparecerá en el informe técnico.
+  //   - La regla anterior (No → Rechazar) trababa visados legítimos cuando el
+  //     bug iOS Safari desincronizaba un radio.
   _clearVisadoHighlights();
   var chk = _collectVisadoChecklist();
   var errBox = document.getElementById('m-visado-chk-err');
@@ -12981,37 +13059,31 @@ async function _approveVisadoInner() {
     ot_number: o.ot_number,
     data: chk.data,
     missing: (chk.missing || []).map(function(m){return m.key;}),
-    failed: (chk.failed || []).map(function(f){return f.key;})
+    missingReason: (chk.missingReason || []).map(function(m){return m.key;})
   });
 
-  if (!chk.ok && chk.missing && chk.missing.length) {
-    // Faltan items por marcar
-    if (errBox) {
-      var missList = chk.missing.map(function(m){ return '• ' + m.label; }).join('<br/>');
-      errBox.innerHTML = '<b>Falta marcar ' + chk.missing.length + ' ' + (chk.missing.length === 1 ? 'item' : 'items') + ':</b><br/>' + missList;
-      errBox.style.display = 'block';
-      // Resaltar y scrollear al primero
-      chk.missing.forEach(function(m){ _highlightVisadoRow(m.key); });
-      var firstRow = document.querySelector('#m-visado-body [data-vs-row="' + chk.missing[0].key + '"]');
-      if (firstRow) firstRow.scrollIntoView({behavior:'smooth', block:'center'});
-    } else {
-      showGlobalError('Falta marcar en el checklist de visado: ' + chk.missing.map(function(m){return m.label;}).join(', '), 5000);
+  if (!chk.ok) {
+    var msgParts = [];
+    if (chk.missing && chk.missing.length) {
+      var missList = chk.missing.map(function(m){ return '• ' + escapeHtml(m.label); }).join('<br/>');
+      msgParts.push('<b>Falta marcar ' + chk.missing.length + ' ' + (chk.missing.length === 1 ? 'item' : 'items') + ':</b><br/>' + missList);
     }
-    return;
-  }
-  // Regla de calidad: si algún item está en NO, no se puede aprobar — hay que rechazar.
-  // BUG-FIX 2026-04-30: ahora listamos TODOS los items en No, no solo el primero.
-  if (chk.failed && chk.failed.length > 0) {
+    if (chk.missingReason && chk.missingReason.length) {
+      var reasonList = chk.missingReason.map(function(m){ return '• ' + escapeHtml(m.label); }).join('<br/>');
+      msgParts.push('<b>Falta el motivo en ' + chk.missingReason.length + ' ' + (chk.missingReason.length === 1 ? 'item marcado' : 'items marcados') + ' como No o N/A:</b><br/>' + reasonList);
+    }
     if (errBox) {
-      var noList = chk.failed.map(function(f){ return '• ' + f.label; }).join('<br/>');
-      errBox.innerHTML = '<b>No puedes aprobar: ' + chk.failed.length + ' ' + (chk.failed.length === 1 ? 'item esta' : 'items estan') + ' marcados como NO:</b><br/>'
-        + noList
-        + '<br/><br/>Si los items realmente estan OK, marcalos como "Si". Si tienen problemas, usa <b>"Rechazar con observaciones"</b> para devolver al tecnico.';
+      errBox.innerHTML = msgParts.join('<br/><br/>');
       errBox.style.display = 'block';
-      // Resaltar todos los problematicos y scrollear al primero
-      chk.failed.forEach(function(f){ _highlightVisadoRow(f.key); });
-      var firstFailedRow = document.querySelector('#m-visado-body [data-vs-row="' + chk.failed[0].key + '"]');
-      if (firstFailedRow) firstFailedRow.scrollIntoView({behavior:'smooth', block:'center'});
+      // Resaltar y scrollear al primero (de cualquiera de los dos grupos)
+      var allBad = (chk.missing || []).concat(chk.missingReason || []);
+      allBad.forEach(function(m){ _highlightVisadoRow(m.key); });
+      if (allBad.length) {
+        var firstRow = document.querySelector('#m-visado-body [data-vs-row="' + allBad[0].key + '"]');
+        if (firstRow) firstRow.scrollIntoView({behavior:'smooth', block:'center'});
+      }
+    } else {
+      showGlobalError('Falta completar el checklist de visado.', 5000);
     }
     return;
   }
@@ -13096,8 +13168,10 @@ async function _rejectVisadoInner() {
     for (var i = 0; i < CHECKLIST_VISADO.length; i++) {
       var it = CHECKLIST_VISADO[i];
       if (it.type === 'bool') {
-        var rad = document.querySelector('#m-visado-body input[name="vs_' + it.key + '"]:checked');
-        partial[it.key] = rad ? rad.value === 'true' : null;
+        // FIX 2026-05-04: leer del nuevo atributo data-bc-state.
+        var bc = bcReadItem('#m-visado-body', it.key);
+        partial[it.key] = bc.value;
+        if (bc.reason) partial[it.key + '_reason'] = bc.reason;
       } else if (it.type === 'textarea') {
         var ta = document.querySelector('#m-visado-body textarea[data-vs-key="' + it.key + '"]');
         partial[it.key] = ta ? (ta.value || '').trim() : '';
@@ -17556,7 +17630,7 @@ function renderCrearInformeStep3() {
       + '<div style="font-size:12px;font-weight:700;color:#111;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px">'
       + escapeHtml(sec.title) + '</div>';
     sec.items.forEach(function(it){
-      html += renderChecklistItem(it, st.checklistData[it.key]);
+      html += renderChecklistItem(it, st.checklistData[it.key], st.checklistData[it.key + '_reason']);
     });
     html += '</div>';
   });
@@ -17580,10 +17654,19 @@ function renderCrearInformeStep3() {
 
   // Re-cablear los onchange de radios y selects para que apliquen
   // condicionales con nuestro container, no con #m-techchk-body.
+  // FIX 2026-05-04: ya no hay radios en items bool. Los botones nuevos llaman
+  // a bcSetBool, que internamente invoca onChecklistChange si existe; pero en
+  // este modal queremos applyCrearInformeChecklistConditionals. Cablear
+  // listeners delegados via click en los botones [data-bc-value].
   var container = document.getElementById('crear-inf-checklist');
   if (container) {
-    container.querySelectorAll('input[type="radio"]').forEach(function(r){
-      r.onchange = applyCrearInformeChecklistConditionals;
+    container.querySelectorAll('button[data-bc-value]').forEach(function(b){
+      // Después de bcSetBool, refrescar condicionales LOCALES de este modal.
+      var prev = b.onclick;
+      b.onclick = function(ev) {
+        if (typeof prev === 'function') { try { prev.call(this, ev); } catch(_){} }
+        applyCrearInformeChecklistConditionals();
+      };
     });
     container.querySelectorAll('input[data-chk-key-na]').forEach(function(cb){
       cb.onchange = function(){
@@ -17612,7 +17695,20 @@ function applyCrearInformeChecklistConditionals() {
     });
     if (def && def.required_if) {
       var refVal = getCrearInformeChkValue(def.required_if);
-      div.style.display = (refVal === true || (refVal && refVal !== '' && refVal !== false)) ? '' : 'none';
+      // FIX 2026-05-04: bool con N/A no debe mostrar dependientes.
+      var refDef = null;
+      Object.values(CHECKLISTS_TECH).forEach(function(c){
+        c.sections.forEach(function(s){
+          s.items.forEach(function(it){ if (it.key === def.required_if) refDef = it; });
+        });
+      });
+      var show;
+      if (refDef && refDef.type === 'bool') {
+        show = (refVal === true);
+      } else {
+        show = (refVal && refVal !== '' && refVal !== false && refVal !== 'N/A');
+      }
+      div.style.display = show ? '' : 'none';
     }
   });
 }
@@ -17620,8 +17716,15 @@ function applyCrearInformeChecklistConditionals() {
 function getCrearInformeChkValue(key) {
   var container = document.getElementById('crear-inf-checklist');
   if (!container) return null;
-  var rad = container.querySelector('input[name="chk_' + key + '"]:checked');
-  if (rad) return rad.value === 'true';
+  // FIX 2026-05-04: bool ahora vive en data-bc-state (sin radio inputs).
+  var bcRow = container.querySelector('[data-bc-item-row="' + key + '"]');
+  if (bcRow) {
+    var s = bcRow.getAttribute('data-bc-state') || '';
+    if (s === 'true')  return true;
+    if (s === 'false') return false;
+    if (s === 'N/A')   return 'N/A';
+    return null;
+  }
   var inp = container.querySelector('[data-chk-key="' + key + '"]');
   if (!inp) return null;
   if (inp.disabled) return 'N/A';
@@ -17639,8 +17742,9 @@ async function saveCrearInformeChecklist() {
   var errEl = document.getElementById('crear-inf-err');
   if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
 
-  // Validar y recolectar valores (mismo enfoque que saveTechChecklist)
+  // FIX 2026-05-04: misma validación con motivos inline que en saveTechChecklist.
   var data = {};
+  var problems = []; // {key, label, kind: 'no_selection' | 'no_reason'}
   var allItems = [];
   def.sections.forEach(function(sec){ sec.items.forEach(function(it){ allItems.push(it); }); });
   var container = document.getElementById('crear-inf-checklist');
@@ -17649,17 +17753,50 @@ async function saveCrearInformeChecklist() {
     var div = container.querySelector('[data-chk-item="' + it.key + '"]');
     if (div && div.style.display === 'none') continue;
     var val = getCrearInformeChkValue(it.key);
-    if (it.required && (val == null || val === '' || (it.type === 'bool' && val !== true && val !== false))) {
-      if (errEl) {
-        errEl.textContent = 'Falta llenar: ' + it.label;
-        errEl.style.display = 'block';
+    var isBool = (it.type === 'bool');
+    if (it.required) {
+      if (isBool) {
+        if (val !== true && val !== false && val !== 'N/A') {
+          problems.push({key: it.key, label: it.label, kind: 'no_selection'});
+        }
+      } else if (val == null || val === '') {
+        problems.push({key: it.key, label: it.label, kind: 'no_selection'});
       }
-      return;
+    }
+    if (isBool && (val === false || val === 'N/A')) {
+      var ta = container.querySelector('[data-bc-item-row="' + it.key + '"] textarea[data-bc-reason-key="' + it.key + '"]');
+      var reason = ta ? (ta.value || '').trim() : '';
+      if (!reason) {
+        problems.push({key: it.key, label: it.label, kind: 'no_reason'});
+      }
+      data[it.key + '_reason'] = reason;
     }
     data[it.key] = val;
   }
+  if (problems.length) {
+    var missingSel = problems.filter(function(p){ return p.kind === 'no_selection'; });
+    var missingReason = problems.filter(function(p){ return p.kind === 'no_reason'; });
+    var msgParts = [];
+    if (missingSel.length) {
+      msgParts.push('<b>Falta completar ' + missingSel.length + ' ' + (missingSel.length === 1 ? 'item' : 'items') + ':</b><br/>'
+        + missingSel.map(function(p){ return '• ' + escapeHtml(p.label); }).join('<br/>'));
+    }
+    if (missingReason.length) {
+      msgParts.push('<b>Falta el motivo en ' + missingReason.length + ' ' + (missingReason.length === 1 ? 'item marcado' : 'items marcados') + ' como No o N/A:</b><br/>'
+        + missingReason.map(function(p){ return '• ' + escapeHtml(p.label); }).join('<br/>'));
+    }
+    if (errEl) {
+      errEl.innerHTML = msgParts.join('<br/><br/>');
+      errEl.style.display = 'block';
+    }
+    var firstKey = problems[0].key;
+    var firstRow = container.querySelector('[data-bc-item-row="' + firstKey + '"], [data-chk-item="' + firstKey + '"]');
+    if (firstRow && firstRow.scrollIntoView) firstRow.scrollIntoView({behavior:'smooth', block:'center'});
+    return;
+  }
   // Auto-uppercase para texto/na_text
   Object.keys(data).forEach(function(k){
+    if (k.indexOf('_reason') !== -1) return;
     var d = allItems.find(function(x){return x.key===k;});
     if (d && (d.type === 'text' || d.type === 'na_text') && typeof data[k] === 'string' && data[k] !== 'N/A') {
       data[k] = data[k].toUpperCase();
