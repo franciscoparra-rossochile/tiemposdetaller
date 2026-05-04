@@ -16520,10 +16520,25 @@ function informeSplitItems(sec, tcData) {
 // - oil_used: si dice no, es info interna, no una falla
 // - gar_es_garantia: si la falla aplica/no aplica a garantía es una
 //   clasificación, no un hallazgo
-function informeIsConcern(it, val) {
+// FIX 2026-05-04: ahora recibe tcData para verificar si un item bool en
+// "No" o "N/A" tiene motivo escrito (<key>_reason). Si tiene motivo, NO
+// cuenta como hallazgo — la decisión del taller es que el motivo justifica
+// que no fue un problema real (ej: cliente declinó, no aplica a este servicio).
+function informeIsConcern(it, val, tcData) {
   if (it.key === 'oil_used') return false;
   if (it.key === 'gar_es_garantia') return false;
-  if (it.type === 'bool' && val === false) return true;
+  if (it.type === 'bool') {
+    // Solo cuenta si está en false o N/A
+    if (val !== false && val !== 'N/A') return false;
+    // Si tiene motivo escrito, no cuenta como concern
+    if (tcData && tcData[it.key + '_reason']) {
+      var r = String(tcData[it.key + '_reason']).trim();
+      if (r) return false;
+    }
+    // false sin motivo → concern. N/A sin motivo es un dato anómalo (la
+    // validación nueva exige motivo) pero por defensa lo tratamos como concern.
+    return val === false;
+  }
   if (it.type === 'select') {
     var s = String(val).toLowerCase();
     if (s.indexOf('alto') !== -1 || s.indexOf('crítico') !== -1
@@ -16541,12 +16556,40 @@ function informeCollectConcerns(techDef, tcData) {
   techDef.sections.forEach(function(sec) {
     (sec.items || []).forEach(function(it) {
       var val = tcData[it.key];
-      if (informeIsConcern(it, val)) {
+      if (informeIsConcern(it, val, tcData)) {
         concerns.push({section: sec.title, label: it.label, value: val});
       }
     });
   });
   return concerns;
+}
+
+// FIX 2026-05-04: recolecta los textareas con contenido sustantivo del
+// checklist técnico. Sirven como base del Resumen Técnico cuando el técnico
+// escribió hallazgos o recomendaciones (no detectables por las reglas
+// automáticas de bool/select).
+function _isVacuousText(v) {
+  if (!v) return true;
+  var u = String(v).trim().toUpperCase();
+  return u === '' || u === '-' || u === '.' || u === '..' || u === '...'
+      || u === 'NADA' || u === 'NINGUNO' || u === 'NINGUNA'
+      || u === 'N/A' || u === 'NA' || u === 'OK' || u === 'SIN'
+      || u === 'SIN HALLAZGOS' || u === 'SIN OBSERVACIONES';
+}
+function informeCollectResumenSources(techDef, tcData) {
+  var sources = [];
+  if (!techDef || !tcData) return sources;
+  techDef.sections.forEach(function(sec) {
+    (sec.items || []).forEach(function(it) {
+      if (it.type !== 'textarea') return;
+      var val = tcData[it.key];
+      if (val == null) return;
+      var v = String(val).trim();
+      if (_isVacuousText(v)) return;
+      sources.push({key: it.key, label: it.label, text: v, section: sec.title});
+    });
+  });
+  return sources;
 }
 
 async function generateInformePdf(woId) {
@@ -16713,7 +16756,7 @@ async function generateInformePdf(woId) {
               // Resaltar valores que sugieren atención
               if (data.section === 'body' && data.column.index === 1) {
                 var raw = split.states[data.row.index];
-                if (raw && informeIsConcern({type: raw.type, key: raw.key}, raw.value)) {
+                if (raw && informeIsConcern({type: raw.type, key: raw.key}, raw.value, tc)) {
                   data.cell.styles.textColor = [180, 30, 30];
                   data.cell.styles.fontStyle = 'bold';
                 }
@@ -16753,7 +16796,19 @@ async function generateInformePdf(woId) {
       y += 8;
     }
 
-    // 6) Resumen Técnico — hallazgos críticos
+    // 6) Resumen Técnico — FIX 2026-05-04
+    // Lógica de 3 niveles, en orden de prioridad:
+    //   1. Si hay textareas con contenido sustantivo (diag_resultado,
+    //      diag_recomendaciones, observaciones, etc.) → mostrarlos como
+    //      base del resumen. Lo escrito por el técnico es la fuente de
+    //      verdad sobre el estado del vehículo.
+    //   2. Si no hay textareas pero sí hay concerns automáticos
+    //      (bool=false sin motivo, select crítico) → listarlos.
+    //   3. Solo si NO hay nada → el texto fijo "todo conforme".
+    // Esto resuelve el bug donde el resumen contradecía el cuerpo del
+    // informe: el técnico escribía hallazgos serios en los textareas y el
+    // sistema imprimía "todo conforme" igual porque solo miraba bool/select.
+    var resumenSources = informeCollectResumenSources(techDef, tc);
     var concerns = informeCollectConcerns(techDef, tc);
     if (y > pageH - 60) { doc.addPage(); y = 18; }
     doc.setFont('helvetica', 'bold');
@@ -16769,24 +16824,68 @@ async function generateInformePdf(woId) {
     doc.setFontSize(10);
     doc.setTextColor(40, 40, 40);
 
-    if (concerns.length === 0) {
-      var okText = 'El vehículo se entrega en condiciones operativas conformes según los puntos de inspección revisados. No se detectaron hallazgos que requieran atención inmediata durante este servicio.';
-      doc.splitTextToSize(okText, contentW).forEach(function(ln){
-        if (y > pageH - 20) { doc.addPage(); y = 18; }
-        doc.text(ln, marginX, y);
-        y += 5;
+    if (resumenSources.length > 0) {
+      // Nivel 1: textareas escritos por el técnico — fuente principal
+      resumenSources.forEach(function(src) {
+        if (y > pageH - 25) { doc.addPage(); y = 18; }
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(10);
+        doc.setTextColor(40, 40, 40);
+        doc.text(src.label + ':', marginX, y);
+        y += 4.5;
+        doc.setFont('helvetica', 'normal');
+        doc.setTextColor(60, 60, 60);
+        doc.splitTextToSize(src.text, contentW).forEach(function(ln){
+          if (y > pageH - 20) { doc.addPage(); y = 18; }
+          doc.text(ln, marginX, y);
+          y += 4.5;
+        });
+        y += 2;
       });
-    } else {
-      var introText = 'Durante el servicio se detectaron ' + concerns.length + ' punto(s) que requieren atención. Se detalla a continuación cada hallazgo agrupado por sistema:';
+      // Si además hay concerns automáticos no cubiertos por los textareas,
+      // los agregamos como bloque secundario.
+      if (concerns.length > 0) {
+        if (y > pageH - 25) { doc.addPage(); y = 18; }
+        y += 2;
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(10);
+        doc.setTextColor(40, 40, 40);
+        doc.text('Otros puntos detectados durante la inspección:', marginX, y);
+        y += 5;
+        concerns.forEach(function(co){
+          if (y > pageH - 20) { doc.addPage(); y = 18; }
+          doc.setFont('helvetica', 'bold');
+          doc.setTextColor(180, 30, 30);
+          doc.text('•', marginX, y);
+          doc.setTextColor(40, 40, 40);
+          doc.text(co.label, marginX + 4, y);
+          doc.setFont('helvetica', 'normal');
+          doc.setTextColor(90, 90, 90);
+          doc.text('(' + co.section + ')', marginX + 4 + doc.getTextWidth(co.label) + 2, y);
+          y += 5;
+          if (co.value !== false && co.value !== true) {
+            doc.setFont('helvetica', 'italic');
+            doc.setTextColor(60, 60, 60);
+            var detTxt = '   Estado: ' + String(co.value);
+            doc.splitTextToSize(detTxt, contentW - 4).forEach(function(ln){
+              if (y > pageH - 20) { doc.addPage(); y = 18; }
+              doc.text(ln, marginX + 4, y);
+              y += 4;
+            });
+          }
+          y += 1;
+        });
+      }
+    } else if (concerns.length > 0) {
+      // Nivel 2: solo concerns automáticos (sin textareas con contenido)
+      var introText = 'Durante el servicio se detectaron ' + concerns.length + ' punto(s) que requieren atención:';
       doc.splitTextToSize(introText, contentW).forEach(function(ln){
         if (y > pageH - 20) { doc.addPage(); y = 18; }
         doc.text(ln, marginX, y);
         y += 5;
       });
       y += 2;
-
-      // Lista de hallazgos
-      concerns.forEach(function(co, idx){
+      concerns.forEach(function(co){
         if (y > pageH - 20) { doc.addPage(); y = 18; }
         doc.setFont('helvetica', 'bold');
         doc.setTextColor(180, 30, 30);
@@ -16808,6 +16907,14 @@ async function generateInformePdf(woId) {
           });
         }
         y += 1;
+      });
+    } else {
+      // Nivel 3: nada que reportar — texto fijo "todo conforme"
+      var okText = 'El vehículo se entrega en condiciones operativas conformes según los puntos de inspección revisados. No se detectaron hallazgos que requieran atención inmediata durante este servicio.';
+      doc.splitTextToSize(okText, contentW).forEach(function(ln){
+        if (y > pageH - 20) { doc.addPage(); y = 18; }
+        doc.text(ln, marginX, y);
+        y += 5;
       });
     }
     y += 4;
@@ -18557,6 +18664,10 @@ function renderInformesList(body, clientsMap, vehiclesMap) {
     // Hallazgos críticos (cuenta) para mostrar badge
     var techDef = (typeof CHECKLISTS_TECH !== 'undefined') ? CHECKLISTS_TECH[o.service_classification] : null;
     var concerns = informeCollectConcerns(techDef, cd.tech_checklist || {});
+    // FIX 2026-05-04: si el técnico escribió hallazgos en textareas pero los
+    // bool/select están todos OK, igual queremos que el badge no diga
+    // "Conforme" para no contradecir el contenido del informe.
+    var resumenSources = informeCollectResumenSources(techDef, cd.tech_checklist || {});
     // Extras editados/anexados (si existen)
     var rExtras = cd.report_extras || {};
     var extrasCount = ((rExtras.extra_findings || []).filter(function(f){return f && String(f).trim();}).length)
@@ -18603,7 +18714,9 @@ function renderInformesList(body, clientsMap, vehiclesMap) {
       + '<div style="text-align:right;flex-shrink:0;display:flex;flex-direction:column;align-items:flex-end;gap:4px">'
       + (concerns.length
           ? '<div style="font-size:10px;background:#fde7e7;color:#b00;padding:3px 8px;border-radius:10px;font-weight:700">⚠ ' + concerns.length + ' hallazgo(s)</div>'
-          : '<div style="font-size:10px;background:#e6f4e6;color:#2a7a2a;padding:3px 8px;border-radius:10px;font-weight:700">✓ Conforme</div>')
+          : (resumenSources.length
+              ? '<div style="font-size:10px;background:#fff4cc;color:#7a5a00;padding:3px 8px;border-radius:10px;font-weight:700">📝 Con observaciones</div>'
+              : '<div style="font-size:10px;background:#e6f4e6;color:#2a7a2a;padding:3px 8px;border-radius:10px;font-weight:700">✓ Conforme</div>'))
       + '<div style="display:flex;gap:4px">'
       +   '<button class="btn-sm" style="border-color:#1f6fbf;color:#1f6fbf;font-size:10px;padding:3px 6px" onclick="event.stopPropagation();openInformeEditor(\'' + o.id + '\')">✏ Editar</button>'
       +   '<button class="btn-sm" style="border-color:var(--red);color:var(--red);font-size:10px;padding:3px 6px" onclick="event.stopPropagation();generateInformePdf(\'' + o.id + '\')">⬇ PDF</button>'
@@ -18642,6 +18755,8 @@ async function openInformePreview(woId) {
     var srvLbl = srvDef ? srvDef.label : (o.service_classification || 'Servicio');
     if (o.service_subtype) srvLbl += ' — ' + o.service_subtype;
     var concerns = informeCollectConcerns(techDef, tc);
+    var resumenSources = informeCollectResumenSources(techDef, tc);
+    var hasResumenContent = (resumenSources.length > 0 || concerns.length > 0);
 
     var html = '';
     html += '<div style="border-bottom:1px solid var(--border);padding-bottom:8px;margin-bottom:8px">';
@@ -18661,7 +18776,7 @@ async function openInformePreview(woId) {
         });
         split.states.forEach(function(st){
           var fmt = informeFmtVal(st.value, st.type, st.key);
-          var concern = informeIsConcern({type: st.type, key: st.key}, st.value);
+          var concern = informeIsConcern({type: st.type, key: st.key}, st.value, tc);
           var color = concern ? '#b00' : (st.value === true ? '#2a7a2a' : '#333');
           html += '<div style="display:flex;justify-content:space-between;padding:2px 0;font-size:11px"><span>' + escapeHtml(st.label) + '</span><b style="color:' + color + '">' + escapeHtml(fmt) + '</b></div>';
         });
@@ -18672,17 +18787,42 @@ async function openInformePreview(woId) {
       });
     }
 
-    html += '<div style="margin-top:14px;padding:10px;background:' + (concerns.length ? '#fff5f5' : '#f3faf3') + ';border-radius:4px;border-left:3px solid ' + (concerns.length ? '#c00' : '#2a7a2a') + '">';
+    // FIX 2026-05-04: misma lógica de 3 niveles que el PDF.
+    // Color: rojo si hay concerns, ámbar si hay sources sin concerns, verde si nada.
+    var resumenColor = concerns.length > 0 ? '#c00'
+                     : resumenSources.length > 0 ? '#c08000'
+                     : '#2a7a2a';
+    var resumenBg    = concerns.length > 0 ? '#fff5f5'
+                     : resumenSources.length > 0 ? '#fffbe6'
+                     : '#f3faf3';
+    html += '<div style="margin-top:14px;padding:10px;background:' + resumenBg + ';border-radius:4px;border-left:3px solid ' + resumenColor + '">';
     html += '<div style="font-weight:700;font-size:12px;margin-bottom:4px">RESUMEN TÉCNICO</div>';
-    if (concerns.length === 0) {
-      html += '<div style="font-size:11px;color:#444">Vehículo conforme. Sin hallazgos que requieran atención inmediata.</div>';
-    } else {
+    if (resumenSources.length > 0) {
+      // Nivel 1: textareas escritos por el técnico
+      resumenSources.forEach(function(src){
+        html += '<div style="font-size:11px;color:#333;margin-bottom:6px">'
+          + '<b>' + escapeHtml(src.label) + ':</b> ' + escapeHtml(src.text)
+          + '</div>';
+      });
+      if (concerns.length > 0) {
+        html += '<div style="font-size:11px;color:#444;margin-top:6px;margin-bottom:4px"><b>Otros puntos detectados:</b></div>';
+        html += '<ul style="margin:0;padding-left:18px;font-size:11px">';
+        concerns.forEach(function(co){
+          html += '<li><b>' + escapeHtml(co.label) + '</b> <span style="color:#888">(' + escapeHtml(co.section) + ')</span></li>';
+        });
+        html += '</ul>';
+      }
+    } else if (concerns.length > 0) {
+      // Nivel 2: solo concerns automáticos
       html += '<div style="font-size:11px;color:#444;margin-bottom:6px">' + concerns.length + ' hallazgo(s) detectado(s):</div>';
       html += '<ul style="margin:0;padding-left:18px;font-size:11px">';
       concerns.forEach(function(co){
         html += '<li><b>' + escapeHtml(co.label) + '</b> <span style="color:#888">(' + escapeHtml(co.section) + ')</span></li>';
       });
       html += '</ul>';
+    } else {
+      // Nivel 3: nada que reportar
+      html += '<div style="font-size:11px;color:#444">Vehículo conforme. Sin hallazgos que requieran atención inmediata.</div>';
     }
     html += '</div>';
 
