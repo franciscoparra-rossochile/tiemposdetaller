@@ -3,7 +3,7 @@
 <head>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" crossorigin="anonymous" defer></script>
 <meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <title>Rosso OPS</title>
 <link rel="icon" type="image/x-icon" href="favicon.ico"/>
@@ -169,6 +169,8 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 .empty{text-align:center;color:var(--wh4);font-size:13px;padding:28px 0;letter-spacing:.05em;text-transform:uppercase;font-family:var(--head)}
 .spin{display:inline-block;width:14px;height:14px;border:2px solid var(--border2);border-top-color:var(--red);border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:5px}
 @keyframes spin{to{transform:rotate(360deg)}}
+/* FEATURE 2026-04-30: pulso suave para chip 'En pausa' cuando supera el umbral */
+@keyframes rosso-pulse-gold{0%,100%{box-shadow:0 0 0 0 rgba(245,158,11,.45)}50%{box-shadow:0 0 0 6px rgba(245,158,11,0)}}
 .plate-tag{display:inline-block;background:#111;border-radius:3px;padding:2px 8px;font-family:var(--mono);font-size:11px;color:#fff;letter-spacing:.15em}
 .row{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border)}
 .row:last-child{border-bottom:none}
@@ -210,14 +212,14 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     <div><div class="hdr-t">OPS</div><div class="hdr-s">Operaciones Especiales</div></div>
   </div>
   <div class="body" style="justify-content:center;max-width:360px;margin:0 auto;width:100%">
-    <div class="card-accent">
+    <form class="card-accent" id="li-form" onsubmit="event.preventDefault(); doLogin();" autocomplete="on">
       <div class="lbl">Usuario</div>
-      <input class="inp" id="li-user" placeholder="nombre.apellido" autocomplete="username" autocapitalize="none" autocorrect="off"/>
+      <input class="inp" id="li-user" name="username" placeholder="nombre.apellido" autocomplete="username" autocapitalize="none" autocorrect="off" required/>
       <div class="lbl">Contrasena</div>
-      <input class="inp" type="password" id="li-pass" placeholder="Contrasena" autocomplete="current-password"/>
+      <input class="inp" type="password" id="li-pass" name="password" placeholder="Contrasena" autocomplete="current-password" required/>
       <div id="li-err" class="card-err" style="display:none;margin-bottom:8px;font-size:12px;color:var(--red);font-weight:600"></div>
-      <button class="btn btn-red" id="li-btn" onclick="doLogin()">Ingresar</button>
-    </div>
+      <button type="submit" class="btn btn-red" id="li-btn">Ingresar</button>
+    </form>
     <button class="btn btn-out" style="margin-top:4px" onclick="openModal('m-create-user')">Crear cuenta nueva</button>
     <div id="conn-status" style="text-align:center;font-size:10px;color:var(--wh4);margin-top:8px;font-family:var(--mono)"></div>
     <button id="retry-btn" onclick="retryConn()" style="display:none;margin-top:8px;background:var(--red);color:#fff;border:none;border-radius:4px;padding:8px 16px;font-size:12px;font-weight:700;cursor:pointer;font-family:var(--head);letter-spacing:.06em;text-transform:uppercase">Reintentar conexion</button>
@@ -270,7 +272,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     <div class="tab" data-tab="b-ingreso" onclick="bossTab('b-ingreso')" id="tab-ingreso" style="display:none">Ingreso Taller</div>
     <div class="tab" data-tab="b-catastro" onclick="bossTab('b-catastro')" id="tab-catastro" style="display:none">Catastro Vehículos</div>
     <div class="tab" data-tab="b-entregados" onclick="bossTab('b-entregados')" id="tab-entregados" style="display:none">Entregados</div>
-    <div class="tab active" data-tab="b-online" onclick="bossTab('b-online')" id="tab-online">En curso</div>
+    <div class="tab active" data-tab="b-online" onclick="bossTab('b-online')" id="tab-online">En curso<span class="ndot" id="boss-online-dot" title="Hay muchos servicios pausados"></span></div>
     <div class="tab" data-tab="b-calendario" onclick="bossTab('b-calendario')" id="tab-calendario">Calendario</div>
     <div class="tab" data-tab="b-plan" onclick="bossTab('b-plan')" id="tab-plan">Planificacion</div>
     <div class="tab" data-tab="b-hist" onclick="bossTab('b-hist')" id="tab-hist">Historial</div>
@@ -996,8 +998,33 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // ═══════════════════════════════════════════════
 // CONFIG & DEBUG
 // ═══════════════════════════════════════════════
-const DEBUG = true;
-const APP_VERSION = 'v2.7.OPS-historial-clean';
+// FIX QW-12 (2026-04-30): config global única para evitar drift entre scripts.
+// Cualquier ajuste de timeouts/intervals va aqui y los demas scripts lo leen.
+window.RossoConfig = Object.freeze({
+  APP_VERSION: 'v1.0.0-rc1',                        // hotfix v1 sobre v2.7.OPS-historial-clean
+  SDK_TIMEOUT_MS: 8000,
+  CONN_TIMEOUT_MS: 5000,
+  EMERGENCY_TIMEOUT_MS: 15000,
+  POLL_INTERVAL_MS: 3000,
+  POLL_MAX_BACKOFF_MS: 60000,
+  TICK_INTERVAL_MS: 1000,
+  SESSION_MAX_AGE_MS: 4 * 60 * 60 * 1000,           // FIX QW-6: bajado de 12h a 4h
+  IDLE_TIMEOUT_MS: 30 * 60 * 1000,                  // 30 min de idle antes de exigir re-login
+  PAUSED_ALERT_THRESHOLD: 3                         // Umbral para alertar visualmente sobre exceso de servicios en pausa
+});
+
+// FIX QW-1 (2026-04-30): DEBUG ya no esta hardcodeado en true.
+// En produccion no spammeamos consola con payloads sensibles. Para activar
+// en un dispositivo: agregar ?debug=1 a la URL o setear localStorage.rosso_debug='1'.
+const DEBUG = (function() {
+  try {
+    if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') return true;
+    if (/[?&]debug=1\b/.test(location.search)) return true;
+    if (localStorage.getItem('rosso_debug') === '1') return true;
+  } catch(_) {}
+  return false;
+})();
+const APP_VERSION = window.RossoConfig.APP_VERSION;
 const SURL = 'https://jczmupcmeixpwjedfgtk.supabase.co';
 const SKEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impjem11cGNtZWl4cHdqZWRmZ3RrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY5NzMxOTMsImV4cCI6MjA5MjU0OTE5M30.DuICC_pCQGv27lZivieXRRvGz9A1GNkgmhvTvyKo25o';
 var sb = null; // initialized in init()
@@ -1032,11 +1059,20 @@ window.onunhandledrejection = function(e) {
 };
 
 let dbgLines = [];
+// FIX QW-1 (2026-04-30): si DEBUG=false, NO emitimos console.log; ademas
+// redactamos payloads sensibles (login, insert) para que no aparezcan ni
+// siquiera en error/warn. En desarrollo (?debug=1) sigue siendo verboso.
+const _SENSITIVE_LABELS = new Set([
+  'LOGIN_RESULT', 'LOGIN_ATTEMPT', 'INSERT_SESSION_PAYLOAD',
+  'FINISH_HISTORY_PAYLOAD', 'FORCE_PW_OK', 'SESSION_RESTORED'
+]);
 function logR(l,d,lv){
   var prefix = '[Rosso]';
-  if (lv === 'err' || lv === 'e') console.error(prefix, l, d || '');
-  else if (lv === 'warn' || lv === 'w') console.warn(prefix, l, d || '');
-  else if (DEBUG) console.log(prefix, l, d || '');
+  var payload = d || '';
+  if (!DEBUG && _SENSITIVE_LABELS.has(l)) payload = {_redacted: true};
+  if (lv === 'err' || lv === 'e') console.error(prefix, l, payload);
+  else if (lv === 'warn' || lv === 'w') console.warn(prefix, l, payload);
+  else if (DEBUG) console.log(prefix, l, payload);
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -2166,15 +2202,9 @@ const CHECKLIST_DOBLE_CONTROL = [
   {key:'dc_torque_filter',  label:'Marcaje torque filtro de aceite',     type:'bool',   required:true, allow_na:true},
   {key:'dc_apriete_filter', label:'Marcaje apriete filtro de aceite',    type:'bool',   required:true, allow_na:true},
   {key:'dc_label',          label:'Etiqueta de cambio de aceite pegada', type:'bool',   required:true, allow_na:true},
-  {key:'dc_clean',          label:'Limpieza zona de trabajo',            type:'bool',   required:true, allow_na:true},
+  {key:'dc_clean',          label:'Limpieza zona de trabajo',            type:'bool',   required:true},
   {key:'dc_km_exit',        label:'Kilometraje de salida',               type:'number', required:true},
   {key:'dc_na_reason',      label:'Motivo de la no aplicación (N/A)',    type:'textarea', required_if_na:true, rows:2, placeholder:'Ej: cliente excluyó cambio de aceite, reparación general sin aceite, etc.'},
-  // FASE 4.1: el doble control ya no se BLOQUEA por respuestas "No". El técnico
-  // puede cerrar con "No" si reporta el motivo. El visador ve los "No" + motivo
-  // y decide si acepta la entrega o la rechaza. Esto refleja la realidad operativa:
-  // no todos los servicios requieren todos los items, y el visador es el último
-  // filtro de calidad antes de entregar al cliente.
-  {key:'dc_no_reason',      label:'Motivo de los ítems en "No"',         type:'textarea', required_if_no:true, rows:3, placeholder:'Explica por qué uno o más ítems quedaron en "No". El visador revisará esta información.'},
   {key:'dc_observations',   label:'Observaciones (opcional)',            type:'textarea', required:false, rows:2}
 ];
 
@@ -2880,9 +2910,12 @@ var _supabaseReady = false;
 var _connState = 'pending'; // 'pending' | 'ok' | 'sdk_fail' | 'create_fail' | 'ping_fail' | 'offline'
 var _connDetail = '';
 
-const SDK_TIMEOUT_MS = 8000;
-const CONN_TIMEOUT_MS = 5000;
-const EMERGENCY_TIMEOUT_MS = 15000;
+// FIX QW-12 (2026-04-30): leer de RossoConfig para evitar drift con el IIFE
+// final. Mantenemos los nombres locales como aliases por compatibilidad con
+// el resto del codigo del archivo.
+const SDK_TIMEOUT_MS = window.RossoConfig.SDK_TIMEOUT_MS;
+const CONN_TIMEOUT_MS = window.RossoConfig.CONN_TIMEOUT_MS;
+const EMERGENCY_TIMEOUT_MS = window.RossoConfig.EMERGENCY_TIMEOUT_MS;
 
 function setLoadStatus(status, detail) {
   var s = document.getElementById('load-status');
@@ -3173,7 +3206,11 @@ function retryConn() {
 // El logout explicito (boton Salir) borra la sesion guardada, entonces
 // si alguien necesita asegurar que el proximo usuario haga login,
 // debe tocar Salir antes de prestar el dispositivo.
-const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000; // 12 horas
+// FIX QW-6 (2026-04-30): bajado de 12h a 4h. La jornada del taller es <4h,
+// y ademas con dispositivos compartidos entre turnos, 12h heredaba sesiones
+// del turno anterior y dejaba acciones registradas con el tecnico equivocado.
+// Adicional: idle-timeout de 30 min cierra la sesion si no hay interaccion.
+const SESSION_MAX_AGE_MS = window.RossoConfig.SESSION_MAX_AGE_MS; // 4h
 
 async function tryRestoreSession() {
   var raw;
@@ -3266,7 +3303,21 @@ function closeModal(id) { document.getElementById(id).style.display = 'none'; }
 // ═══════════════════════════════════════════════
 // AUTH
 // ═══════════════════════════════════════════════
+// FIX QW-2 (2026-04-30): guard contra doble-submit. Antes el boton se
+// deshabilitaba pero si el form se submitea por Enter y por click rapido,
+// se podia disparar doLogin dos veces y duplicar queries a `users`.
+let _loggingIn = false;
 async function doLogin() {
+  if (_loggingIn) { logR('LOGIN_GUARD_BLOCKED', {}, 'warn'); return; }
+  _loggingIn = true;
+  try {
+    await _doLoginInner();
+  } finally {
+    _loggingIn = false;
+  }
+}
+
+async function _doLoginInner() {
   const u = document.getElementById('li-user').value.trim().toLowerCase();
   const p = document.getElementById('li-pass').value;
   const btn = document.getElementById('li-btn');
@@ -3364,6 +3415,19 @@ async function doLogin() {
 }
 
 function doLogout() {
+  // FIX UX (2026-04-30): si el tecnico tiene cronometro corriendo, confirmar
+  // antes de cerrar sesion. Antes un toque accidental cerraba la sesion y
+  // dejaba el cronometro corriendo en BD; al volver a logear el tecnico
+  // tenia que reanudar a mano.
+  if (T && T.running && T.sessionKey) {
+    var ok = window.confirm(
+      'Tienes un cronometro corriendo (' + (T.srvLabel || 'servicio') + ').\n\n' +
+      'Si cierras sesion, el cronometro queda activo en el servidor y deberas\n' +
+      'reanudarlo desde "Mis servicios" al volver a entrar.\n\n' +
+      'Cerrar sesion de todos modos?'
+    );
+    if (!ok) return;
+  }
   logR('LOGOUT', {user: CU ? CU.username : 'none'});
   // Borrar sesion persistente (intencional - si el usuario toca Salir, quiere salir)
   try { localStorage.removeItem('rosso_session'); } catch(e) {}
@@ -3511,13 +3575,59 @@ async function saveForcedPassword() {
 // ═══════════════════════════════════════════════
 // POLLING
 // ═══════════════════════════════════════════════
+// FIX QW-9 (2026-04-30): el polling antes era setInterval(pollAll, 3000) sin
+// retry, sin backoff y sin coordinacion con operaciones del usuario. Si la
+// BD se caia, hacia 1.200 queries en 1 hora pidiendole a una BD muerta.
+// Ahora: setTimeout recursivo con backoff exponencial al fallo (3s -> 6s ->
+// 12s -> 24s -> 48s -> 60s max), reset al primer exito.
+//
+// FIX QW-4 (2026-04-30): cuando la pestaña se oculta, suspendemos pollInt y
+// tickInt completamente. En webviews antiguos (kiosco iOS) los intervals no
+// se throttlean automaticamente y consumen CPU al 100% durante las 8h que
+// el dispositivo queda dormido encima del meson.
+//
+// Coordinacion: _opsInFlight cuenta operaciones criticas en vuelo (pause,
+// resume, finish, login). Mientras > 0, pollAll se salta para no pisar el
+// estado local con datos viejos de BD.
+let _opsInFlight = 0;
+function startOp() { _opsInFlight++; }
+function endOp() { _opsInFlight = Math.max(0, _opsInFlight - 1); }
+let _pollFailures = 0;
+let _pollScheduled = null;
+
+function _schedulePoll() {
+  if (_pollScheduled) { clearTimeout(_pollScheduled); _pollScheduled = null; }
+  var base = window.RossoConfig.POLL_INTERVAL_MS;
+  var max = window.RossoConfig.POLL_MAX_BACKOFF_MS;
+  var delay = Math.min(max, base * Math.pow(2, _pollFailures));
+  _pollScheduled = setTimeout(async function() {
+    _pollScheduled = null;
+    if (!CU) return;
+    if (document.visibilityState === 'hidden') return;   // se reactivara en visibilitychange
+    if (!navigator.onLine) {
+      _pollFailures = Math.min(_pollFailures + 1, 6);
+      _schedulePoll();
+      return;
+    }
+    try {
+      await pollAll();
+      _pollFailures = 0;                                  // reset al primer exito
+    } catch(e) {
+      _pollFailures = Math.min(_pollFailures + 1, 6);
+      logR('POLL_FAIL', {count: _pollFailures, msg: e && e.message ? e.message : String(e)}, 'warn');
+    }
+    if (CU) _schedulePoll();
+  }, delay);
+}
+
 function startPolling() {
   stopPolling();
   // Cargar cache de avatares de todos los usuarios para que aparezcan
   // en En Curso, Historial, listas, etc. Es UN solo query al arranque.
   refreshAvatarsCache();
-  pollAll();
-  pollInt = setInterval(pollAll, 3000);
+  pollAll().catch(function(){});
+  _schedulePoll();
+  _startIdleTracker(); // FIX QW-6: cierre por inactividad de 30 min
   tickInt = setInterval(function() {
     // Este interval corre cada 1 segundo y hace UNA sola cosa: repintar la UI.
     // Todos los numeros de tiempo se calculan derivados de timestamps con
@@ -3544,29 +3654,91 @@ function startPolling() {
       }
     }
     refreshLiveUI();
-  }, 1000);
+  }, window.RossoConfig.TICK_INTERVAL_MS);
 }
 
 function stopPolling() {
-  if (pollInt) { clearInterval(pollInt); pollInt = null; }
+  if (_pollScheduled) { clearTimeout(_pollScheduled); _pollScheduled = null; }
+  if (pollInt) { clearInterval(pollInt); pollInt = null; }   // legacy compat
   if (tickInt) { clearInterval(tickInt); tickInt = null; }
+  _stopIdleTracker();
+  _pollFailures = 0;
 }
 
 // ═══════════════════════════════════════════════════════════════
-// Cuando el navegador vuelve a estar visible (desbloqueo pantalla,
-// cambio de pestana, regreso del home screen), forzar un refresh
-// inmediato del UI. Sin esto, en iOS Safari el usuario ve el tiempo
-// congelado por 1-2 segundos hasta que el ticker se despierte.
-//
-// Gracias al refactor de timestamps, el tiempo REAL nunca se pierde
-// (se calcula como ahora - started_at). Esto es solo para que la UI
-// se ponga al dia visualmente lo mas rapido posible.
+// FIX QW-6 (2026-04-30): idle-tracker.
+// Si el dispositivo queda 30 min sin interaccion (touch, click, key) Y NO
+// hay cronometro corriendo, cerramos sesion automaticamente. Esto reduce
+// el riesgo de que un dispositivo prestado entre turnos quede logueado
+// con la sesion del tecnico anterior.
+// Si hay cronometro corriendo, NO cerramos sesion (el tecnico esta trabajando
+// en el vehiculo); solo trackeamos para el momento que finalice.
+// ═══════════════════════════════════════════════════════════════
+let _idleTimer = null;
+let _idleHandler = null;
+function _startIdleTracker() {
+  _stopIdleTracker();
+  var ms = (window.RossoConfig && window.RossoConfig.IDLE_TIMEOUT_MS) || (30*60*1000);
+  function reset() {
+    if (_idleTimer) clearTimeout(_idleTimer);
+    _idleTimer = setTimeout(function() {
+      // No deslogear si hay cronometro corriendo
+      if (T && T.running && T.sessionKey) {
+        logR('IDLE_SKIP_RUNNING', {});
+        reset();
+        return;
+      }
+      logR('IDLE_LOGOUT', {after_min: Math.round(ms/60000)}, 'warn');
+      try { showGlobalError('Sesion cerrada por inactividad', 5000); } catch(_){}
+      try { doLogoutSilent(); } catch(_){}
+    }, ms);
+  }
+  _idleHandler = reset;
+  ['touchstart','mousedown','keydown','scroll'].forEach(function(ev) {
+    document.addEventListener(ev, reset, {passive: true});
+  });
+  reset();
+}
+function _stopIdleTracker() {
+  if (_idleTimer) { clearTimeout(_idleTimer); _idleTimer = null; }
+  if (_idleHandler) {
+    ['touchstart','mousedown','keydown','scroll'].forEach(function(ev) {
+      try { document.removeEventListener(ev, _idleHandler); } catch(_){}
+    });
+    _idleHandler = null;
+  }
+}
+
+// Variante de logout sin confirm() (para idle, no necesita preguntar).
+function doLogoutSilent() {
+  try { localStorage.removeItem('rosso_session'); } catch(e) {}
+  stopPolling();
+  resetT();
+  CU = null; liveData = []; lastNotifId = null;
+  selSrv = null; selSub = null; selDesc = ''; selPlate = '';
+  techMode = false;
+  try {
+    document.getElementById('li-user').value = '';
+    document.getElementById('li-pass').value = '';
+    document.getElementById('li-err').style.display = 'none';
+  } catch(_){}
+  showScreen('s-login');
+}
+
+// ═══════════════════════════════════════════════════════════════
+// FIX QW-4 (2026-04-30): suspender intervals cuando la pestaña esta oculta.
+// Cuando vuelve a visible, refrescar inmediato y reanudar polling.
 // ═══════════════════════════════════════════════════════════════
 document.addEventListener('visibilitychange', function() {
   if (document.visibilityState === 'visible' && CU) {
     logR('VISIBILITY_RESUMED', {});
+    // Si los intervals fueron suspendidos, reiniciarlos
+    if (!tickInt) {
+      startPolling();
+      return; // startPolling ya hace pollAll y refreshLiveUI
+    }
     // Refresh inmediato: trae datos frescos y repinta
-    pollAll();
+    pollAll().catch(function(){});
     refreshLiveUI();
     // Ademas si tengo timer activo, actualizar display
     if (T.running && T.sessionKey) {
@@ -3577,11 +3749,27 @@ document.addEventListener('visibilitychange', function() {
         if (disp) disp.textContent = fmtT(T.sec);
       }
     }
+  } else if (document.visibilityState === 'hidden') {
+    logR('VISIBILITY_HIDDEN', {});
+    // Suspender intervals para no quemar CPU/bateria mientras la pantalla
+    // esta apagada o la pestaña en background. El proximo visibilitychange
+    // reanudara con datos frescos.
+    if (_pollScheduled) { clearTimeout(_pollScheduled); _pollScheduled = null; }
+    if (pollInt) { clearInterval(pollInt); pollInt = null; }
+    if (tickInt) { clearInterval(tickInt); tickInt = null; }
   }
 });
 
 async function pollAll() {
   if (!CU) return;
+  // FIX coordinacion: si hay operaciones criticas en vuelo (pause/resume/
+  // finish), saltar este ciclo. Antes el polling pisaba el estado local del
+  // usuario con datos a medio actualizar de BD.
+  if (_opsInFlight > 0) {
+    logR('POLL_SKIP_OPS_IN_FLIGHT', {count: _opsInFlight});
+    return;
+  }
+  if (!navigator.onLine) return;
   await Promise.all([fetchLive(), fetchNotifs()]);
 }
 
@@ -4385,6 +4573,11 @@ async function fetchLive() {
     var plates = liveData.map(function(s){ return s.plate; }).filter(Boolean);
     if (plates.length) await preloadPlateInfo(plates);
   } catch(_){}
+  // FEATURE 2026-04-30: actualizar el dot del tab 'En curso' aunque no
+  // estemos en esa pestaña. Si el admin esta en Calendario o Historial y se
+  // acumulan pausados, el dot rojo aparece en la pestaña 'En curso' como
+  // recordatorio visual sin necesidad de cambiar de pantalla.
+  try { if (typeof refreshPausedAlert === 'function') refreshPausedAlert(); } catch(_){}
   refreshLiveUI();
 }
 
@@ -4932,15 +5125,19 @@ function renderTimerCard(body, sess) {
   var pct = sess.goal_minutes ? Math.min(100, Math.round(sec / (sess.goal_minutes * 60) * 100)) : null;
   
   var wrap = mk('div','timer-wrap');
-  wrap.innerHTML = '<div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111;margin-bottom:4px">' + sess.service + '</div>'
-    + (sess.plate ? '<div style="margin-bottom:8px"><span class="plate-tag">' + sess.plate + '</span></div>' : '')
+  // FIX QW-3 (2026-04-30): escapeHtml en sess.service, sess.plate y
+  // lastPause.reason. Estos datos pueden contener < y > si un tecnico
+  // tipea HTML (intencional o accidentalmente) en motivo de pausa o
+  // descripcion. Antes se inyectaban como innerHTML crudo => XSS.
+  wrap.innerHTML = '<div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111;margin-bottom:4px">' + escapeHtml(sess.service) + '</div>'
+    + (sess.plate ? '<div style="margin-bottom:8px"><span class="plate-tag">' + escapeHtml(sess.plate) + '</span></div>' : '')
     + '<div class="timer-num' + (over?' over':isPaused?' paused':'') + '" id="timer-disp">' + fmtT(sec) + '</div>'
-    + (sess.goal_minutes ? '<div style="font-size:10px;color:var(--wh4);margin-top:4px">OBJ: ' + sess.goal_minutes + ' min</div>'
+    + (sess.goal_minutes ? '<div style="font-size:10px;color:var(--wh4);margin-top:4px">OBJ: ' + escapeHtml(String(sess.goal_minutes)) + ' min</div>'
       + '<div class="prog-bar"><div class="prog-fill" id="timer-prog" style="width:' + pct + '%;background:' + (over ? 'var(--red)' : 'var(--green)') + '"></div></div>' : '')
     + '<div style="margin-top:10px">'
     + (over ? '<span class="badge b-over">Tiempo superado</span>' : isPaused ? '<span class="badge b-pau">Pausado</span>' : '<span class="badge b-run">En curso</span>')
     + '</div>'
-    + (lastPause ? '<div style="background:var(--gold2);border:1px solid var(--gold);border-radius:3px;padding:6px 10px;margin-top:8px;font-size:11px;color:var(--gold3);font-weight:600">Motivo: ' + lastPause.reason + '</div>' : '');
+    + (lastPause ? '<div style="background:var(--gold2);border:1px solid var(--gold);border-radius:3px;padding:6px 10px;margin-top:8px;font-size:11px;color:var(--gold3);font-weight:600">Motivo: ' + escapeHtml(lastPause.reason || '') + '</div>' : '');
   body.appendChild(wrap);
 
   // Desglose por día (solo si la sesión cruzó al menos un día) — se
@@ -4956,8 +5153,9 @@ function renderTimerCard(body, sess) {
 
   if (sess.pauses && sess.pauses.length) {
     var pl = mk('div','card');
+    // FIX QW-3 (2026-04-30): escapar reason y at de cada pausa
     pl.innerHTML = '<div class="lbl">Pausas registradas</div>'
-      + sess.pauses.map(function(p) { return '<div style="font-size:12px;color:var(--wh3);padding:3px 0">• ' + p.reason + ' (' + p.at + ')</div>'; }).join('');
+      + sess.pauses.map(function(p) { return '<div style="font-size:12px;color:var(--wh3);padding:3px 0">• ' + escapeHtml(p.reason || '') + ' (' + escapeHtml(p.at || '') + ')</div>'; }).join('');
     body.appendChild(pl);
   }
 
@@ -5028,10 +5226,12 @@ async function confirmPause(reason) {
   // FIX 2026-04-29: guard contra doble-click.
   if (_pausing) { logR('PAUSE_GUARD_BLOCKED', {}); return; }
   _pausing = true;
+  startOp(); // FIX QW-9: bloquea polling mientras la operacion esta en vuelo
   try {
     await _confirmPauseInner(reason);
   } finally {
     _pausing = false;
+    endOp();
   }
 }
 
@@ -5102,10 +5302,12 @@ async function doResume() {
   // FIX 2026-04-29: guard contra doble-click.
   if (_resuming) { logR('RESUME_GUARD_BLOCKED', {}); return; }
   _resuming = true;
+  startOp(); // FIX QW-9: bloquea polling mientras la operacion esta en vuelo
   try {
     await _doResumeInner();
   } finally {
     _resuming = false;
+    endOp();
   }
 }
 
@@ -5410,6 +5612,7 @@ var _visando = false;
 async function doFinish(checklist, sessionKey) {
   if (_finishing) { logR('FINISH_GUARD_BLOCKED', {}); return false; }
   _finishing = true;
+  startOp(); // FIX QW-9: bloquea polling mientras la operacion esta en vuelo
 
   try {
     var useKey = sessionKey || T.sessionKey;
@@ -5499,9 +5702,37 @@ async function doFinish(checklist, sessionKey) {
       // KPI "Hoy". Si la columna no existe en Supabase, el fallback de abajo
       // reintenta sin ella (datos viejos siguen funcionando aproximados).
       started_at: (sess && sess.started_at) || null,
-      ended_at: new Date().toISOString()
+      ended_at: new Date().toISOString(),
+      // FIX idempotencia (2026-04-30): persistir session_key en history para
+      // poder detectar duplicados ANTES de re-insertar. Si la columna no
+      // existe en BD, el fallback de columnas faltantes la limpia y reintenta.
+      session_key: useKey
     };
     logR('FINISH_HISTORY_PAYLOAD', histPayload);
+
+    // FIX idempotencia (2026-04-30): si esta sesion ya esta en history (por
+    // ejemplo el INSERT anterior pudo escribir pero la respuesta nunca llego
+    // por red intermitente), NO duplicamos: marcamos como ya registrada y
+    // limpiamos active_sessions. Resuelve el riesgo de doble registro que
+    // estaba abierto en la auditoria. Idealmente esto se cierra del todo con
+    // RPC transaccional + UNIQUE(session_key) en BD (ver Sprint 2).
+    try {
+      var rExist = await sb.from('history').select('id').eq('session_key', useKey).limit(1).maybeSingle();
+      if (rExist && rExist.data && rExist.data.id) {
+        logR('FINISH_IDEMPOTENT', {key: useKey, history_id: rExist.data.id}, 'warn');
+        // Igual borramos active_sessions y limpiamos UI; el servicio ya estaba
+        // registrado por un intento previo.
+        try { await sb.from('active_sessions').delete().eq('session_key', useKey); } catch(_){}
+        resetT();
+        await fetchLive();
+        techTab('t-nuevo');
+        showGlobalError('El servicio ya estaba registrado. Cierre confirmado.', 4000);
+        return true;
+      }
+    } catch(_) {
+      // Si la columna session_key aun no existe en history, el chequeo falla
+      // silencioso y caemos al INSERT normal (comportamiento legacy).
+    }
 
     var {error: hErr} = await sb.from('history').insert(histPayload);
     logR('FINISH_HISTORY_RESULT', {error: hErr ? hErr.message : null});
@@ -5511,7 +5742,7 @@ async function doFinish(checklist, sessionKey) {
       // también started_at. Si en el futuro se agregan más columnas, esta
       // lista crece sin necesidad de tocar la lógica.
       var msgLower = (hErr.message || '').toLowerCase();
-      var optionalCols = ['work_order_id', 'started_at'];
+      var optionalCols = ['work_order_id', 'started_at', 'session_key'];
       var missingCol = optionalCols.find(function(c){ return msgLower.indexOf(c) !== -1; });
       if (missingCol) {
         logR('HIST_MISSING_COL', {col: missingCol, msg: hErr.message}, 'warn');
@@ -5602,20 +5833,26 @@ async function doFinish(checklist, sessionKey) {
             // FIX bug 2026-04-29: getUsersWithExplicitPerm es async; sin await
             // devolvía una Promise (no un array) y el for nunca entraba, por
             // lo que las notificaciones a visadores nunca llegaban.
+            // FIX QW-7 (2026-04-30): un solo INSERT con array, en vez de N
+            // round-trips secuenciales (antes con 5 visadores eran 1.5-3s
+            // extra al cierre del servicio).
             try {
               var visadores = [];
               if (typeof getUsersWithExplicitPerm === 'function') {
                 try { visadores = await getUsersWithExplicitPerm('can_visar') || []; }
                 catch(_) { visadores = []; }
               }
-              for (var iv = 0; iv < visadores.length; iv++) {
-                await sb.from('notifications').insert({
-                  type: 'visado',
-                  title: 'Nueva OT pendiente de visado',
-                  sub: 'OT-' + (rGet.data.ot_number || '?') + ' · ' + (rGet.data.service_classification || '?') + ' · ' + (finPlate || '?') + ' por ' + CU.name,
-                  target_user_id: visadores[iv].id,
-                  work_order_id: woId
-                });
+              if (visadores.length) {
+                var subText = 'OT-' + (rGet.data.ot_number || '?') + ' · ' + (rGet.data.service_classification || '?') + ' · ' + (finPlate || '?') + ' por ' + CU.name;
+                await sb.from('notifications').insert(visadores.map(function(v) {
+                  return {
+                    type: 'visado',
+                    title: 'Nueva OT pendiente de visado',
+                    sub: subText,
+                    target_user_id: v.id,
+                    work_order_id: woId
+                  };
+                }));
               }
             } catch(_){}
           }
@@ -5657,6 +5894,7 @@ async function doFinish(checklist, sessionKey) {
     return false;
   } finally {
     _finishing = false;
+    endOp(); // FIX QW-9: libera el lock para que polling vuelva a correr
   }
 }
 
@@ -5672,6 +5910,41 @@ function resetT() {
 // ═══════════════════════════════════════════════
 // MIS SERVICIOS TAB - Central tech view
 // ═══════════════════════════════════════════════
+// FEATURE 2026-04-30: filtro arriba para enfocar una categoria. A diferencia
+// de la pestaña boss 'En curso' (que era una lista plana), aqui el render ya
+// estaba seccionado (En curso / Pausados / Checklist pendiente / Proximos).
+// El filtro NO reemplaza las secciones — las oculta cuando se elige una
+// categoria especifica. Default 'all' = comportamiento original.
+let _misServiciosFilter = 'all'; // 'all' | 'running' | 'paused' | 'checklist_pending' | 'scheduled'
+function setMisServiciosFilter(f) {
+  if (['all','running','paused','checklist_pending','scheduled'].indexOf(f) === -1) f = 'all';
+  _misServiciosFilter = f;
+  logR('MIS_SERV_FILTER', {filter: f});
+  // Re-renderizar la pestaña actual si todavia es Mis Servicios
+  if (typeof techTab === 'function' && curTechTab === 't-misservicios') {
+    techTab('t-misservicios');
+  }
+}
+function _misServChip(key, label, count, dotColor) {
+  var active = (_misServiciosFilter === key);
+  var bg = active ? 'var(--red)' : '#fff';
+  var color = active ? '#fff' : '#222';
+  var border = active ? 'var(--red)' : 'var(--border)';
+  var countBg = active ? 'rgba(255,255,255,.22)' : '#f4f4f4';
+  var countColor = active ? '#fff' : '#444';
+  return '<button type="button" onclick="setMisServiciosFilter(\'' + key + '\')" '
+    + 'style="display:inline-flex;align-items:center;gap:7px;background:' + bg + ';color:' + color + ';'
+    + 'border:1px solid ' + border + ';border-radius:18px;padding:6px 12px;font-size:12px;'
+    + 'font-weight:700;font-family:var(--head);text-transform:uppercase;letter-spacing:.04em;'
+    + 'cursor:pointer;line-height:1">'
+    + '<span style="width:8px;height:8px;border-radius:50%;background:' + dotColor + ';display:inline-block"></span>'
+    + escapeHtml(label)
+    + '<span style="background:' + countBg + ';color:' + countColor + ';border-radius:10px;'
+    + 'padding:1px 7px;font-size:11px;font-family:var(--mono);font-weight:700;min-width:18px;text-align:center">'
+    + count + '</span>'
+    + '</button>';
+}
+
 async function renderMisServicios(body) {
   body.innerHTML = '<div class="empty"><span class="spin"></span>Cargando...</div>';
 
@@ -5689,29 +5962,49 @@ async function renderMisServicios(body) {
   var running = myRows.filter(function(s) { return s.status === 'running'; });
   var paused = myRows.filter(function(s) { return s.status === 'paused'; });
   var ckPend = myRows.filter(function(s) { return s.status === 'checklist_pending'; });
+  var schedCount = schedData ? schedData.length : 0;
   var sumCard = mk('div','card-red');
   sumCard.innerHTML = '<div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center">'
     + '<div style="text-align:center"><div style="font-size:22px;font-weight:700;color:var(--green);font-family:var(--head)">' + running.length + '</div><div style="font-size:9px;color:#999;text-transform:uppercase;letter-spacing:.05em">En curso</div></div>'
     + '<div style="text-align:center"><div style="font-size:22px;font-weight:700;color:var(--gold);font-family:var(--head)">' + paused.length + '</div><div style="font-size:9px;color:#999;text-transform:uppercase;letter-spacing:.05em">Pausados</div></div>'
     + '<div style="text-align:center"><div style="font-size:22px;font-weight:700;color:var(--blue);font-family:var(--head)">' + ckPend.length + '</div><div style="font-size:9px;color:#999;text-transform:uppercase;letter-spacing:.05em">Checklist pend.</div></div>'
-    + '<div style="text-align:center"><div style="font-size:22px;font-weight:700;color:var(--red);font-family:var(--head)">' + (schedData ? schedData.length : 0) + '</div><div style="font-size:9px;color:#999;text-transform:uppercase;letter-spacing:.05em">Proximos</div></div>'
+    + '<div style="text-align:center"><div style="font-size:22px;font-weight:700;color:var(--red);font-family:var(--head)">' + schedCount + '</div><div style="font-size:9px;color:#999;text-transform:uppercase;letter-spacing:.05em">Proximos</div></div>'
     + '</div>';
   body.appendChild(sumCard);
 
+  // FEATURE 2026-04-30: barra de chips para filtrar las secciones.
+  var filterBar = mk('div','');
+  filterBar.style.cssText = 'display:flex;gap:6px;margin:10px 0 4px 0;flex-wrap:wrap';
+  filterBar.innerHTML = ''
+    + _misServChip('all',                'Todos',    running.length + paused.length + ckPend.length + schedCount, '#666')
+    + _misServChip('running',            'En curso', running.length, 'var(--green)')
+    + _misServChip('paused',             'Pausados', paused.length,  'var(--gold)')
+    + _misServChip('checklist_pending',  'Checklist',ckPend.length,  'var(--blue)')
+    + _misServChip('scheduled',          'Proximos', schedCount,     'var(--red)');
+  body.appendChild(filterBar);
+
+  // Helpers que respetan el filtro: muestran la seccion si el filtro es
+  // 'all' o si coincide con la categoria pedida.
+  var f = _misServiciosFilter;
+  var showRunning  = (f === 'all' || f === 'running');
+  var showPaused   = (f === 'all' || f === 'paused');
+  var showCkPend   = (f === 'all' || f === 'checklist_pending');
+  var showSched    = (f === 'all' || f === 'scheduled');
+
   // RUNNING
-  if (running.length) {
+  if (showRunning && running.length) {
     body.appendChild(sectionHdr('En curso', 'var(--green)', running.length));
     running.forEach(function(s) { body.appendChild(buildMisServCard(s, 'running')); });
   }
 
   // PAUSED
-  if (paused.length) {
+  if (showPaused && paused.length) {
     body.appendChild(sectionHdr('Pausados', 'var(--gold)', paused.length));
     paused.forEach(function(s) { body.appendChild(buildMisServCard(s, 'paused')); });
   }
 
   // CHECKLIST PENDING
-  if (ckPend.length) {
+  if (showCkPend && ckPend.length) {
     body.appendChild(sectionHdr('Checklist pendiente', 'var(--blue)', ckPend.length));
     ckPend.forEach(function(s) { body.appendChild(buildMisServCard(s, 'checklist_pending')); });
   }
@@ -5724,8 +6017,9 @@ async function renderMisServicios(body) {
   // AHORA: para cada servicio agendado, calculamos su estado REAL cruzando
   // patente con sesiones activas y registros del historial. Solo se muestra
   // "Atrasado" cuando NO hay actividad real asociada a la patente.
+  // FEATURE 2026-04-30: respetar filtro de seccion (showSched).
   var now = new Date();
-  if (schedData && schedData.length) {
+  if (showSched && schedData && schedData.length) {
     // Construir índices por patente normalizada
     var liveByPlate = {};
     (liveData || []).forEach(function(s){
@@ -5804,7 +6098,11 @@ async function renderMisServicios(body) {
   }
 
   // RECENT HISTORY
-  if (histData && histData.length) {
+  // FEATURE 2026-04-30: solo mostrar cuando el filtro es 'all'. Cuando el
+  // tecnico filtra por una categoria especifica (ej. 'paused'), quiere
+  // enfocarse en eso — el historial reciente es ruido. Para ver historial
+  // siempre puede ir a la pestaña Historial.
+  if (f === 'all' && histData && histData.length) {
     body.appendChild(sectionHdr('Finalizados recientes', '#aaa', histData.length));
     var card = mk('div','card');
     histData.slice(0,8).forEach(function(r) {
@@ -5828,6 +6126,29 @@ async function renderMisServicios(body) {
 
   if (!myRows.length && (!schedData || !schedData.length) && (!histData || !histData.length)) {
     body.innerHTML += '<div class="empty">No tienes servicios registrados aun</div>';
+  } else if (f !== 'all') {
+    // FEATURE 2026-04-30: estado vacio contextual cuando un filtro deja la
+    // lista sin items. Antes mostraba los chips y nada mas debajo, lo que
+    // confundia. Ahora muestra mensaje claro y sugiere volver a 'Todos'.
+    var visibleCount = 0;
+    if (showRunning) visibleCount += running.length;
+    if (showPaused)  visibleCount += paused.length;
+    if (showCkPend)  visibleCount += ckPend.length;
+    if (showSched && schedData) visibleCount += schedData.length;
+    if (visibleCount === 0) {
+      var lbl = (f === 'paused') ? 'pausados'
+              : (f === 'running') ? 'en curso'
+              : (f === 'checklist_pending') ? 'con checklist pendiente'
+              : (f === 'scheduled') ? 'proximos asignados'
+              : '';
+      body.innerHTML += '<div class="empty" style="padding-top:16px">'
+        + 'No hay servicios ' + lbl + '. '
+        + '<button type="button" onclick="setMisServiciosFilter(\'all\')" '
+        + 'style="background:transparent;border:0;color:var(--red);text-decoration:underline;'
+        + 'cursor:pointer;font-family:inherit;font-size:13px;font-weight:700;padding:0;text-transform:uppercase;letter-spacing:.05em">'
+        + 'Ver todos</button>'
+        + '</div>';
+    }
   }
 }
 
@@ -6171,6 +6492,21 @@ function renderTechOnline() {
 // ═══════════════════════════════════════════════
 // BOSS: ONLINE
 // ═══════════════════════════════════════════════
+// FEATURE 2026-04-30: filtro arriba para separar 'En curso' de 'En pausa'.
+// Estado se persiste entre re-renders del polling (variable de modulo).
+// Default: 'all' para no cambiar comportamiento previo si el admin no toca
+// el filtro. La eleccion se mantiene al cambiar de pestaña y volver, pero
+// se resetea al cerrar sesion (porque _bossOnlineFilter se vuelve a leer
+// con su default cada carga).
+let _bossOnlineFilter = 'all'; // 'all' | 'running' | 'paused'
+
+function setBossOnlineFilter(f) {
+  if (f !== 'all' && f !== 'running' && f !== 'paused') f = 'all';
+  _bossOnlineFilter = f;
+  logR('BOSS_ONLINE_FILTER', {filter: f});
+  renderBossOnline();
+}
+
 function renderBossOnline() {
   var body = document.getElementById('boss-body');
   if (curBossTab !== 'b-online') return;
@@ -6184,10 +6520,111 @@ function renderBossOnline() {
     return;
   }
 
-  logR('RENDER_BOSS_ONLINE', {liveCount: liveData.length});
-  if (!liveData.length) { body.innerHTML = '<div class="empty">Sin servicios en curso</div>'; return; }
-  body.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><div class="lbl" style="margin-bottom:0">' + liveData.length + ' activo' + (liveData.length>1?'s':'') + '</div></div>';
-  liveData.forEach(function(s) { body.appendChild(buildSessCard(s, false)); });
+  // FEATURE 2026-04-30: clasificar por status para los chips de filtro.
+  // Usamos status === 'paused' como criterio canonico (BD), con fallback a
+  // !running para sesiones legacy que aun no tengan el campo populado.
+  var arrRunning = liveData.filter(function(s){ return s.status === 'running' || (s.status !== 'paused' && s.running === true); });
+  var arrPaused  = liveData.filter(function(s){ return s.status === 'paused' || (s.status !== 'running' && s.running === false); });
+  var visible;
+  if (_bossOnlineFilter === 'running') visible = arrRunning;
+  else if (_bossOnlineFilter === 'paused') visible = arrPaused;
+  else visible = liveData;
+
+  // FEATURE 2026-04-30: alerta visual cuando hay muchos servicios pausados.
+  // El umbral se configura en RossoConfig.PAUSED_ALERT_THRESHOLD (default: 3).
+  // Activa el dot rojo en la pestaña 'En curso' (visible incluso en otras
+  // pestañas) y agrega un banner explicativo arriba del listado.
+  refreshPausedAlert(arrPaused.length);
+
+  logR('RENDER_BOSS_ONLINE', {liveCount: liveData.length, running: arrRunning.length, paused: arrPaused.length, filter: _bossOnlineFilter});
+
+  // Banner de alerta cuando paused supera el umbral. Se muestra arriba de
+  // los chips para que el admin lo vea apenas entra a la pestaña.
+  var threshold = (window.RossoConfig && window.RossoConfig.PAUSED_ALERT_THRESHOLD) || 3;
+  var alertBanner = '';
+  if (arrPaused.length >= threshold) {
+    alertBanner = ''
+      + '<div role="alert" style="background:#fff3cd;border:1px solid var(--gold);border-left:4px solid var(--gold);'
+      + 'border-radius:4px;padding:9px 12px;margin-bottom:10px;font-size:12px;color:#5b4500;font-family:var(--head);'
+      + 'display:flex;align-items:center;gap:9px">'
+      + '<span style="font-size:16px;line-height:1">⚠</span>'
+      + '<span><strong>' + arrPaused.length + ' servicios pausados</strong> &mdash; revisa si alguno requiere accion. '
+      + '<button type="button" onclick="setBossOnlineFilter(\'paused\')" style="background:transparent;border:0;'
+      + 'color:var(--gold3);text-decoration:underline;cursor:pointer;font-family:inherit;font-size:12px;font-weight:700;padding:0">Ver pausados</button>'
+      + '</span>'
+      + '</div>';
+  }
+
+  // Header con chips de filtro (siempre visible, incluso con 0 servicios).
+  var pausedHighlight = (arrPaused.length >= threshold);
+  var chipBar = ''
+    + '<div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap">'
+    +   _bossOnlineChip('all',     'Todos',    liveData.length, '#666',         false)
+    +   _bossOnlineChip('running', 'En curso', arrRunning.length, 'var(--green)', false)
+    +   _bossOnlineChip('paused',  'En pausa', arrPaused.length,  'var(--gold)',  pausedHighlight)
+    + '</div>';
+
+  if (!liveData.length) {
+    body.innerHTML = alertBanner + chipBar + '<div class="empty">Sin servicios en curso</div>';
+    return;
+  }
+  if (!visible.length) {
+    var emptyMsg = (_bossOnlineFilter === 'paused') ? 'No hay servicios en pausa'
+                 : (_bossOnlineFilter === 'running') ? 'No hay servicios activos en este momento'
+                 : 'Sin servicios en curso';
+    body.innerHTML = alertBanner + chipBar + '<div class="empty">' + emptyMsg + '</div>';
+    return;
+  }
+  body.innerHTML = alertBanner + chipBar;
+  visible.forEach(function(s) { body.appendChild(buildSessCard(s, false)); });
+}
+
+// FEATURE 2026-04-30: helper independiente del render para mantener
+// sincronizado el dot rojo del tab 'En curso' con la cantidad de pausados.
+// Se llama tambien desde fetchLive() para que el dot se actualice en TIEMPO
+// REAL cuando el admin esta en otras pestañas (Calendario, Historial, etc.).
+function refreshPausedAlert(pausedCount) {
+  var threshold = (window.RossoConfig && window.RossoConfig.PAUSED_ALERT_THRESHOLD) || 3;
+  if (typeof pausedCount !== 'number') {
+    pausedCount = (liveData || []).filter(function(s){
+      return s.status === 'paused' || (s.status !== 'running' && s.running === false);
+    }).length;
+  }
+  var dot = document.getElementById('boss-online-dot');
+  if (!dot) return;
+  if (pausedCount >= threshold) {
+    dot.classList.add('show');
+    dot.setAttribute('title', pausedCount + ' servicios pausados - revisa');
+  } else {
+    dot.classList.remove('show');
+    dot.removeAttribute('title');
+  }
+}
+
+// Helper: dibuja un chip de filtro con su contador y dot de color.
+// El chip activo se pinta en rojo Rosso; los inactivos en blanco con borde.
+// highlight=true: el chip 'En pausa' se enmarca en gold cuando supera el
+// threshold, para que llame la atencion incluso si esta inactivo.
+function _bossOnlineChip(key, label, count, dotColor, highlight) {
+  var active = (_bossOnlineFilter === key);
+  var bg = active ? 'var(--red)' : '#fff';
+  var color = active ? '#fff' : '#222';
+  var border = active ? 'var(--red)' : (highlight ? 'var(--gold)' : 'var(--border)');
+  var borderWidth = (highlight && !active) ? '2px' : '1px';
+  var countBg = active ? 'rgba(255,255,255,.22)' : (highlight ? 'var(--gold)' : '#f4f4f4');
+  var countColor = active ? '#fff' : (highlight ? '#fff' : '#444');
+  var pulse = (highlight && !active) ? 'animation:rosso-pulse-gold 1.6s ease-in-out infinite;' : '';
+  return '<button type="button" onclick="setBossOnlineFilter(\'' + key + '\')" '
+    + 'style="display:inline-flex;align-items:center;gap:7px;background:' + bg + ';color:' + color + ';'
+    + 'border:' + borderWidth + ' solid ' + border + ';border-radius:18px;padding:6px 12px;font-size:12px;'
+    + 'font-weight:700;font-family:var(--head);text-transform:uppercase;letter-spacing:.04em;'
+    + 'cursor:pointer;line-height:1;' + pulse + '">'
+    + '<span style="width:8px;height:8px;border-radius:50%;background:' + dotColor + ';display:inline-block"></span>'
+    + escapeHtml(label)
+    + '<span style="background:' + countBg + ';color:' + countColor + ';border-radius:10px;'
+    + 'padding:1px 7px;font-size:11px;font-family:var(--mono);font-weight:700;min-width:18px;text-align:center">'
+    + count + '</span>'
+    + '</button>';
 }
 
 function buildSessCard(s, isTech) {
@@ -6211,13 +6648,16 @@ function buildSessCard(s, isTech) {
   if (over && !paused) h += '<div style="position:absolute;top:-5px;right:-5px;background:var(--red);border-radius:50%;width:14px;height:14px;border:2px solid #fff;display:flex;align-items:center;justify-content:center;font-size:8px;color:#fff;font-weight:700">!</div>';
   h += '</div>';
   h += '<div style="flex:1">';
-  h += '<div style="font-size:13px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.03em;color:#111">' + s.technician + '</div>';
-  h += '<div style="font-size:11px;color:#666;text-transform:uppercase">' + s.service + '</div>';
+  // FIX QW-3 (2026-04-30): escapeHtml en technician, service, plate y reason
+  // de pausa. Esta card aparece en En Curso de jefatura y todos los tecnicos
+  // la ven; un payload XSS aqui afecta a TODA la operacion del taller.
+  h += '<div style="font-size:13px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.03em;color:#111">' + escapeHtml(s.technician || '') + '</div>';
+  h += '<div style="font-size:11px;color:#666;text-transform:uppercase">' + escapeHtml(s.service || '') + '</div>';
   if (s.plate) {
     // FASE 4.0: marca + modelo junto a la patente
     var bm = plateBrandModel(s.plate);
     h += '<div style="margin-top:3px;display:flex;align-items:center;gap:5px;flex-wrap:wrap">';
-    h += '<span class="plate-tag">' + s.plate + '</span>';
+    h += '<span class="plate-tag">' + escapeHtml(s.plate) + '</span>';
     if (bm) h += '<span style="font-size:11px;color:var(--wh3);font-weight:600;text-transform:uppercase;letter-spacing:.02em">' + escapeHtml(bm) + '</span>';
     h += '</div>';
   }
@@ -6228,7 +6668,7 @@ function buildSessCard(s, isTech) {
       h += '<div style="font-size:10px;color:var(--blue);margin-top:3px;font-family:var(--mono)">⏱ Total OT: ' + fmtT(totalCached) + '</div>';
     }
   }
-  if (lastPause) h += '<div style="background:var(--gold2);border:1px solid var(--gold);border-radius:3px;padding:2px 7px;margin-top:4px;font-size:10px;color:var(--gold3);font-weight:700;display:inline-block">PAUSA: ' + lastPause.reason + '</div>';
+  if (lastPause) h += '<div style="background:var(--gold2);border:1px solid var(--gold);border-radius:3px;padding:2px 7px;margin-top:4px;font-size:10px;color:var(--gold3);font-weight:700;display:inline-block">PAUSA: ' + escapeHtml(lastPause.reason || '') + '</div>';
   // Marcador para inyectar el menu admin inline, al lado del badge PAUSA o de la patente
   h += '<span class="adm-inline-slot" style="display:inline-block;vertical-align:middle;margin-left:6px"></span>';
   h += '</div></div>';
@@ -6237,7 +6677,7 @@ function buildSessCard(s, isTech) {
   // FASE 2.6: si liveSecondsNow detecto drift sospechoso, marcar el cronometro
   var driftWarn = s.__suspect_drift ? '<span title="Tiempo sospechoso (sesion sin pausa formal). Revisar." style="color:var(--red);font-size:11px;margin-right:4px">⚠</span>' : '';
   h += '<div style="font-size:26px;font-weight:700;font-family:var(--mono);color:' + (over?'var(--red)':paused?'var(--gold)':'#111') + ';letter-spacing:2px;margin-top:3px">' + driftWarn + fmtT(sec) + '</div>';
-  if (s.goal_minutes) h += '<div style="font-size:9px;color:#aaa;text-transform:uppercase">OBJ:' + s.goal_minutes + 'm</div>';
+  if (s.goal_minutes) h += '<div style="font-size:9px;color:#aaa;text-transform:uppercase">OBJ:' + escapeHtml(String(s.goal_minutes)) + 'm</div>';
   h += '</div></div>';
   if (pct !== null) h += '<div class="prog-bar" style="margin-top:8px"><div class="prog-fill" style="width:' + pct + '%;background:' + (over?'var(--red)':'var(--green)') + '"></div></div>';
 
@@ -6354,10 +6794,6 @@ function buildSessCard(s, isTech) {
   // FASE 4.0: enlace al informe en desarrollo (visible para todos, en cualquier
   // momento mientras la sesión esté abierta). Permite a la jefatura, técnicos y
   // gestor comercial ver/editar el informe sin esperar al cierre del servicio.
-  // FASE 4.1: el botón "Ver informe" abre la VISTA PREVIA (no el editor). La
-  // vista previa muestra el preliminar del informe con datos, hallazgos, etc.,
-  // ideal para dar reportes de avance al cliente. Desde la vista previa se puede
-  // saltar al editor con el botón "Editar / anexar" si se necesita modificarlo.
   if (s.work_order_id) {
     var infoSlot = document.createElement('div');
     infoSlot.style.cssText = 'margin-top:8px;display:flex;gap:6px;flex-wrap:wrap';
@@ -6367,7 +6803,7 @@ function buildSessCard(s, isTech) {
     viewBtn.innerHTML = '📝 Ver informe';
     viewBtn.onclick = function(e) {
       e.stopPropagation();
-      openInformePreview(s.work_order_id);
+      openInformeEditor(s.work_order_id);
     };
     infoSlot.appendChild(viewBtn);
     if (!isTech) {
@@ -6670,7 +7106,7 @@ async function adminForceFinish(sessionKey, techName, serviceLabel, plate) {
   var {error: hErr} = await sb.from('history').insert(histPayload);
   if (hErr) {
     var msgLower = (hErr.message || '').toLowerCase();
-    var optionalCols = ['work_order_id', 'started_at'];
+    var optionalCols = ['work_order_id', 'started_at', 'session_key'];
     var missingCol = optionalCols.find(function(c){ return msgLower.indexOf(c) !== -1; });
     if (missingCol) {
       logR('ADMIN_FINISH_HIST_MISSING_COL', {col: missingCol, msg: hErr.message}, 'warn');
@@ -7731,22 +8167,9 @@ function buildHistDetailHTML(r) {
     var dcPor = dcMeta.completed_by_name || cd.double_check_completed_by_name || '';
     var dcAt = dcMeta.completed_at || cd.double_check_completed_at || '';
     if (dcPor) html += '<div style="font-size:10px;color:var(--wh3);margin-bottom:4px">Por: ' + escapeHTML(dcPor) + (dcAt ? ' · ' + new Date(dcAt).toLocaleString('es-CL') : '') + '</div>';
-    // FASE 4.1: si hay items en "No", mostrar banner con el motivo del técnico.
-    var hNoItems = [];
-    CHECKLIST_DOBLE_CONTROL.forEach(function(it){
-      if (it.type === 'bool' && dc[it.key] === false) hNoItems.push(it.label);
-    });
-    if (hNoItems.length) {
-      html += '<div style="margin:4px 0 8px;padding:6px 8px;background:#fde7e7;border-left:3px solid var(--red);border-radius:3px;font-size:11px;line-height:1.5;color:#7a0e0e">'
-        + '<b>⚠ Items en "No":</b> ' + hNoItems.map(escapeHTML).join(', ')
-        + (dc.dc_no_reason ? '<br/><b>Motivo:</b> ' + escapeHTML(String(dc.dc_no_reason)) : '')
-        + '</div>';
-    }
     CHECKLIST_DOBLE_CONTROL.forEach(function(it) {
       var val = dc[it.key];
       if (val == null) return;
-      // FASE 4.1: el motivo "No" ya está en el banner — evitar duplicar.
-      if (it.required_if_no) return;
       var displayVal = val === true ? '<span style="color:var(--green);font-weight:700">✓ SÍ</span>'
                      : val === false ? '<span style="color:var(--red);font-weight:700">✗ NO</span>'
                      : val === 'N/A' ? '<span style="color:#7a4a00;font-weight:700;background:#fff4e5;padding:1px 6px;border-radius:3px">N/A</span>'
@@ -7937,9 +8360,8 @@ async function exportSelectedHist(mode) {
         DC_Torque_Filtro: dc.dc_torque_filter === true ? 'SÍ' : dc.dc_torque_filter === false ? 'NO' : dc.dc_torque_filter === 'N/A' ? 'N/A' : '',
         DC_Apriete_Filtro: dc.dc_apriete_filter === true ? 'SÍ' : dc.dc_apriete_filter === false ? 'NO' : dc.dc_apriete_filter === 'N/A' ? 'N/A' : '',
         DC_Etiqueta: dc.dc_label === true ? 'SÍ' : dc.dc_label === false ? 'NO' : dc.dc_label === 'N/A' ? 'N/A' : '',
-        DC_Limpieza: dc.dc_clean === true ? 'SÍ' : dc.dc_clean === false ? 'NO' : dc.dc_clean === 'N/A' ? 'N/A' : '',
+        DC_Limpieza: dc.dc_clean === true ? 'SÍ' : dc.dc_clean === false ? 'NO' : '',
         DC_Motivo_NA: dc.dc_na_reason || '',
-        DC_Motivo_No: dc.dc_no_reason || '',
         // Visado
         Visado_Por: (cd && cd.visado_by_name) || '',
         Visado_At: (cd && (cd.visado_checklist_completed_at || cd.visado_at)) || '',
@@ -11537,8 +11959,6 @@ function openDoubleCheck(otId) {
   openModal('m-double-check');
   // FASE 3.3: si hay valores previos con N/A, mostrar el motivo desde el inicio.
   updateDcNaReasonVisibility();
-  // FASE 4.1: si hay valores previos con "No", mostrar el motivo "No" desde el inicio.
-  updateDcNoReasonVisibility();
   // FASE 3.4: aplicar highlights iniciales para todos los radios ya marcados.
   // Esencial si la OT tiene estado previo (reapertura tras error o edición):
   // así un valor "No" preexistente se ve rojo desde el primer momento, evitando
@@ -11565,7 +11985,7 @@ function renderDCItem(it, currentValue) {
     //   3. min-height:44px alcanza el target táctil mínimo recomendado (Apple
     //      HIG / Material), antes los labels eran de ~30px y favorecían toques
     //      cruzados entre filas adyacentes en viewports angostos (393px).
-    var baseHandler = ' onchange="updateDcRadioHighlight(this);updateDcNoReasonVisibility();' + (it.allow_na ? 'updateDcNaReasonVisibility();' : '') + '"';
+    var baseHandler = ' onchange="updateDcRadioHighlight(this);' + (it.allow_na ? 'updateDcNaReasonVisibility();' : '') + '"';
     var yesCls = checkedYes ? ' dc-opt-selected dc-opt-yes' : '';
     var noCls  = checkedNo  ? ' dc-opt-selected dc-opt-no'  : '';
     var naCls  = checkedNa  ? ' dc-opt-selected dc-opt-na'  : '';
@@ -11596,16 +12016,7 @@ function renderDCItem(it, currentValue) {
     var ph = it.placeholder ? ' placeholder="' + escapeHtml(it.placeholder) + '"' : '';
     // FASE 3.3: el textarea de motivo N/A se identifica con clase para
     // mostrar/ocultar dinámicamente según el estado de los items aceite.
-    // FASE 4.1: el textarea de motivo "No" se identifica con su propio
-    // marcador para mostrarse cuando hay al menos un ítem en "No".
-    var wrapperAttrs;
-    if (it.required_if_na) {
-      wrapperAttrs = ' data-dc-na-reason="1" style="margin-bottom:10px;display:none"';
-    } else if (it.required_if_no) {
-      wrapperAttrs = ' data-dc-no-reason="1" style="margin-bottom:10px;display:none"';
-    } else {
-      wrapperAttrs = ' style="margin-bottom:10px"';
-    }
+    var wrapperAttrs = it.required_if_na ? ' data-dc-na-reason="1" style="margin-bottom:10px;display:none"' : ' style="margin-bottom:10px"';
     return '<div' + wrapperAttrs + '>'
       + '<div class="lbl" style="margin-bottom:4px">' + lbl + '</div>'
       + '<textarea class="inp" data-dc-key="' + it.key + '" rows="' + rows + '"' + ph + ' data-no-upper>' + escapeHtml(v) + '</textarea></div>';
@@ -11628,27 +12039,6 @@ function updateDcNaReasonVisibility() {
   var wrap = document.querySelector('#m-dc-body [data-dc-na-reason="1"]');
   if (wrap) wrap.style.display = anyNa ? '' : 'none';
 }
-
-// FASE 4.1: muestra/oculta el campo motivo "No" según si hay items en No.
-// Antes la respuesta "No" bloqueaba el cierre del doble control. Ahora se
-// permite cerrar con "No" siempre que el técnico explique el motivo. El
-// visador es quien decide si acepta la entrega o la rechaza viendo este
-// campo. Esto refleja la realidad operativa: hay servicios donde un ítem
-// puede quedar legítimamente en "No" (por ejemplo, una etiqueta agotada
-// que se repondrá en la próxima entrega).
-function updateDcNoReasonVisibility() {
-  var anyNo = false;
-  CHECKLIST_DOBLE_CONTROL.forEach(function(it){
-    if (it.type !== 'bool') return;
-    var rads = document.querySelectorAll('#m-dc-body input[name="dc_' + it.key + '"]');
-    for (var ri = 0; ri < rads.length; ri++) {
-      if (rads[ri].checked && rads[ri].value === 'false') { anyNo = true; break; }
-    }
-  });
-  var wrap = document.querySelector('#m-dc-body [data-dc-no-reason="1"]');
-  if (wrap) wrap.style.display = anyNo ? '' : 'none';
-}
-window.updateDcNoReasonVisibility = updateDcNoReasonVisibility;
 
 // FASE 3.4: feedback visual fuerte tras tocar un radio. Antes el técnico no
 // tenía forma rápida de verificar visualmente cuál opción quedó realmente
@@ -11683,8 +12073,6 @@ function dcLabelClick(labelEl, ev) {
   if (input.value === 'N/A' || labelEl.parentNode.querySelector('input[value="N/A"]')) {
     updateDcNaReasonVisibility();
   }
-  // FASE 4.1: cualquier cambio puede activar/desactivar el motivo "No".
-  updateDcNoReasonVisibility();
 }
 window.dcLabelClick = dcLabelClick;
 
@@ -11766,16 +12154,9 @@ async function _saveDoubleCheckInner() {
 
   // FASE 3.3: items con allow_na soportan tri-estado (Sí / No / N/A).
   // Si algún item queda en N/A, dc_na_reason pasa a ser obligatorio.
-  // FASE 4.1: items pueden quedar en "No" sin bloquear el cierre. El técnico
-  // solo debe explicar el motivo en dc_no_reason. El visador es quien decide
-  // si acepta o rechaza la entrega viendo los items en "No" + el motivo.
-  // Esto desbloquea el caso real donde no todos los servicios requieren
-  // todos los items (p.ej. una etiqueta agotada que se repone después).
 
   var data = {};
   var anyNa = false;
-  var anyNo = false;
-  var noItems = []; // labels de items que quedaron en "No", para mostrar al técnico
   for (var i = 0; i < CHECKLIST_DOBLE_CONTROL.length; i++) {
     var it = CHECKLIST_DOBLE_CONTROL[i];
     var val;
@@ -11800,7 +12181,6 @@ async function _saveDoubleCheckInner() {
         anyNa = true;
       } else {
         val = rad.value === 'true';
-        if (val === false) { anyNo = true; noItems.push(it.label); }
       }
     } else if (it.type === 'textarea') {
       var ta = document.querySelector('#m-dc-body textarea[data-dc-key="' + it.key + '"]');
@@ -11822,8 +12202,24 @@ async function _saveDoubleCheckInner() {
         return;
       }
     }
-    // FASE 4.1: ya no bloqueamos el cierre cuando un item está en "No".
-    // En su lugar, dc_no_reason pasa a ser obligatorio (validado abajo).
+    // FASE 3.0: regla de calidad — si algún ítem bool obligatorio está en NO,
+    // no permitir cierre. El doble control debe quedar 100% conforme.
+    // (N/A no cuenta como No: significa que el item no aplica a este servicio.)
+    if (it.required && it.type === 'bool' && val === false) {
+      // FASE 3.4 (bugfix doble control): cuando el técnico reportaba "marqué Sí
+      // pero el sistema dice No", el flujo viejo solo mostraba un mensaje rojo
+      // arriba y el técnico no podía verificar visualmente qué pasó. Ahora:
+      //   1. Mensaje pide confirmar visualmente el ítem (apunta al destino).
+      //   2. Scroll automático al ítem para que el técnico LO VEA.
+      //   3. El ítem ya tiene fondo rojo por la clase dc-opt-no aplicada en
+      //      el render/onchange, así que el técnico distingue al toque si
+      //      realmente quedó en "No" o si fue un error de tap.
+      //   4. NO se cierra el modal: el técnico puede tocar "Sí" directamente.
+      err.textContent = 'El ítem "' + it.label + '" quedó en "No". Si fue un error, tócalo de nuevo en "Sí". Si realmente está mal, no puedes cerrar el doble control hasta corregirlo.';
+      err.style.display = 'block';
+      scrollDcItemIntoView(it.key);
+      return;
+    }
     data[it.key] = val;
   }
   // FASE 3.3: si algún item está en N/A, el motivo es obligatorio.
@@ -11835,22 +12231,6 @@ async function _saveDoubleCheckInner() {
       return;
     }
     data.dc_na_reason = reason;
-  }
-  // FASE 4.1: si algún item está en "No", el motivo es obligatorio.
-  // El visador verá el motivo y los items en No para decidir si acepta la entrega.
-  if (anyNo) {
-    var reasonNo = (data.dc_no_reason || '').trim();
-    if (!reasonNo) {
-      err.textContent = 'Hay ítem(s) en "No": ' + noItems.join(', ') + '. Explica el motivo en el campo "Motivo de los ítems en \"No\"" antes de cerrar.';
-      err.style.display = 'block';
-      // Scroll al campo de motivo para que el técnico lo vea
-      var noWrap = document.querySelector('#m-dc-body [data-dc-no-reason="1"]');
-      if (noWrap && noWrap.scrollIntoView) {
-        try { noWrap.scrollIntoView({behavior:'smooth', block:'center'}); } catch(_){}
-      }
-      return;
-    }
-    data.dc_no_reason = reasonNo;
   }
   var btn = document.getElementById('m-dc-btn');
   btn.innerHTML = '<span class="spin"></span> Guardando...'; btn.disabled = true;
@@ -12375,28 +12755,10 @@ async function openVisadoModal(otId) {
         + '<b>⚠ Atención:</b> este servicio (' + escapeHtml(srvLabel) + ') normalmente incluye cambio de aceite, pero cerró con items en <b>N/A</b>. Verifica con el cliente o el gestor antes de aprobar.'
         + '</div>';
     }
-    // FASE 4.1: alerta destacada cuando hay items en "No" — el visador debe
-    // revisar el motivo y decidir si acepta o rechaza la entrega.
-    var dcNoItems = [];
-    CHECKLIST_DOBLE_CONTROL.forEach(function(it){
-      if (it.type === 'bool' && cd.double_check[it.key] === false) dcNoItems.push(it.label);
-    });
-    if (dcNoItems.length) {
-      html += '<div style="margin:6px 0 10px;padding:9px 10px;background:#fde7e7;border:1px solid var(--red);border-left:4px solid var(--red);border-radius:3px;font-size:11px;line-height:1.5;color:#7a0e0e">'
-        + '<div style="font-weight:800;margin-bottom:4px;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.04em">⚠ Items reportados en "No" (' + dcNoItems.length + ')</div>'
-        + '<div style="margin-bottom:6px"><b>' + dcNoItems.map(escapeHtml).join('</b>, <b>') + '</b></div>'
-        + (cd.double_check.dc_no_reason
-            ? '<div style="background:#fff;padding:6px 8px;border-radius:3px;border:1px solid #f3c2c2;color:#222"><b>Motivo del técnico:</b> ' + escapeHtml(String(cd.double_check.dc_no_reason)) + '</div>'
-            : '<div style="font-style:italic;color:#a55">Sin motivo registrado.</div>')
-        + '<div style="font-size:10px;color:#a55;margin-top:6px;font-style:italic">Verifica el motivo. Si no es aceptable, rechaza la OT.</div>'
-        + '</div>';
-    }
     CHECKLIST_DOBLE_CONTROL.forEach(function(it) {
       var val = cd.double_check[it.key];
-      // FASE 3.3: ocultar el campo motivo N/A si no hay N/A en el cierre.
+      // FASE 3.3: ocultar el campo motivo si no hay N/A en el cierre.
       if (it.required_if_na && (val == null || val === '')) return;
-      // FASE 4.1: el motivo "No" ya se mostró arriba en el banner — no duplicar aquí.
-      if (it.required_if_no) return;
       var displayVal = val === true ? '<span style="color:var(--green);font-weight:700">✓ SÍ</span>'
                      : val === false ? '<span style="color:var(--red);font-weight:700">✗ NO</span>'
                      : val === 'N/A' ? '<span style="color:#7a4a00;font-weight:700;background:#fff4e5;padding:1px 6px;border-radius:3px">N/A</span>'
@@ -12420,31 +12782,48 @@ async function openVisadoModal(otId) {
   // Antes el visado podía aparecer "vacío" (solo botones) si tech_checklist
   // estaba ausente. Ahora el visador SIEMPRE marca su propio checklist y eso
   // es lo que valida la calidad del trabajo.
-  var prevVisado = cd.visado_checklist || {};
+  //
+  // BUG-FIX 2026-04-30 (reportado por Nicolas Cisternas): el checklist se
+  // pre-llenaba con `cd.visado_checklist` de intentos anteriores. Si por
+  // cualquier motivo ahi habia un `false` antiguo, el visador veia el item
+  // pre-marcado como "No" sin notarlo (especialmente items de arriba que
+  // quedan fuera del scroll), y luego al aprobar la app rechazaba con
+  // "No puedes aprobar con No marcado en: 1. Montaje y torque correctos"
+  // mientras el visador estaba seguro de haber marcado todo en Si.
+  //
+  // SOLUCION: el visado SIEMPRE empieza fresco (sin pre-fill). Es mas
+  // seguro para la calidad: cada visado obliga a re-verificar cada item.
+  // Si el visador queria continuar un intento anterior, las observaciones
+  // del rechazo previo se muestran arriba en su propio bloque.
   html += '<div style="border-top:3px solid var(--red);margin-top:14px;padding-top:10px;background:#fffbf2;padding:10px;border-radius:3px">'
     + '<div style="font-size:13px;font-weight:800;color:var(--red);font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">⚖️ Checklist de visado — OBLIGATORIO</div>'
-    + '<div style="font-size:11px;color:var(--wh2);margin-bottom:10px;line-height:1.4">Marca cada ítem revisado físicamente en el vehículo. <b>No podrás aprobar si falta alguno.</b></div>';
+    + '<div style="font-size:11px;color:var(--wh2);margin-bottom:8px;line-height:1.4">Marca cada ítem revisado físicamente en el vehículo. <b>No podrás aprobar si falta alguno o si alguno está en NO.</b></div>'
+    // Contador en vivo: se actualiza con cada click via _refreshVisadoSummary()
+    + '<div id="m-visado-summary" style="display:flex;gap:10px;font-size:11px;font-weight:700;font-family:var(--mono);background:#fff;border:1px solid var(--border);border-radius:3px;padding:6px 9px;margin-bottom:10px">'
+    +   '<span style="color:var(--green)">✓ Sí: <span id="m-vs-cnt-yes">0</span></span>'
+    +   '<span style="color:var(--red)">✗ No: <span id="m-vs-cnt-no">0</span></span>'
+    +   '<span style="color:var(--wh4)">Sin marcar: <span id="m-vs-cnt-pending">0</span></span>'
+    + '</div>';
   CHECKLIST_VISADO.forEach(function(it){
     var lbl = it.label + (it.required ? ' <span style="color:var(--red)">*</span>' : '');
-    var cur = prevVisado[it.key];
     if (it.type === 'bool') {
-      var checkedYes = cur === true ? 'checked' : '';
-      var checkedNo  = cur === false ? 'checked' : '';
-      html += '<div style="margin-bottom:8px">'
-        + '<div style="font-size:11px;font-weight:600;color:#111;margin-bottom:4px">' + lbl + '</div>'
+      // BUG-FIX 2026-04-30: NO pre-llenar. checkedYes/checkedNo siempre vacios.
+      // Ver comentario arriba sobre por que el pre-fill desde cd.visado_checklist
+      // estaba causando que items aparecieran como "No" sin que el visador lo notara.
+      html += '<div style="margin-bottom:8px" data-vs-row="' + it.key + '">'
+        + '<div style="font-size:11px;font-weight:600;color:#111;margin-bottom:4px" data-vs-label="' + it.key + '">' + lbl + '</div>'
         + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:5px">'
-        +   '<label style="display:flex;align-items:center;gap:5px;cursor:pointer;padding:7px;border:1px solid var(--border);border-radius:3px;background:#fff;font-size:11px"><input type="radio" name="vs_' + it.key + '" value="true" ' + checkedYes + '/> ✓ Sí</label>'
-        +   '<label style="display:flex;align-items:center;gap:5px;cursor:pointer;padding:7px;border:1px solid var(--border);border-radius:3px;background:#fff;font-size:11px"><input type="radio" name="vs_' + it.key + '" value="false" ' + checkedNo + '/> ✗ No</label>'
+        +   '<label style="display:flex;align-items:center;gap:5px;cursor:pointer;padding:7px;border:1px solid var(--border);border-radius:3px;background:#fff;font-size:11px"><input type="radio" name="vs_' + it.key + '" value="true" onchange="_refreshVisadoSummary()"/> ✓ Sí</label>'
+        +   '<label style="display:flex;align-items:center;gap:5px;cursor:pointer;padding:7px;border:1px solid var(--border);border-radius:3px;background:#fff;font-size:11px"><input type="radio" name="vs_' + it.key + '" value="false" onchange="_refreshVisadoSummary()"/> ✗ No</label>'
         + '</div></div>';
     } else if (it.type === 'textarea') {
       var rows = it.rows || 2;
-      var v2 = cur != null ? String(cur) : '';
       html += '<div style="margin-bottom:8px">'
         + '<div style="font-size:11px;font-weight:600;color:#111;margin-bottom:4px">' + lbl + '</div>'
-        + '<textarea class="inp" data-vs-key="' + it.key + '" rows="' + rows + '" data-no-upper>' + escapeHtml(v2) + '</textarea></div>';
+        + '<textarea class="inp" data-vs-key="' + it.key + '" rows="' + rows + '" data-no-upper></textarea></div>';
     }
   });
-  html += '<div id="m-visado-chk-err" style="display:none;color:var(--red);font-size:12px;margin-top:8px;font-weight:600;padding:7px;background:var(--red4,#ffeaea);border-radius:3px"></div>';
+  html += '<div id="m-visado-chk-err" style="display:none;color:var(--red);font-size:12px;margin-top:8px;font-weight:600;padding:7px;background:var(--red4,#ffeaea);border-radius:3px;line-height:1.5"></div>';
   html += '</div>';
 
   html += '<div style="margin-top:14px"><button class="btn-sm" onclick="generateOTPdf(\'' + o.id + '\')">📄 Descargar PDF</button></div>';
@@ -12452,29 +12831,91 @@ async function openVisadoModal(otId) {
   document.getElementById('m-visado-body').innerHTML = html;
   document.getElementById('m-visado-rejection').value = '';
   document.getElementById('m-visado-rejection-wrap').style.display = 'none';
+  // BUG-FIX 2026-04-30: inicializar contador en vivo del checklist de visado.
+  try { if (typeof _refreshVisadoSummary === 'function') _refreshVisadoSummary(); } catch(_){}
   openModal('m-visado');
 }
 
 // FASE 3.0: helper para leer y validar el checklist de visado.
-// Retorna {ok:true, data} o {ok:false, missing:'label del item faltante'}.
+// Retorna {ok:true, data} o {ok:false, missing:[...labels]} (lista de items faltantes).
+// BUG-FIX 2026-04-30: ahora retorna ARRAY de missing en vez de un solo string,
+// para que el visador vea TODOS los items que faltan (antes solo se mostraba
+// el primero, lo que era confuso si faltaban varios).
 function _collectVisadoChecklist() {
   var data = {};
+  var missing = [];
+  var failed = []; // items marcados como No (con su label)
   for (var i = 0; i < CHECKLIST_VISADO.length; i++) {
     var it = CHECKLIST_VISADO[i];
     var val;
     if (it.type === 'bool') {
       var rad = document.querySelector('#m-visado-body input[name="vs_' + it.key + '"]:checked');
       val = rad ? rad.value === 'true' : null;
+      if (val === false) failed.push({key: it.key, label: it.label});
     } else if (it.type === 'textarea') {
       var ta = document.querySelector('#m-visado-body textarea[data-vs-key="' + it.key + '"]');
       val = ta ? (ta.value || '').trim() : '';
     }
     if (it.required && (val == null || (it.type === 'bool' && val !== true && val !== false))) {
-      return {ok: false, missing: it.label};
+      missing.push({key: it.key, label: it.label});
     }
     data[it.key] = val;
   }
-  return {ok: true, data: data};
+  if (missing.length > 0) {
+    return {ok: false, missing: missing, failed: failed, data: data};
+  }
+  return {ok: true, data: data, failed: failed};
+}
+
+// BUG-FIX 2026-04-30: contador en vivo arriba del checklist.
+// Cada radio dispara onchange="_refreshVisadoSummary()" y este helper recuenta
+// y actualiza la fila de "Sí: X · No: Y · Sin marcar: Z" para que el visador
+// vea en tiempo real cuantos lleva en cada categoria, sin tener que volver a
+// recorrer todo el formulario.
+function _refreshVisadoSummary() {
+  var yes = 0, no = 0, pending = 0;
+  for (var i = 0; i < CHECKLIST_VISADO.length; i++) {
+    var it = CHECKLIST_VISADO[i];
+    if (it.type !== 'bool') continue;
+    var rad = document.querySelector('#m-visado-body input[name="vs_' + it.key + '"]:checked');
+    if (!rad) pending++;
+    else if (rad.value === 'true') yes++;
+    else if (rad.value === 'false') no++;
+  }
+  var elY = document.getElementById('m-vs-cnt-yes');
+  var elN = document.getElementById('m-vs-cnt-no');
+  var elP = document.getElementById('m-vs-cnt-pending');
+  if (elY) elY.textContent = yes;
+  if (elN) elN.textContent = no;
+  if (elP) elP.textContent = pending;
+  // Si el contador No > 0, resaltar visualmente la fila de resumen
+  var sumBox = document.getElementById('m-visado-summary');
+  if (sumBox) {
+    if (no > 0) sumBox.style.borderColor = 'var(--red)';
+    else if (pending === 0) sumBox.style.borderColor = 'var(--green)';
+    else sumBox.style.borderColor = 'var(--border)';
+  }
+}
+
+// BUG-FIX 2026-04-30: helper para limpiar resaltados rojos previos en el
+// checklist de visado. Se llama antes de cada validacion para no acumular.
+function _clearVisadoHighlights() {
+  var rows = document.querySelectorAll('#m-visado-body [data-vs-row]');
+  rows.forEach(function(r) {
+    r.style.background = '';
+    r.style.outline = '';
+    r.style.borderRadius = '';
+    r.style.padding = '';
+  });
+}
+function _highlightVisadoRow(key) {
+  var row = document.querySelector('#m-visado-body [data-vs-row="' + key + '"]');
+  if (row) {
+    row.style.background = '#ffeaea';
+    row.style.outline = '2px solid var(--red)';
+    row.style.borderRadius = '3px';
+    row.style.padding = '4px';
+  }
 }
 
 function showRejectionForm() {
@@ -12525,32 +12966,57 @@ async function _approveVisadoInner() {
 
   // FASE 3.0 FIX CRÍTICO: validar el checklist de visado ANTES de aprobar.
   // No se permite aprobación sin que el visador haya marcado todos los items.
+  // BUG-FIX 2026-04-30: ahora listamos TODOS los items con problemas y hacemos
+  // scroll al primero. Antes solo se mostraba el primer item con error, lo
+  // que confundia cuando habia mas de uno (Nicolas reportaba "marca como No
+  // un item que yo marque como Si"; en realidad habia mas de uno en No y solo
+  // veia el primer label).
+  _clearVisadoHighlights();
   var chk = _collectVisadoChecklist();
   var errBox = document.getElementById('m-visado-chk-err');
-  if (!chk.ok) {
+
+  // Log diagnostico siempre que se intente aprobar — util si el bug recurre.
+  logR('VISADO_VALIDATE', {
+    ot_id: o.id,
+    ot_number: o.ot_number,
+    data: chk.data,
+    missing: (chk.missing || []).map(function(m){return m.key;}),
+    failed: (chk.failed || []).map(function(f){return f.key;})
+  });
+
+  if (!chk.ok && chk.missing && chk.missing.length) {
+    // Faltan items por marcar
     if (errBox) {
-      errBox.textContent = 'Falta marcar: ' + chk.missing + '. El checklist de visado debe estar completo.';
+      var missList = chk.missing.map(function(m){ return '• ' + m.label; }).join('<br/>');
+      errBox.innerHTML = '<b>Falta marcar ' + chk.missing.length + ' ' + (chk.missing.length === 1 ? 'item' : 'items') + ':</b><br/>' + missList;
       errBox.style.display = 'block';
-      errBox.scrollIntoView({behavior:'smooth', block:'center'});
+      // Resaltar y scrollear al primero
+      chk.missing.forEach(function(m){ _highlightVisadoRow(m.key); });
+      var firstRow = document.querySelector('#m-visado-body [data-vs-row="' + chk.missing[0].key + '"]');
+      if (firstRow) firstRow.scrollIntoView({behavior:'smooth', block:'center'});
     } else {
-      showGlobalError('Falta marcar en el checklist de visado: ' + chk.missing, 5000);
+      showGlobalError('Falta marcar en el checklist de visado: ' + chk.missing.map(function(m){return m.label;}).join(', '), 5000);
     }
     return;
   }
   // Regla de calidad: si algún item está en NO, no se puede aprobar — hay que rechazar.
-  var hasFail = false, failKey = null;
-  CHECKLIST_VISADO.forEach(function(it){
-    if (it.type === 'bool' && chk.data[it.key] === false) { hasFail = true; failKey = failKey || it.label; }
-  });
-  if (hasFail) {
+  // BUG-FIX 2026-04-30: ahora listamos TODOS los items en No, no solo el primero.
+  if (chk.failed && chk.failed.length > 0) {
     if (errBox) {
-      errBox.textContent = 'No puedes aprobar con "No" marcado en: ' + failKey + '. Usa "Rechazar con observaciones" para devolver al técnico.';
+      var noList = chk.failed.map(function(f){ return '• ' + f.label; }).join('<br/>');
+      errBox.innerHTML = '<b>No puedes aprobar: ' + chk.failed.length + ' ' + (chk.failed.length === 1 ? 'item esta' : 'items estan') + ' marcados como NO:</b><br/>'
+        + noList
+        + '<br/><br/>Si los items realmente estan OK, marcalos como "Si". Si tienen problemas, usa <b>"Rechazar con observaciones"</b> para devolver al tecnico.';
       errBox.style.display = 'block';
-      errBox.scrollIntoView({behavior:'smooth', block:'center'});
+      // Resaltar todos los problematicos y scrollear al primero
+      chk.failed.forEach(function(f){ _highlightVisadoRow(f.key); });
+      var firstFailedRow = document.querySelector('#m-visado-body [data-vs-row="' + chk.failed[0].key + '"]');
+      if (firstFailedRow) firstFailedRow.scrollIntoView({behavior:'smooth', block:'center'});
     }
     return;
   }
   if (errBox) errBox.style.display = 'none';
+  _clearVisadoHighlights();
 
   var btn = document.getElementById('m-visado-approve-btn');
   btn.innerHTML = '<span class="spin"></span> Aprobando...'; btn.disabled = true;
@@ -12902,23 +13368,10 @@ async function openVisadoHistDetail(otId) {
   // Doble control
   if (cd.double_check) {
     html += '<div style="border-top:2px solid var(--gold);margin-top:12px;padding-top:8px"><div style="font-size:12px;font-weight:700;color:#111;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">Doble control de cierre</div>';
-    // FASE 4.1: si hay items en "No", mostrar banner con el motivo del técnico.
-    var catNoItems = [];
-    CHECKLIST_DOBLE_CONTROL.forEach(function(it){
-      if (it.type === 'bool' && cd.double_check[it.key] === false) catNoItems.push(it.label);
-    });
-    if (catNoItems.length) {
-      html += '<div style="margin:4px 0 8px;padding:6px 8px;background:#fde7e7;border-left:3px solid var(--red);border-radius:3px;font-size:11px;line-height:1.5;color:#7a0e0e">'
-        + '<b>⚠ Items en "No":</b> ' + catNoItems.map(escapeHtml).join(', ')
-        + (cd.double_check.dc_no_reason ? '<br/><b>Motivo:</b> ' + escapeHtml(String(cd.double_check.dc_no_reason)) : '')
-        + '</div>';
-    }
     CHECKLIST_DOBLE_CONTROL.forEach(function(it) {
       var val = cd.double_check[it.key];
-      // FASE 3.3: ocultar el campo motivo N/A si no hay N/A en el cierre.
+      // FASE 3.3: ocultar el campo motivo si no hay N/A en el cierre.
       if (it.required_if_na && (val == null || val === '')) return;
-      // FASE 4.1: el motivo "No" ya está en el banner — no duplicar.
-      if (it.required_if_no) return;
       var displayVal = val === true ? '<span style="color:var(--green);font-weight:700">✓ SÍ</span>'
                      : val === false ? '<span style="color:var(--red);font-weight:700">✗ NO</span>'
                      : val === 'N/A' ? '<span style="color:#7a4a00;font-weight:700;background:#fff4e5;padding:1px 6px;border-radius:3px">N/A</span>'
@@ -13516,26 +13969,10 @@ async function viewProtocolosDoubleCheck(otId) {
       + '<div class="modal-s">' + escapeHtml(srvLabel2) + '</div>'
       + '<div style="font-size:10px;color:var(--wh3);margin:6px 0;font-family:var(--mono)">Realizado por: ' + escapeHtml(doneBy) + ' · ' + (doneAt ? new Date(doneAt).toLocaleString('es-CL') : '?') + '</div>'
       + '<div style="border-top:2px solid var(--gold);padding-top:8px;margin-top:8px">';
-    // FASE 4.1: si hay items en "No", mostrar banner con el motivo del técnico.
-    var pdcNoItems = [];
-    CHECKLIST_DOBLE_CONTROL.forEach(function(it){
-      if (it.type === 'bool' && cd.double_check[it.key] === false) pdcNoItems.push(it.label);
-    });
-    if (pdcNoItems.length) {
-      html += '<div style="margin:0 0 10px;padding:8px 10px;background:#fde7e7;border:1px solid var(--red);border-left:4px solid var(--red);border-radius:3px;font-size:11px;line-height:1.5;color:#7a0e0e">'
-        + '<div style="font-weight:800;margin-bottom:4px;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.04em">⚠ Items en "No" (' + pdcNoItems.length + ')</div>'
-        + '<div style="margin-bottom:6px"><b>' + pdcNoItems.map(escapeHtml).join('</b>, <b>') + '</b></div>'
-        + (cd.double_check.dc_no_reason
-            ? '<div style="background:#fff;padding:6px 8px;border-radius:3px;border:1px solid #f3c2c2;color:#222"><b>Motivo:</b> ' + escapeHtml(String(cd.double_check.dc_no_reason)) + '</div>'
-            : '<div style="font-style:italic;color:#a55">Sin motivo registrado.</div>')
-        + '</div>';
-    }
     CHECKLIST_DOBLE_CONTROL.forEach(function(it) {
       var val = cd.double_check[it.key];
-      // FASE 3.3: ocultar el campo motivo N/A si no hay N/A en el cierre.
+      // FASE 3.3: ocultar el campo motivo si no hay N/A en el cierre.
       if (it.required_if_na && (val == null || val === '')) return;
-      // FASE 4.1: el motivo "No" ya está en el banner — no duplicar.
-      if (it.required_if_no) return;
       var displayVal = val === true ? '<span style="color:var(--green);font-weight:700">✓ SÍ</span>'
                      : val === false ? '<span style="color:var(--red);font-weight:700">✗ NO</span>'
                      : val === 'N/A' ? '<span style="color:#7a4a00;font-weight:700;background:#fff4e5;padding:1px 6px;border-radius:3px">N/A</span>'
@@ -16396,52 +16833,6 @@ async function generateInformePdf(woId) {
       y += 2;
     }
 
-    // FASE 4.1 — 7d) Items del doble control en "No" (con motivo del técnico).
-    // Esto reemplaza la antigua regla que bloqueaba el cierre con "No". Ahora
-    // el técnico puede cerrar reportando el motivo, y el visador decide.
-    // En el PDF dejamos constancia explícita de los items en "No" + motivo.
-    var dcAll = cd.double_check || {};
-    var dcNoLabels = [];
-    if (typeof CHECKLIST_DOBLE_CONTROL !== 'undefined') {
-      CHECKLIST_DOBLE_CONTROL.forEach(function(it){
-        if (it.type === 'bool' && dcAll[it.key] === false) dcNoLabels.push(it.label);
-      });
-    }
-    if (dcNoLabels.length) {
-      if (y > pageH - 30) { doc.addPage(); y = 18; }
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(11);
-      doc.setTextColor(180, 30, 30);
-      doc.text('Ítems del doble control reportados en "No"', marginX, y);
-      y += 5;
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(10);
-      doc.setTextColor(40, 40, 40);
-      dcNoLabels.forEach(function(lbl){
-        var bullets = doc.splitTextToSize('• ' + lbl, contentW);
-        bullets.forEach(function(ln){
-          if (y > pageH - 20) { doc.addPage(); y = 18; }
-          doc.text(ln, marginX, y);
-          y += 5;
-        });
-      });
-      if (dcAll.dc_no_reason) {
-        y += 1;
-        doc.setFont('helvetica', 'bold');
-        doc.setFontSize(9);
-        doc.text('Motivo reportado por el técnico:', marginX, y);
-        y += 4;
-        doc.setFont('helvetica', 'normal');
-        doc.setFontSize(10);
-        doc.splitTextToSize(String(dcAll.dc_no_reason), contentW).forEach(function(ln){
-          if (y > pageH - 20) { doc.addPage(); y = 18; }
-          doc.text(ln, marginX, y);
-          y += 5;
-        });
-      }
-      y += 3;
-    }
-
     // 8) Pie con firma/visado
     if (cd.double_check_completed_by_name || cd.visado_by_name) {
       if (y > pageH - 30) { doc.addPage(); y = 18; }
@@ -17885,30 +18276,21 @@ async function renderBossInformes(body) {
     return;
   }
 
-  // FASE 4.1: incluir TODOS los work_orders relevantes del catastro (no solo los
-  // que tienen tech_checklist). Antes la pestaña Informes solo mostraba OTs
-  // con checklist técnico cerrado o informe en desarrollo, dejando fuera:
-  //   - OTs cerradas vía cronómetro legacy (sin tech_checklist en checklist_data)
-  //   - OTs en estados intermedios (open, assigned, in_progress, pending_*)
-  //   - OTs cerradas pero sin checklist técnico estructurado
-  // Ahora cada OT del catastro genera automáticamente su entrada en Informes,
-  // con un badge de estado claro. El generador de PDF ya tiene fallback para
-  // OTs sin tech_checklist, así que el informe siempre se puede descargar.
-  // Excluimos solo: cancelled (no útiles para informes).
   var allOTs = (rOTs.data || []).filter(function(o){
-    if (o.status === 'cancelled') return false;
-    return true;
+    var cd = o.checklist_data || {};
+    // FASE 4.0: incluir también los informes "en desarrollo" (con report_started_at
+    // pero sin tech_checklist completo todavía). Antes solo aparecían los cerrados.
+    var hasChk = cd.tech_checklist && Object.keys(cd.tech_checklist).length > 0;
+    var inDev  = !!cd.report_started_at;
+    var hasFindings = Array.isArray(cd.live_findings) && cd.live_findings.length > 0;
+    return hasChk || inDev || hasFindings;
   });
 
-  // Filtro técnico: solo ver los suyos (los que él inició, cerró checklist o cerró doble control)
+  // Filtro técnico: solo ver los suyos (los que él inició o cerró)
   if (_informesFilters.onlyMine && CU) {
     allOTs = allOTs.filter(function(o){
       var cd = o.checklist_data || {};
-      var dcMeta = cd.double_check_meta || {};
-      return cd.tech_completed_by === CU.id
-          || cd.report_started_by === CU.id
-          || cd.double_check_completed_by === CU.id
-          || dcMeta.completed_by === CU.id;
+      return cd.tech_completed_by === CU.id || cd.report_started_by === CU.id;
     });
   }
 
@@ -17975,7 +18357,7 @@ async function renderBossInformes(body) {
       + '</label>';
   }
   filterHTML += '</div>';
-  filterHTML += '<div style="font-size:11px;color:var(--wh3)">' + allOTs.length + ' informe(s) disponibles · <span style="color:#888">cada OT del catastro genera un informe automáticamente</span></div>';
+  filterHTML += '<div style="font-size:11px;color:var(--wh3)">' + allOTs.length + ' informe(s) disponibles</div>';
   bar.innerHTML = filterHTML;
   body.appendChild(bar);
 
@@ -18053,8 +18435,6 @@ function renderInformesList(body, clientsMap, vehiclesMap) {
     // FASE 4.0: detectar "EN DESARROLLO" (informe abierto, sin checklist técnico cerrado)
     var isInDev = !!cd.report_started_at && !cd.tech_completed_at;
     var liveCount = Array.isArray(cd.live_findings) ? cd.live_findings.length : 0;
-    // FASE 4.1: detectar OTs sin checklist técnico estructurado (legacy o sin servicio aún)
-    var hasTechChk = cd.tech_checklist && Object.keys(cd.tech_checklist).length > 0;
     if (isInDev) {
       stateBadge = 'EN DESARROLLO';
       stateColor = 'var(--blue)';
@@ -18064,21 +18444,8 @@ function renderInformesList(body, clientsMap, vehiclesMap) {
     else if (o.status === 'pending_visado') { stateBadge = 'Pendiente visado'; stateColor = '#a07000'; }
     else if (o.status === 'pending_double_check') { stateBadge = 'Pendiente doble ctrl'; stateColor = '#a07000'; }
     else if (o.status === 'in_progress') { stateBadge = 'En curso'; stateColor = '#1f6fbf'; }
-    else if (o.status === 'assigned') { stateBadge = 'Asignada'; stateColor = '#888'; }
-    else if (o.status === 'open') { stateBadge = 'Abierta'; stateColor = '#888'; }
     else if (o.status === 'manual_report') { stateBadge = 'Informe manual'; stateColor = '#666'; }
     else { stateBadge = o.status || '—'; }
-
-    // FASE 4.1: badge de conformidad — solo "✓ Conforme" cuando hay checklist
-    // técnico cerrado SIN hallazgos. Si no hay checklist aún, mostrar "Sin datos".
-    var conformityBadge;
-    if (concerns.length) {
-      conformityBadge = '<div style="font-size:10px;background:#fde7e7;color:#b00;padding:3px 8px;border-radius:10px;font-weight:700">⚠ ' + concerns.length + ' hallazgo(s)</div>';
-    } else if (hasTechChk) {
-      conformityBadge = '<div style="font-size:10px;background:#e6f4e6;color:#2a7a2a;padding:3px 8px;border-radius:10px;font-weight:700">✓ Conforme</div>';
-    } else {
-      conformityBadge = '<div style="font-size:10px;background:#f0f0f0;color:#888;padding:3px 8px;border-radius:10px;font-weight:700">— Sin datos</div>';
-    }
 
     row.innerHTML =
       '<div style="flex:1;min-width:0">'
@@ -18097,7 +18464,9 @@ function renderInformesList(body, clientsMap, vehiclesMap) {
       + '</div>'
       + '</div>'
       + '<div style="text-align:right;flex-shrink:0;display:flex;flex-direction:column;align-items:flex-end;gap:4px">'
-      + conformityBadge
+      + (concerns.length
+          ? '<div style="font-size:10px;background:#fde7e7;color:#b00;padding:3px 8px;border-radius:10px;font-weight:700">⚠ ' + concerns.length + ' hallazgo(s)</div>'
+          : '<div style="font-size:10px;background:#e6f4e6;color:#2a7a2a;padding:3px 8px;border-radius:10px;font-weight:700">✓ Conforme</div>')
       + '<div style="display:flex;gap:4px">'
       +   '<button class="btn-sm" style="border-color:#1f6fbf;color:#1f6fbf;font-size:10px;padding:3px 6px" onclick="event.stopPropagation();openInformeEditor(\'' + o.id + '\')">✏ Editar</button>'
       +   '<button class="btn-sm" style="border-color:var(--red);color:var(--red);font-size:10px;padding:3px 6px" onclick="event.stopPropagation();generateInformePdf(\'' + o.id + '\')">⬇ PDF</button>'
@@ -18138,66 +18507,17 @@ async function openInformePreview(woId) {
     var concerns = informeCollectConcerns(techDef, tc);
 
     var html = '';
-    // ── Cabecera del informe ──
     html += '<div style="border-bottom:1px solid var(--border);padding-bottom:8px;margin-bottom:8px">';
     html += '<div style="font-size:14px;font-weight:700;color:#111">' + escapeHtml(srvLbl) + '</div>';
     html += '<div style="font-size:11px;color:#666">';
     if (o.ot_number) html += 'OT-' + escapeHtml(o.ot_number) + ' · ';
     html += escapeHtml(v.plate || o.plate || '—') + ' · ' + escapeHtml(((v.brand || '') + ' ' + (v.model || '')).trim());
-    if (c && c.name) html += '<br/>Cliente: ' + escapeHtml(c.name);
-    if (v && v.km_entry) html += '<br/>KM ingreso: ' + escapeHtml(String(v.km_entry));
     html += '</div></div>';
 
-    // FASE 4.1: badge de estado del informe (preliminar / completo) — útil
-    // cuando se muestra el preview a un cliente como reporte de avance.
-    var stateLabel = '', stateBg = '#e8e8e8', stateFg = '#444', stateNote = '';
-    if (cd.tech_completed_at && cd.double_check_completed_at) {
-      stateLabel = 'INFORME COMPLETO';
-      stateBg = '#e6f4e6'; stateFg = '#2a7a2a';
-      stateNote = 'Servicio cerrado con doble control. Datos finales.';
-    } else if (cd.tech_completed_at) {
-      stateLabel = 'INFORME PRELIMINAR — sin doble control';
-      stateBg = '#fff8e0'; stateFg = '#7a5500';
-      stateNote = 'Checklist técnico cerrado. Pendiente doble control de cierre.';
-    } else if (cd.report_started_at || (cd.live_findings && cd.live_findings.length)) {
-      stateLabel = 'INFORME EN DESARROLLO';
-      stateBg = '#eef5ff'; stateFg = 'var(--blue)';
-      stateNote = 'Servicio en curso. Los datos se completan a medida que avanza el trabajo.';
-    } else if (o.status === 'manual_report') {
-      stateLabel = 'INFORME MANUAL';
-      stateBg = '#f3f3f3'; stateFg = '#444';
-      stateNote = 'Informe creado manualmente.';
-    } else {
-      stateLabel = 'SIN DATOS DE SERVICIO';
-      stateBg = '#f3f3f3'; stateFg = '#666';
-      stateNote = 'Aún no hay datos de servicio para este vehículo.';
-    }
-    html += '<div style="margin:0 0 10px;padding:8px 10px;background:' + stateBg + ';border-left:3px solid ' + stateFg + ';border-radius:3px">'
-      + '<div style="font-size:11px;font-weight:800;color:' + stateFg + ';font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.04em">' + stateLabel + '</div>'
-      + '<div style="font-size:10px;color:#555;margin-top:2px">' + stateNote + '</div>'
-      + '</div>';
-
-    // FASE 4.1: banner si hay items del doble control en "No"
-    if (cd.double_check) {
-      var prevDcNo = [];
-      CHECKLIST_DOBLE_CONTROL.forEach(function(it){
-        if (it.type === 'bool' && cd.double_check[it.key] === false) prevDcNo.push(it.label);
-      });
-      if (prevDcNo.length) {
-        html += '<div style="margin:0 0 10px;padding:8px 10px;background:#fde7e7;border:1px solid var(--red);border-left:4px solid var(--red);border-radius:3px;font-size:11px;line-height:1.5;color:#7a0e0e">'
-          + '<div style="font-weight:800;margin-bottom:4px;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.04em">⚠ Items del doble control en "No"</div>'
-          + '<div><b>' + prevDcNo.map(escapeHtml).join('</b>, <b>') + '</b></div>'
-          + (cd.double_check.dc_no_reason ? '<div style="margin-top:4px"><b>Motivo:</b> ' + escapeHtml(String(cd.double_check.dc_no_reason)) + '</div>' : '')
-          + '</div>';
-      }
-    }
-
     if (techDef) {
-      var renderedAny = false;
       techDef.sections.forEach(function(sec){
         var split = informeSplitItems(sec, tc);
         if (!split.measures.length && !split.states.length && !split.notes.length) return;
-        renderedAny = true;
         html += '<div style="margin-top:10px"><div style="font-weight:700;font-size:12px;color:var(--red);text-transform:uppercase;border-bottom:1px solid #eee;padding-bottom:2px">' + escapeHtml(sec.title) + '</div>';
         split.measures.forEach(function(m){
           html += '<div style="display:flex;justify-content:space-between;padding:2px 0;font-size:11px"><span>' + escapeHtml(m.label) + '</span><b>' + escapeHtml(String(m.value) + (m.unit ? ' ' + m.unit : '')) + '</b></div>';
@@ -18213,37 +18533,12 @@ async function openInformePreview(woId) {
         });
         html += '</div>';
       });
-      if (!renderedAny) {
-        html += '<div style="margin:8px 0;padding:8px;background:#f8f8f8;border-radius:3px;font-size:11px;color:#666;font-style:italic">Aún no se han registrado mediciones ni inspecciones del checklist técnico para este servicio.</div>';
-      }
-    } else {
-      html += '<div style="margin:8px 0;padding:8px;background:#f8f8f8;border-radius:3px;font-size:11px;color:#666;font-style:italic">Este tipo de servicio no usa checklist técnico estructurado.</div>';
-    }
-
-    // FASE 4.1: hallazgos en vivo capturados durante el servicio.
-    // Visibles tan pronto como se reportan, ideales para mostrar avances al cliente.
-    var liveFindingsPv = Array.isArray(cd.live_findings) ? cd.live_findings : [];
-    if (liveFindingsPv.length) {
-      html += '<div style="margin-top:12px;padding:10px;background:#eef5ff;border-left:3px solid var(--blue);border-radius:4px">';
-      html += '<div style="font-weight:700;font-size:12px;margin-bottom:6px;color:var(--blue)">HALLAZGOS REGISTRADOS DURANTE EL SERVICIO (' + liveFindingsPv.length + ')</div>';
-      liveFindingsPv.forEach(function(lf){
-        var lfStamp = '';
-        try { lfStamp = new Date(lf.at).toLocaleString('es-CL'); } catch(_){}
-        html += '<div style="background:#fff;border:1px solid #cfe0f5;border-radius:3px;padding:6px 8px;margin-bottom:4px">'
-          + '<div style="font-size:10px;color:#666;font-family:var(--mono);margin-bottom:2px">' + escapeHtml(lf.by_name || '?') + (lfStamp ? ' · ' + escapeHtml(lfStamp) : '') + '</div>'
-          + '<div style="font-size:11px;color:#222;line-height:1.4;white-space:pre-wrap">' + escapeHtml(lf.text || '') + '</div>'
-          + (lf.photo ? '<img src="' + lf.photo + '" style="max-width:100%;max-height:140px;margin-top:4px;border-radius:3px;border:1px solid var(--border)"/>' : '')
-          + '</div>';
-      });
-      html += '</div>';
     }
 
     html += '<div style="margin-top:14px;padding:10px;background:' + (concerns.length ? '#fff5f5' : '#f3faf3') + ';border-radius:4px;border-left:3px solid ' + (concerns.length ? '#c00' : '#2a7a2a') + '">';
     html += '<div style="font-weight:700;font-size:12px;margin-bottom:4px">RESUMEN TÉCNICO</div>';
     if (concerns.length === 0) {
-      html += '<div style="font-size:11px;color:#444">' + (cd.tech_completed_at
-          ? 'Vehículo conforme. Sin hallazgos que requieran atención inmediata.'
-          : 'Sin hallazgos del checklist técnico todavía. Resumen final disponible al cerrar el servicio.') + '</div>';
+      html += '<div style="font-size:11px;color:#444">Vehículo conforme. Sin hallazgos que requieran atención inmediata.</div>';
     } else {
       html += '<div style="font-size:11px;color:#444;margin-bottom:6px">' + concerns.length + ' hallazgo(s) detectado(s):</div>';
       html += '<ul style="margin:0;padding-left:18px;font-size:11px">';
@@ -18254,18 +18549,6 @@ async function openInformePreview(woId) {
     }
     html += '</div>';
 
-    // Observaciones del técnico (originales o editadas)
-    var prevExtras = cd.report_extras || {};
-    var prevObs = (prevExtras.edited_observations && String(prevExtras.edited_observations).trim())
-      ? prevExtras.edited_observations
-      : (tc.tech_observations || tc.observaciones || tc.obs || null);
-    if (prevObs) {
-      html += '<div style="margin-top:10px;padding:8px 10px;background:#f8f8f8;border-radius:3px;font-size:11px;line-height:1.5">'
-        + '<div style="font-weight:700;color:#333;margin-bottom:3px">OBSERVACIONES DEL TÉCNICO</div>'
-        + '<div style="white-space:pre-wrap;color:#222">' + escapeHtml(String(prevObs)) + '</div>'
-        + '</div>';
-    }
-
     // Mostrar contenido editado/anexado si existe
     var extras = cd.report_extras || {};
     var extraFindings = (extras.extra_findings || []).filter(function(f){return f && String(f).trim();});
@@ -18274,14 +18557,18 @@ async function openInformePreview(woId) {
     var hasAnyExtras = !!(extras.edited_observations || extraFindings.length || imagesCnt || pdfsCnt);
     if (hasAnyExtras) {
       html += '<div style="margin-top:10px;padding:10px;background:#f4f9ff;border-left:3px solid #1f6fbf;border-radius:4px">';
-      html += '<div style="font-weight:700;font-size:12px;margin-bottom:6px;color:#1f6fbf">CONTENIDO ANEXADO</div>';
+      html += '<div style="font-weight:700;font-size:12px;margin-bottom:6px;color:#1f6fbf">CONTENIDO EDITADO / ANEXADO</div>';
+      if (extras.edited_observations) {
+        html += '<div style="font-size:11px;color:#333;margin-bottom:4px"><b>Observaciones editadas:</b> '
+          + escapeHtml(String(extras.edited_observations).slice(0, 140)) + (extras.edited_observations.length > 140 ? '…' : '') + '</div>';
+      }
       if (extraFindings.length) {
         html += '<div style="font-size:11px;color:#333;margin-bottom:4px"><b>' + extraFindings.length + ' hallazgo(s) adicional(es):</b></div>';
         html += '<ul style="margin:0 0 4px 0;padding-left:18px;font-size:11px;color:#444">';
-        extraFindings.slice(0,5).forEach(function(f){
-          html += '<li>' + escapeHtml(String(f).slice(0,140)) + (f.length > 140 ? '…' : '') + '</li>';
+        extraFindings.slice(0,3).forEach(function(f){
+          html += '<li>' + escapeHtml(String(f).slice(0,100)) + (f.length > 100 ? '…' : '') + '</li>';
         });
-        if (extraFindings.length > 5) html += '<li style="color:#888;font-style:italic">y ' + (extraFindings.length - 5) + ' más…</li>';
+        if (extraFindings.length > 3) html += '<li style="color:#888;font-style:italic">y ' + (extraFindings.length - 3) + ' más…</li>';
         html += '</ul>';
       }
       if (imagesCnt || pdfsCnt) {
@@ -18411,11 +18698,12 @@ function fmtD(d) {
 <script>
 // HARD FALLBACK: garantizar que el splash NUNCA quede pegado mas de 15s.
 // Coordinado con SDK_TIMEOUT_MS (8s) + CONN_TIMEOUT_MS (5s) + margen.
-// FIX 2026-04-29: usar la misma constante (15000) declarada arriba como
-// EMERGENCY_TIMEOUT_MS en el script principal. Como este bloque es un IIFE
-// separado y no comparte scope, replicamos el valor pero documentado.
+// FIX QW-12 (2026-04-30): leer de window.RossoConfig en vez de duplicar el
+// numero. Si alguien sube el timeout en el script principal, el fallback
+// se ajusta automaticamente. Si por alguna razon RossoConfig no esta cargado
+// (parse error en script anterior), el fallback de 15s se mantiene.
 (function () {
-  var EMERGENCY_FALLBACK_MS = 15000; // mantener en sincronía con EMERGENCY_TIMEOUT_MS
+  var EMERGENCY_FALLBACK_MS = (window.RossoConfig && window.RossoConfig.EMERGENCY_TIMEOUT_MS) || 15000;
   function forceShowApp() {
     try {
       var ls = document.getElementById('load-screen');
@@ -18492,7 +18780,21 @@ function fmtD(d) {
 
 window.addEventListener('online', function() {
   console.log('[NET] online');
-  if (typeof showGlobalError === 'function') showGlobalError('Conexion recuperada. Toca Reintentar si la app no responde.', 4000);
+  // FIX QW-5 (2026-04-30): antes solo mostrabamos un toast pidiendo al
+  // usuario "tocar Reintentar". Ahora intentamos auto-recuperar la conexion:
+  // (a) si el cliente Supabase aun no esta listo, llamamos retryConn().
+  // (b) si CU esta logueado, reanudamos polling (que estaba en backoff).
+  if (typeof showGlobalError === 'function') showGlobalError('Conexion recuperada. Reconectando...', 3000);
+  try {
+    if (typeof _supabaseReady !== 'undefined' && !_supabaseReady && typeof retryConn === 'function') {
+      retryConn();
+    }
+    if (typeof CU !== 'undefined' && CU && typeof _schedulePoll === 'function') {
+      _pollFailures = 0;
+      _schedulePoll();
+      if (typeof pollAll === 'function') pollAll().catch(function(){});
+    }
+  } catch(e) { console.warn('[NET] auto-recovery error', e); }
 });
 window.addEventListener('offline', function() {
   console.warn('[NET] offline');
