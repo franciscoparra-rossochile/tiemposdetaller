@@ -280,6 +280,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     <div class="tab" data-tab="b-informes" onclick="bossTab('b-informes')" id="tab-informes">Informes Técnicos</div>
     <div class="tab" data-tab="b-bugs" onclick="bossTab('b-bugs')" id="tab-bugs">Bugs</div>
     <div class="tab" data-tab="b-protocolos" onclick="bossTab('b-protocolos')" id="tab-protocolos" style="display:none">Protocolos de Seguridad<span class="ndot" id="boss-protocolos-dot"></span></div>
+    <div class="tab" data-tab="b-cierre-local" onclick="bossTab('b-cierre-local')" id="tab-cierre-local" style="display:none">Cierre de Local<span class="ndot" id="boss-cierre-local-dot"></span></div>
     <div class="tab" data-tab="b-visado" onclick="bossTab('b-visado')" id="tab-boss-visado" style="display:none">Visado<span class="ndot" id="boss-visado-dot"></span></div>
     <div class="tab" data-tab="b-clientes" onclick="bossTab('b-clientes')" id="tab-clientes" style="display:none">Registro Clientes</div>
     <!-- Botón flotante reordenar (al final, antes de alertas) -->
@@ -2793,28 +2794,66 @@ function toggleDebug() {
 }
 
 // ═══════════════════════════════════════════════
-// SERVICES
+// SERVICES — categorizados por flujo operativo del taller (mayo 2026)
 // ═══════════════════════════════════════════════
+// Categorías:
+//   - rapidos    : Mantenimientos rápidos (objetivo de tiempo claro)
+//   - mecanica   : Mecánica general (reparaciones, diagnósticos)
+//   - garantia   : Garantía
+//   - logistica  : Logística de taller (apertura, cierre, movimientos, compras)
+//   - otros      : Servicios auxiliares (lavado, etc.)
+// El orden del array determina el orden de render dentro de cada categoría.
+// IMPORTANTE: para mantener compatibilidad con el histórico, NO se eliminan
+// nombres existentes. "Estandar de taller" se reemplaza por "Estándar inicial
+// del día" pero los registros viejos siguen apareciendo en historial bajo su
+// nombre original (los reportes filtran por r.service literal).
+const SRV_CATEGORIES = [
+  {key:'rapidos',   label:'Mantenimientos rápidos'},
+  {key:'mecanica',  label:'Mecánica general'},
+  {key:'garantia',  label:'Garantía'},
+  {key:'logistica', label:'Logística de taller'},
+  {key:'otros',     label:'Otros'}
+];
 const SRVS = [
-  {name:'Cambio de aceite',goal:30},
-  {name:'Mantenimiento express',goal:60},
-  {name:'Mantenimiento completo',goal:120},
-  {name:'Mantenimiento de caja automatica o manual',goal:null},
-  {name:'Reparaciones generales',goal:null,needsDesc:true},
-  {name:'Lavado de vehiculos',goal:null,noChecklist:true},
-  {name:'Estandar de taller',goal:null,noChecklist:true,noPlate:true},
-  {name:'Compras',goal:null,noChecklist:true,noPlate:true},
-  {name:'Movimiento de vehiculos',goal:null,noChecklist:true,noPlate:true},
-  {name:'Cierre de taller',goal:null,noChecklist:true,noPlate:true},
-  {name:'Garantia',goal:null},
-  {name:'Recuperacion de DPF',goal:null,subs:['Pack esencial','Pack avanzado','Pack premium','Pack integral (DPF + Limpieza admision)']},
-  {name:'Servicio de frenos',goal:null,subs:['Evaluacion','Pastillas delanteras + rectificado','Pastillas delanteras + cambio de discos','Pastillas/balatas traseras + rectificado','Pastillas/balatas traseras + cambio tambor/disco','Cambio liquido de frenos','Ajuste de frenos']},
-  {name:'Diagnostico',goal:null,subs:['Scanner','Diagnostico basico','Diagnostico avanzado'],subGoals:{'Scanner':20,'Diagnostico basico':90,'Diagnostico avanzado':180}}
+  // ─── MANTENIMIENTOS RÁPIDOS ───
+  {name:'Cambio de aceite',category:'rapidos',goal:30},
+  {name:'Mantenimiento express',category:'rapidos',goal:60},
+  {name:'Mantenimiento completo',category:'rapidos',goal:120},
+  {name:'Mantenimiento de caja automatica o manual',category:'rapidos',goal:null},
+  // ─── MECÁNICA GENERAL ───
+  {name:'Reparaciones generales',category:'mecanica',goal:null,needsDesc:true},
+  {name:'Recuperacion de DPF',category:'mecanica',goal:null,subs:['Pack esencial','Pack avanzado','Pack premium','Pack integral (DPF + Limpieza admision)']},
+  {name:'Servicio de frenos',category:'mecanica',goal:null,subs:['Evaluacion','Pastillas delanteras + rectificado','Pastillas delanteras + cambio de discos','Pastillas/balatas traseras + rectificado','Pastillas/balatas traseras + cambio tambor/disco','Cambio liquido de frenos','Ajuste de frenos']},
+  {name:'Diagnostico',category:'mecanica',goal:null,subs:['Scanner','Diagnostico basico','Diagnostico avanzado'],subGoals:{'Scanner':20,'Diagnostico basico':90,'Diagnostico avanzado':180}},
+  // ─── GARANTÍA ───
+  {name:'Garantia',category:'garantia',goal:null},
+  // ─── LOGÍSTICA DE TALLER ───
+  {name:'Reunion de apertura',category:'logistica',goal:null,noChecklist:true,noPlate:true},
+  {name:'Estandar inicial del dia',category:'logistica',goal:null,noChecklist:true,noPlate:true},
+  {name:'Cierre de taller',category:'logistica',goal:null,noChecklist:true,noPlate:true},
+  {name:'Movimiento de vehiculos',category:'logistica',goal:null,noChecklist:true,noPlate:true},
+  {name:'Compras',category:'logistica',goal:null,noChecklist:true,noPlate:true},
+  // Mantener "Estandar de taller" como alias oculto para compatibilidad con
+  // el filtro de reportes/histórico (no aparece en el menú de nuevo registro).
+  {name:'Estandar de taller',category:'logistica',goal:null,noChecklist:true,noPlate:true,_legacyHidden:true},
+  // ─── OTROS ───
+  {name:'Lavado de vehiculos',category:'otros',goal:null,noChecklist:true}
 ];
 
 // Services that don't require checklist
+// Se mantienen los nombres legacy ("Estandar de taller") para que el
+// histórico siga funcionando; se agregan los nuevos ("Reunion de apertura",
+// "Estandar inicial del dia").
 function srvNeedsChecklist(srvLabel) {
-  var noChk = ['Lavado de vehiculos','Estandar de taller','Compras','Movimiento de vehiculos','Cierre de taller'];
+  var noChk = [
+    'Lavado de vehiculos',
+    'Estandar de taller',
+    'Estandar inicial del dia',
+    'Reunion de apertura',
+    'Compras',
+    'Movimiento de vehiculos',
+    'Cierre de taller'
+  ];
   return !noChk.some(function(n) { return srvLabel.startsWith(n); });
 }
 
@@ -4668,7 +4707,16 @@ function bossTab(t) {
   else if (t === 'b-entregados') renderBossEntregados(body);
   else if (t === 'b-visado')   renderVisadoPanel(body);
   else if (t === 'b-protocolos') renderProtocolosPanel(body);
+  else if (t === 'b-cierre-local') {
+    var clDot = document.getElementById('boss-cierre-local-dot');
+    if (clDot) clDot.classList.remove('show');
+    renderBossCierreLocal(body);
+  }
   else if (t === 'b-bugs')     renderBugReports(body);
+
+  // Refrescar el dot del cierre de local en cada cambio de pestaña — el
+  // estado cambia con el tiempo (caso 2: pasaron las 18:30 sin cierre).
+  if (t !== 'b-cierre-local') refreshCierreLocalAlert();
 }
 
 // Helper centralizado: refresca la visibilidad de las pestañas de jefe segun el usuario actual.
@@ -4688,6 +4736,10 @@ function refreshBossTabsVisibility() {
   // checklist + doble control + visado por vehículo.
   var elProtocolos = document.getElementById('tab-protocolos');
   if (elProtocolos) elProtocolos.style.display = (CU.role === 'admin' || CU.role === 'jefatura') ? '' : 'none';
+  // Cierre de Local: admin + jefatura. Checklist diario obligatorio de
+  // cierre operativo y de seguridad (mayo 2026).
+  var elCierreLocal = document.getElementById('tab-cierre-local');
+  if (elCierreLocal) elCierreLocal.style.display = (CU.role === 'admin' || CU.role === 'jefatura') ? '' : 'none';
   // FASE 2.4.C-fix: pestaña Visado SOLO para visadores explícitos (no para admins por inheritance).
   var isVisador = !!(CU.permissions && CU.permissions.can_visar === true);
   var elBossVisado = document.getElementById('tab-boss-visado');
@@ -4702,6 +4754,9 @@ function refreshBossTabsVisibility() {
   if (btnCfg) btnCfg.style.display = (CU.role === 'admin') ? '' : 'none';
   // Aplicar el orden personalizado de pestañas guardado en localStorage
   applySavedTabsOrder();
+  // Cierre de local: refrescar el dot de alerta sin bloquear el login.
+  // No await — corre en background.
+  refreshCierreLocalAlert();
 }
 
 // FASE 2.4.C: helper análogo para pantalla técnica (visadores con rol tech ven la tab Visado)
@@ -4786,17 +4841,49 @@ function renderTechNuevo(body) {
 function buildSrvGrid() {
   var g = document.getElementById('srv-grid'); if (!g) return;
   g.innerHTML = '';
+  // Cambiamos el contenedor a layout vertical por categorías.
+  // El padre #srv-grid mantiene la clase 'g2' del CSS original solo por
+  // herencia; la sobreescribimos a un flujo vertical y cada categoría
+  // tendrá su propia grilla interna g2.
+  g.style.display = 'block';
+  g.style.gridTemplateColumns = 'unset';
+
+  // Agrupar SRVS por categoría preservando el orden definido.
+  var byCat = {};
   SRVS.forEach(function(s) {
-    var b = mk('button','sel-btn'); b.dataset.name = s.name;
-    b.innerHTML = '<span>' + s.name + '</span>' + (s.goal ? '<span style="font-size:9px;color:var(--wh4);font-family:var(--mono)">OBJ:' + s.goal + 'm</span>' : '');
-    b.onclick = function() {
-      selSrv = s.name; selSub = null; selDesc = '';
-      document.querySelectorAll('#srv-grid .sel-btn').forEach(function(x) { x.classList.remove('on'); });
-      b.classList.add('on');
-      updateSubWrap(s);
-      chkBtn();
-    };
-    g.appendChild(b);
+    if (s._legacyHidden) return; // ocultos del menú nuevo, visibles en histórico
+    var k = s.category || 'otros';
+    if (!byCat[k]) byCat[k] = [];
+    byCat[k].push(s);
+  });
+
+  SRV_CATEGORIES.forEach(function(cat) {
+    var items = byCat[cat.key];
+    if (!items || !items.length) return;
+    var section = mk('div','');
+    section.style.marginBottom = '14px';
+    var head = mk('div','');
+    head.style.cssText = 'font-size:10px;font-weight:700;color:var(--red);'
+      + 'text-transform:uppercase;letter-spacing:.08em;font-family:\'Rajdhani\',sans-serif;'
+      + 'margin:6px 4px 8px;padding-bottom:4px;border-bottom:1px solid rgba(189,29,29,.18)';
+    head.textContent = cat.label;
+    section.appendChild(head);
+    var subgrid = mk('div','g2');
+    items.forEach(function(s) {
+      var b = mk('button','sel-btn'); b.dataset.name = s.name;
+      b.innerHTML = '<span>' + s.name + '</span>'
+        + (s.goal ? '<span style="font-size:9px;color:var(--wh4);font-family:var(--mono)">OBJ:' + s.goal + 'm</span>' : '');
+      b.onclick = function() {
+        selSrv = s.name; selSub = null; selDesc = '';
+        document.querySelectorAll('#srv-grid .sel-btn').forEach(function(x) { x.classList.remove('on'); });
+        b.classList.add('on');
+        updateSubWrap(s);
+        chkBtn();
+      };
+      subgrid.appendChild(b);
+    });
+    section.appendChild(subgrid);
+    g.appendChild(section);
   });
 }
 
@@ -6608,6 +6695,104 @@ function refreshPausedAlert(pausedCount) {
   } else {
     dot.classList.remove('show');
     dot.removeAttribute('title');
+  }
+}
+
+// ──────────────────────────────────────────────
+// CIERRE DE LOCAL — alerta visual en la pestaña.
+//
+// El dot rojo se enciende cuando alguno de estos casos aplica:
+//   1. Hoy ya hay un cierre registrado pero quedó INCOMPLETO.
+//   2. Hoy es día laboral y son más de las 18:30 (jornada concluida)
+//      pero NO hay cierre registrado todavía.
+//   3. El último día laboral anterior no tiene cierre registrado.
+//
+// Se llama silenciosamente al iniciar sesión y al cambiar de pestaña.
+// Si la tabla local_closures aún no existe, falla silenciosamente sin
+// romper la app — el dot simplemente no se enciende.
+// ──────────────────────────────────────────────
+async function refreshCierreLocalAlert() {
+  var dot = document.getElementById('boss-cierre-local-dot');
+  if (!dot) return;
+  // Solo se muestra a admin/jefatura (mismos roles que ven la pestaña).
+  if (!CU || (CU.role !== 'admin' && CU.role !== 'jefatura')) {
+    dot.classList.remove('show');
+    return;
+  }
+  try {
+    var todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    var sevenDaysAgo = new Date(todayStart.getTime() - 7 * 86400000);
+
+    var r = await sb.from('local_closures')
+      .select('closed_at, is_complete')
+      .gte('closed_at', sevenDaysAgo.toISOString())
+      .order('closed_at', {ascending: false})
+      .limit(20);
+    if (r.error) {
+      // Tabla aún no creada: ignorar silenciosamente.
+      dot.classList.remove('show');
+      return;
+    }
+    var rows = r.data || [];
+
+    // Indexar por día YYYY-MM-DD (hora local) → mejor cierre del día.
+    var byDay = {};
+    rows.forEach(function(c) {
+      var d = new Date(c.closed_at);
+      var key = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0')
+        + '-' + String(d.getDate()).padStart(2,'0');
+      // Si hay varios el mismo día, nos quedamos con el COMPLETO si existe.
+      if (!byDay[key] || (!byDay[key].is_complete && c.is_complete)) {
+        byDay[key] = c;
+      }
+    });
+
+    function dayKey(d) {
+      return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0')
+        + '-' + String(d.getDate()).padStart(2,'0');
+    }
+
+    var alerts = [];
+    var now = new Date();
+    var todayKey = dayKey(todayStart);
+    var todayClosure = byDay[todayKey];
+    var todayIsWorkDay = !!WORK_HOURS[now.getDay()];
+
+    // Caso 1: hoy hay cierre pero incompleto.
+    if (todayClosure && !todayClosure.is_complete) {
+      alerts.push('Cierre de hoy incompleto');
+    }
+    // Caso 2: hoy es día laboral, pasaron las 18:30, no hay cierre.
+    var pastClosingTime = (now.getHours() > 18) || (now.getHours() === 18 && now.getMinutes() >= 30);
+    if (!todayClosure && todayIsWorkDay && pastClosingTime) {
+      alerts.push('Falta registrar cierre de hoy');
+    }
+    // Caso 3: día laboral anterior sin cierre.
+    // Buscar el último día laboral que ya pasó (no incluye hoy).
+    var lookback = new Date(todayStart.getTime() - 86400000);
+    for (var i = 0; i < 7; i++) {
+      if (WORK_HOURS[lookback.getDay()]) {
+        var lookKey = dayKey(lookback);
+        if (!byDay[lookKey]) {
+          alerts.push('Día anterior sin cierre (' +
+            lookback.toLocaleDateString('es-CL', {weekday:'short', day:'2-digit'}) + ')');
+        }
+        break;
+      }
+      lookback = new Date(lookback.getTime() - 86400000);
+    }
+
+    if (alerts.length) {
+      dot.classList.add('show');
+      dot.setAttribute('title', alerts.join(' · '));
+    } else {
+      dot.classList.remove('show');
+      dot.removeAttribute('title');
+    }
+  } catch (e) {
+    // Cualquier fallo: dejar el dot apagado, no romper la UI.
+    dot.classList.remove('show');
   }
 }
 
@@ -8628,14 +8813,21 @@ async function renderBossReportes(body) {
   REP.data = rows;
 
   // ──────────────────────────────────────────────
-  // Card: KPIs
+  // Card: KPIs (rediseño mayo 2026)
+  //
+  // Cambio de filosofía:
+  //   - "Servicios" (sección 1): contadores nominales — cuántos vehículos
+  //     hubo, cuántos están finalizados, en curso, pausados. La pausa es
+  //     un ESTADO, no un acumulador de tiempo productivo.
+  //   - "Productividad" (sección 2): tiempo real sobre potencial laboral.
+  //     Productivo, capacidad jornada (9 téc × 9h L-Mi / 8h J / 7h V),
+  //     utilización %, en objetivo %.
+  //   - "Tiempo en pausa" YA NO aparece como KPI principal. Solo se muestra
+  //     en el análisis por vehículo más abajo, donde sí tiene sentido como
+  //     gestión operativa del auto en taller (espera de repuesto, etc.).
   // ──────────────────────────────────────────────
-  // Bug 9704d65b — pasar contexto del periodo para calcular capacidad,
-  // brecha (tiempo no registrado) y validar invariantes.
-  // technicianCount: si filtran por un técnico específico = 1; si es
-  // "todos" = cantidad de personas que operan como técnico (role='tech'
-  // O can_tech=true). Antes solo contaba role='tech' y dejaba afuera a
-  // jefes/admins que también cronometran (ej: Benjamín como jefatura).
+
+  // Bug 9704d65b — contexto del periodo para capacidad/brecha/invariantes.
   var techCountForCapacity = REP.technicianId
     ? 1
     : (techs || []).filter(function(u) {
@@ -8646,45 +8838,106 @@ async function renderBossReportes(body) {
     to: b2.to,
     technicianCount: techCountForCapacity
   });
-  var kpiCard = mk('div','');
-  kpiCard.style.marginBottom = '10px';
-  kpiCard.innerHTML = '<div class="lbl" style="margin-left:4px">Indicadores · ' + repRangeLabel() + '</div>';
-  var grid = mk('div','');
-  grid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:6px';
-  // BUG-FIX 446b7b6d: "Servicios" cuenta vehículos únicos (1 patente = 1 servicio),
-  // no registros de tiempo. kpis.total ahora es patentes únicas por construcción.
-  grid.appendChild(kpiBox('Servicios', kpis.total, '#111'));
-  grid.appendChild(kpiBox('En objetivo', kpis.pctOnTime + '%', kpis.pctOnTime >= 70 ? 'var(--green)' : 'var(--red)'));
-  grid.appendChild(kpiBox('Tiempo productivo', fmtHM(kpis.productiveSec), 'var(--blue)'));
-  grid.appendChild(kpiBox('Tiempo en pausa', fmtHM(kpis.pauseSec), 'var(--gold3)'));
-  // Bug 9704d65b — KPI nuevo: brecha (tiempo no registrado).
-  // Solo se muestra si el periodo tiene capacidad laboral > 0
-  // (no tiene sentido mostrar brecha en fines de semana).
-  if (kpis.capacitySec && kpis.capacitySec > 0) {
-    var brechaPct = kpis.capacitySec > 0
-      ? Math.round((kpis.unaccountedSec / kpis.capacitySec) * 100)
-      : 0;
-    var brechaColor = brechaPct > 30 ? 'var(--red)'
-      : brechaPct > 15 ? 'var(--gold3)'
-      : 'var(--green)';
-    var brechaLabel = 'No registrado'
-      + (REP.technicianId ? '' : ' (' + techCountForCapacity + ' téc.)');
-    grid.appendChild(kpiBox(brechaLabel,
-      fmtHM(kpis.unaccountedSec) + ' (' + brechaPct + '%)',
-      brechaColor));
-    grid.appendChild(kpiBox('Capacidad jornada',
-      fmtHM(kpis.capacitySec),
-      'var(--wh3)'));
-  }
-  kpiCard.appendChild(grid);
 
-  // Bug 9704d65b — alerta visual si hay violación de invariantes.
-  // No bloquea, solo informa: la idea es que el admin sepa que las
-  // métricas pueden estar contaminadas y revise.
+  // Helper local: caja KPI compacta con label arriba y valor grande abajo.
+  // Reemplaza el uso directo de kpiBox() para tener más control tipográfico.
+  function repKpiCell(label, value, sub, color) {
+    var c = color || '#111';
+    var d = mk('div','');
+    d.style.cssText = 'background:#fff;border:1px solid var(--wh5);border-radius:3px;'
+      + 'padding:10px 12px;display:flex;flex-direction:column;justify-content:center;min-height:64px';
+    d.innerHTML = '<div style="font-size:9px;font-weight:700;color:var(--wh3);'
+      + 'text-transform:uppercase;letter-spacing:.06em;font-family:\'Rajdhani\',sans-serif;'
+      + 'margin-bottom:4px;line-height:1.2">' + label + '</div>'
+      + '<div style="font-size:20px;font-weight:800;color:' + c + ';'
+      + 'font-family:\'Rajdhani\',sans-serif;letter-spacing:-.01em;line-height:1">' + value + '</div>'
+      + (sub ? '<div style="font-size:10px;color:var(--wh3);margin-top:3px;line-height:1.2">' + sub + '</div>' : '');
+    return d;
+  }
+
+  // ─── SECCIÓN 1: SERVICIOS (estado, no tiempo) ───
+  var srvCard = mk('div','');
+  srvCard.style.marginBottom = '12px';
+  srvCard.innerHTML = '<div class="lbl" style="margin-left:4px">'
+    + '<span style="color:var(--red)">▸</span> Servicios · ' + repRangeLabel() + '</div>';
+  var srvGrid = mk('div','');
+  srvGrid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:6px';
+  // Total = vehículos únicos (kpis.total = uniquePlates).
+  srvGrid.appendChild(repKpiCell('Total servicios', kpis.total,
+    kpis.totalRegistros !== kpis.total ? kpis.totalRegistros + ' registros de tiempo' : '1 patente = 1 servicio',
+    '#111'));
+  srvGrid.appendChild(repKpiCell('Finalizados', kpis.finalizados,
+    kpis.withGoal > 0 ? 'Con meta: ' + kpis.withGoal : 'Cerrados con checklist',
+    'var(--green)'));
+  srvGrid.appendChild(repKpiCell('En curso', kpis.activosRunning,
+    kpis.activosRunning === 1 ? 'Cronómetro activo' : 'Cronómetros activos',
+    kpis.activosRunning > 0 ? 'var(--blue)' : 'var(--wh3)'));
+  srvGrid.appendChild(repKpiCell('Pausados', kpis.activosPaused,
+    kpis.activosPaused > 3 ? 'Revisar pendientes' : 'Pendientes nominales',
+    kpis.activosPaused > 3 ? 'var(--red)' : kpis.activosPaused > 0 ? 'var(--gold3)' : 'var(--wh3)'));
+  srvCard.appendChild(srvGrid);
+  body.appendChild(srvCard);
+
+  // ─── SECCIÓN 2: PRODUCTIVIDAD (tiempo real vs potencial) ───
+  var prodCard = mk('div','');
+  prodCard.style.marginBottom = '12px';
+  prodCard.innerHTML = '<div class="lbl" style="margin-left:4px">'
+    + '<span style="color:var(--red)">▸</span> Productividad · ' + repRangeLabel() + '</div>';
+  var prodGrid = mk('div','');
+  prodGrid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:6px';
+
+  var capSec = kpis.capacitySec || 0;
+  var prodSec = kpis.productiveSec || 0;
+  var utilPct = capSec > 0 ? Math.round((prodSec / capSec) * 1000) / 10 : 0;
+  var utilColor = utilPct >= 65 ? 'var(--green)' : utilPct >= 45 ? 'var(--gold3)' : 'var(--red)';
+
+  // Sublabel de capacidad: explicar el cómputo (técnicos × horas/día).
+  // Para el rango "hoy" muestra la jornada del día; para rangos largos
+  // solo muestra el total acumulado.
+  var capSub = '';
+  if (capSec > 0) {
+    if (REP.range === 'hoy') {
+      var dow = b2.from.getDay();
+      var hoursDay = (dow === 4) ? 8 : (dow === 5) ? 7 : (dow >= 1 && dow <= 3) ? 9 : 0;
+      capSub = techCountForCapacity + ' téc × ' + hoursDay + 'h';
+    } else {
+      capSub = techCountForCapacity + ' técnicos · jornada L-V';
+    }
+  } else {
+    capSub = 'Fuera de horario laboral';
+  }
+
+  prodGrid.appendChild(repKpiCell('Tiempo productivo', fmtHM(prodSec),
+    'Trabajo cronometrado real', 'var(--blue)'));
+  prodGrid.appendChild(repKpiCell('Capacidad jornada',
+    capSec > 0 ? fmtHM(capSec) : '—',
+    capSub, 'var(--wh3)'));
+  prodGrid.appendChild(repKpiCell('Utilización',
+    capSec > 0 ? utilPct + '%' : '—',
+    capSec > 0 ? 'Productivo / capacidad' : 'Sin jornada en el rango',
+    capSec > 0 ? utilColor : 'var(--wh3)'));
+  prodGrid.appendChild(repKpiCell('En objetivo',
+    kpis.withGoal > 0 ? kpis.pctOnTime + '%' : '—',
+    kpis.withGoal > 0 ? kpis.onTime + ' de ' + kpis.withGoal + ' con meta' : 'Sin servicios con meta',
+    kpis.withGoal === 0 ? 'var(--wh3)' : kpis.pctOnTime >= 70 ? 'var(--green)' : 'var(--red)'));
+  prodCard.appendChild(prodGrid);
+
+  // Aviso explicativo si la capacidad es 0 (ej: domingo o filtro raro).
+  if (capSec === 0) {
+    var nocap = mk('div','');
+    nocap.style.cssText = 'margin-top:8px;padding:6px 10px;background:rgba(120,120,120,.06);'
+      + 'border-left:3px solid var(--wh4);border-radius:3px;font-size:10px;color:var(--wh3);line-height:1.4';
+    nocap.textContent = 'El rango seleccionado no tiene jornada laboral definida (fin de semana o fuera de horario). La utilización no se calcula.';
+    prodCard.appendChild(nocap);
+  }
+  body.appendChild(prodCard);
+
+  // Alerta de invariantes (se mantiene del flujo anterior, ahora con look
+  // consistente y en su propia tarjeta para que no compita con los KPIs).
   if (kpis._invalid && kpis._violations && kpis._violations.length) {
     var warn = mk('div','');
-    warn.style.cssText = 'margin-top:10px;padding:8px 10px;background:rgba(218,165,32,.08);'
-      + 'border-left:3px solid var(--gold3);border-radius:3px;font-size:11px;line-height:1.4';
+    warn.style.cssText = 'margin-bottom:12px;padding:10px 12px;background:rgba(218,165,32,.08);'
+      + 'border-left:3px solid var(--gold3);border-radius:3px;font-size:11px;line-height:1.5';
     var head = '<div style="font-weight:700;color:var(--gold3);text-transform:uppercase;'
       + 'letter-spacing:.04em;font-family:\'Rajdhani\',sans-serif;margin-bottom:4px">'
       + '⚠ Métricas posiblemente inválidas</div>';
@@ -8692,10 +8945,80 @@ async function renderBossReportes(body) {
       return '<div style="color:var(--wh2)">• ' + v + '</div>';
     }).join('');
     warn.innerHTML = head + list;
-    kpiCard.appendChild(warn);
+    body.appendChild(warn);
   }
 
-  body.appendChild(kpiCard);
+  // ──────────────────────────────────────────────
+  // Card: ANÁLISIS POR VEHÍCULO (gestión operativa)
+  //
+  // Aquí "tiempo en pausa" SÍ tiene sentido: representa cuánto tiempo
+  // un auto estuvo esperando (repuesto, decisión del cliente, etc.) en
+  // contraposición al tiempo de trabajo activo. Es una métrica de
+  // gestión del vehículo, no de productividad del técnico.
+  //
+  // Por cada patente única en el rango se muestra:
+  //   - Tiempo total en taller: span entre la primera entrada y la última
+  //     salida (capeado a horario laboral).
+  //   - Tiempo activo: suma de productiveSec de todas las filas del auto.
+  //   - Tiempo espera/pausa: suma de pauseSec de todas las filas.
+  //   - Estado actual: en curso / pausado / finalizado.
+  // ──────────────────────────────────────────────
+  var perPlate = buildPerPlateAnalysis(REP.data, b2.from, b2.to);
+  if (perPlate.length) {
+    var pvCard = mk('div','');
+    pvCard.style.marginBottom = '12px';
+    pvCard.innerHTML = '<div class="lbl" style="margin-left:4px">'
+      + '<span style="color:var(--red)">▸</span> Análisis por vehículo · '
+      + perPlate.length + ' patente' + (perPlate.length === 1 ? '' : 's') + '</div>';
+    var pvWrap = mk('div','card');
+    pvWrap.style.padding = '0';
+    pvWrap.style.overflow = 'hidden';
+
+    // Encabezado de columnas
+    var pvHead = mk('div','');
+    pvHead.style.cssText = 'display:grid;grid-template-columns:1.4fr 1fr 1fr 1fr 1fr;'
+      + 'gap:8px;padding:8px 10px;background:#f6f6f6;border-bottom:1px solid var(--wh5);'
+      + 'font-size:9px;font-weight:700;color:var(--wh3);text-transform:uppercase;'
+      + 'letter-spacing:.05em;font-family:\'Rajdhani\',sans-serif';
+    pvHead.innerHTML = '<div>Patente</div><div>En taller</div><div>Activo</div>'
+      + '<div>Espera</div><div>Estado</div>';
+    pvWrap.appendChild(pvHead);
+
+    perPlate.forEach(function(p, idx) {
+      var rowEl = mk('div','');
+      rowEl.style.cssText = 'display:grid;grid-template-columns:1.4fr 1fr 1fr 1fr 1fr;'
+        + 'gap:8px;padding:8px 10px;font-size:11px;align-items:center;'
+        + (idx > 0 ? 'border-top:1px solid var(--wh5);' : '');
+      var stColor = p.status === 'running' ? 'var(--green)'
+        : p.status === 'paused' ? 'var(--gold3)'
+        : 'var(--wh3)';
+      var stLabel = p.status === 'running' ? 'En curso'
+        : p.status === 'paused' ? 'Pausado'
+        : 'Finalizado';
+      var pauseColor = p.pauseSec > p.activeSec ? 'var(--red)'
+        : p.pauseSec > p.activeSec * 0.3 ? 'var(--gold3)'
+        : 'var(--wh3)';
+      rowEl.innerHTML = '<div><span class="plate-tag" style="font-size:10px">'
+          + escapeHtml(p.plate) + '</span></div>'
+        + '<div style="font-family:var(--mono);font-weight:600;color:#111">' + fmtHM(p.totalShopSec) + '</div>'
+        + '<div style="font-family:var(--mono);font-weight:600;color:var(--blue)">' + fmtHM(p.activeSec) + '</div>'
+        + '<div style="font-family:var(--mono);color:' + pauseColor + '">' + fmtHM(p.pauseSec) + '</div>'
+        + '<div><span style="display:inline-block;padding:2px 8px;border-radius:10px;'
+          + 'background:rgba(0,0,0,.04);color:' + stColor + ';font-size:10px;'
+          + 'font-weight:700;text-transform:uppercase;letter-spacing:.04em;'
+          + 'font-family:\'Rajdhani\',sans-serif">' + stLabel + '</span></div>';
+      pvWrap.appendChild(rowEl);
+    });
+
+    pvCard.appendChild(pvWrap);
+    var pvHint = mk('div','');
+    pvHint.style.cssText = 'font-size:10px;color:var(--wh4);margin-top:6px;line-height:1.5;padding:0 4px';
+    pvHint.innerHTML = '<b>En taller:</b> tiempo desde la primera entrada hasta la última salida (en horario laboral). '
+      + '<b>Activo:</b> trabajo cronometrado real. '
+      + '<b>Espera:</b> tiempo en pausa — útil para detectar autos detenidos por repuestos o decisiones pendientes.';
+    pvCard.appendChild(pvHint);
+    body.appendChild(pvCard);
+  }
 
   // ──────────────────────────────────────────────
   // Card: EXPORTAR
@@ -9027,6 +9350,126 @@ function computeKPIs(rows, periodCtx) {
   }
   return out;
 }
+
+// ─────────────────────────────────────────────────────────────────
+// buildPerPlateAnalysis — análisis por vehículo para gestión operativa
+// ─────────────────────────────────────────────────────────────────
+// Por cada patente única en el rango devuelve:
+//   { plate, totalShopSec, activeSec, pauseSec, status, sessions }
+//
+//  - totalShopSec: tiempo en taller (intersección de [primera entrada,
+//    última salida del auto] con horario laboral). Es el span operativo
+//    del vehículo; útil para responder "¿cuánto tiempo estuvo el auto
+//    bajo nuestra responsabilidad?".
+//  - activeSec: suma de productiveSec ya prorrateado por proRateRowInRange
+//    (consistente con el productivo agregado que muestra el header).
+//  - pauseSec: idem para pausas.
+//  - status: 'running' si alguna sesión está activa corriendo,
+//            'paused' si todas las activas están pausadas,
+//            'closed' si no hay sesiones activas.
+//
+// Nota: las filas sin patente (ej: logística de taller) se ignoran porque
+// no son vehículos en taller — son trabajo operativo del propio taller.
+// ─────────────────────────────────────────────────────────────────
+function buildPerPlateAnalysis(rows, rangeFrom, rangeTo) {
+  if (!rows || !rows.length) return [];
+  var nowMs = Date.now();
+  var fromMs = rangeFrom ? new Date(rangeFrom).getTime() : null;
+  var toMs = rangeTo ? new Date(rangeTo).getTime() : null;
+  var toCappedMs = toMs !== null ? Math.min(toMs, nowMs) : null;
+  var byPlate = {};
+
+  rows.forEach(function(r) {
+    if (!r.plate) return;
+    var pNorm = (typeof normalizePlate === 'function')
+      ? normalizePlate(r.plate)
+      : String(r.plate).toUpperCase();
+    if (!pNorm || pNorm === 'LOGISTICA DE TALLER') return;
+
+    if (!byPlate[pNorm]) {
+      byPlate[pNorm] = {
+        plate: pNorm,
+        firstStartMs: null,
+        lastEndMs: null,
+        activeSec: 0,
+        pauseSec: 0,
+        anyRunning: false,
+        anyPaused: false,
+        anyActive: false,
+        sessions: 0
+      };
+    }
+    var p = byPlate[pNorm];
+    p.sessions += 1;
+
+    // Span operativo: intentar usar started_at + ended_at; si no hay
+    // started_at (filas legacy de history), inferir desde ended_at - seconds.
+    var startMs = null, endMs = null;
+    if (r.started_at) startMs = new Date(r.started_at).getTime();
+    if (r.ended_at) endMs = new Date(r.ended_at).getTime();
+    if (!startMs && endMs && r.seconds) {
+      startMs = endMs - (r.seconds * 1000);
+    }
+    if (startMs && (p.firstStartMs === null || startMs < p.firstStartMs)) {
+      p.firstStartMs = startMs;
+    }
+    if (endMs && (p.lastEndMs === null || endMs > p.lastEndMs)) {
+      p.lastEndMs = endMs;
+    }
+
+    // Tiempos prorrateados al rango (consistente con KPIs del header).
+    if (fromMs !== null && toCappedMs !== null) {
+      var pr = proRateRowInRange(r, new Date(fromMs), new Date(toCappedMs));
+      p.activeSec += pr.productiveSec;
+      p.pauseSec += pr.pauseSec;
+    } else {
+      p.activeSec += (r.seconds || 0);
+    }
+
+    if (r._is_active) {
+      p.anyActive = true;
+      if (r._status === 'running') p.anyRunning = true;
+      else if (r._status === 'paused') p.anyPaused = true;
+    }
+  });
+
+  // Calcular totalShopSec por patente y emitir el array final.
+  var out = Object.keys(byPlate).map(function(k) {
+    var p = byPlate[k];
+    var span = 0;
+    if (p.firstStartMs !== null && p.lastEndMs !== null && p.lastEndMs > p.firstStartMs) {
+      // Cap al rango pedido para que un auto que empezó hace una semana
+      // no infle el span del reporte de "hoy".
+      var s = fromMs !== null ? Math.max(p.firstStartMs, fromMs) : p.firstStartMs;
+      var e = toCappedMs !== null ? Math.min(p.lastEndMs, toCappedMs) : p.lastEndMs;
+      if (e > s) {
+        // Intersección con horario laboral — reusa el motor existente.
+        span = effectivePauseSecBetween(new Date(s), new Date(e));
+      }
+    }
+    var status = p.anyRunning ? 'running'
+      : p.anyPaused ? 'paused'
+      : 'closed';
+    return {
+      plate: p.plate,
+      totalShopSec: span,
+      activeSec: Math.round(p.activeSec),
+      pauseSec: Math.round(p.pauseSec),
+      status: status,
+      sessions: p.sessions
+    };
+  });
+
+  // Orden: primero los activos (running/paused) por estado, después los
+  // cerrados por mayor tiempo en taller.
+  out.sort(function(a, b) {
+    var rank = {running: 0, paused: 1, closed: 2};
+    if (rank[a.status] !== rank[b.status]) return rank[a.status] - rank[b.status];
+    return b.totalShopSec - a.totalShopSec;
+  });
+  return out;
+}
+
 async function renderBossUsers(body) {
   body.innerHTML = '<div class="empty"><span class="spin"></span>Cargando...</div>';
   var {data} = await sb.from('users').select('*').order('role').order('name');
@@ -14058,6 +14501,519 @@ async function viewProtocolosDoubleCheck(otId) {
       + '<div style="margin-top:14px"><button class="btn btn-out" onclick="closeModal(\'m-visado-hist\')">Cerrar</button></div>';
     openModal('m-visado-hist');
   } catch(e) { showGlobalError('Error: ' + e.message, 4000); }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// CIERRE DE LOCAL — checklist diario obligatorio (mayo 2026)
+// ═══════════════════════════════════════════════════════════════
+// Pestaña exclusiva para jefatura y administración. Control de cierre
+// operativo y de seguridad del taller al final de cada jornada.
+//
+// Esquema en Supabase (table: local_closures)
+//   id              uuid pk default gen_random_uuid()
+//   closed_at       timestamptz default now()
+//   responsible_id  uuid references users(id)
+//   responsible_name text
+//   checklist       jsonb     -- { item_key: { ok: bool, na: bool, notes: text } }
+//   notes           text
+//   is_complete     boolean   -- true si todos los items obligatorios están OK o N/A
+//   missing_items   jsonb     -- array de keys faltantes (para alertas)
+//   created_at      timestamptz default now()
+//
+// SQL de creación (ejecutar 1 vez en Supabase):
+/*
+create table public.local_closures (
+  id uuid primary key default gen_random_uuid(),
+  closed_at timestamptz not null default now(),
+  responsible_id uuid references public.users(id),
+  responsible_name text,
+  checklist jsonb not null,
+  notes text,
+  is_complete boolean not null default false,
+  missing_items jsonb,
+  created_at timestamptz not null default now()
+);
+create index idx_local_closures_closed_at on public.local_closures(closed_at desc);
+alter table public.local_closures enable row level security;
+create policy "auth read closures" on public.local_closures for select to authenticated using (true);
+create policy "auth insert closures" on public.local_closures for insert to authenticated with check (true);
+create policy "auth update closures" on public.local_closures for update to authenticated using (true);
+*/
+// ═══════════════════════════════════════════════════════════════
+
+// Definición del checklist. mandatoryDays: array de getDay() (1=lun, 5=vie)
+// donde el item es obligatorio; vacío = todos los días. Sub-items se anidan
+// como `parent_subkey` y se renderizan visualmente bajo el padre.
+var CIERRE_LOCAL_CHECKLIST = [
+  {section: 'Limpieza y orden', items: [
+    {key:'limpieza_zonas',    label:'Limpieza de zonas de trabajo'},
+    {key:'sacar_basura',      label:'Sacar basura', mandatoryDays:[1,3,5], hint:'Lunes / Miércoles / Viernes'},
+    {key:'reponer_bolsas',    label:'Reponer bolsas de basura'},
+    {key:'guardar_herramientas', label:'Guardar herramientas'},
+    {key:'guardar_pertenencias', label:'Guardar elementos y pertenencias de vehículos'},
+    {key:'guardar_insumos',   label:'Guardar insumos en bodega'}
+  ]},
+  {section: 'Equipos y escáners', items: [
+    {key:'limpiar_escaners',  label:'Limpiar escáners'},
+    {key:'guardar_escaners',  label:'Guardar escáners en zona segura y fuera de vista'}
+  ]},
+  {section: 'Aperturas y candados', items: [
+    {key:'cerrar_ventanas',   label:'Cerrar todas las ventanas'},
+    {key:'candado_india',     label:'Candado · Zona India'},
+    {key:'candado_garaje',    label:'Candado · Garaje'},
+    {key:'candado_pta_garaje',label:'Candado · Puerta garaje'},
+    {key:'candado_pta_ventas',label:'Candado · Puerta sala de ventas'},
+    {key:'candado_porton',    label:'Candado · Portón de acceso'},
+    {key:'candado_pta_acc',   label:'Candado · Puerta de acceso'}
+  ]},
+  {section: 'Vehículos', items: [
+    {key:'cierre_vehiculos',  label:'Verificar cierre de vehículos'},
+    {key:'alarmas_vehiculos', label:'Verificar activación de alarma de cada vehículo'},
+    {key:'llaves_bodega',     label:'Guardar llaves de vehículos en bodega'},
+    {key:'llaves_caja_seg',   label:'Guardar llaves en caja de seguridad escondida'}
+  ]},
+  {section: 'Alarma general', items: [
+    {key:'alarma_local',      label:'Activar alarma general del local'}
+  ]}
+];
+
+// Estado en memoria del checklist en construcción.
+var _cierreLocalState = {
+  checklist: {},   // {item_key: {ok, na, notes}}
+  notes: '',
+  inProgressId: null  // si se está editando un cierre ya guardado
+};
+
+// Devuelve la lista plana de items aplicables al día indicado (Date).
+function _cierreLocalItemsForDay(date) {
+  var dow = date.getDay();
+  var flat = [];
+  CIERRE_LOCAL_CHECKLIST.forEach(function(sec) {
+    sec.items.forEach(function(it) {
+      if (it.mandatoryDays && it.mandatoryDays.length && it.mandatoryDays.indexOf(dow) === -1) {
+        // Item solo obligatorio ciertos días — hoy es opcional.
+        flat.push(Object.assign({}, it, {_optional: true, _section: sec.section}));
+      } else {
+        flat.push(Object.assign({}, it, {_optional: false, _section: sec.section}));
+      }
+    });
+  });
+  return flat;
+}
+
+// Calcula completitud y items faltantes a partir del estado actual.
+function _cierreLocalCompletion(state, date) {
+  var items = _cierreLocalItemsForDay(date || new Date());
+  var missing = [];
+  var totalRequired = 0;
+  var doneRequired = 0;
+  items.forEach(function(it) {
+    if (it._optional) return;
+    totalRequired += 1;
+    var v = (state.checklist || {})[it.key];
+    if (v && (v.ok === true || v.na === true)) {
+      doneRequired += 1;
+    } else {
+      missing.push(it.key);
+    }
+  });
+  return {
+    isComplete: missing.length === 0,
+    missing: missing,
+    totalRequired: totalRequired,
+    doneRequired: doneRequired,
+    pct: totalRequired > 0 ? Math.round((doneRequired / totalRequired) * 100) : 100
+  };
+}
+
+async function renderBossCierreLocal(body) {
+  body.innerHTML = '<div class="empty"><span class="spin"></span>Cargando...</div>';
+
+  // Verificar si ya hay un cierre de hoy. Si existe y NO está completo,
+  // ofrecer continuarlo. Si está completo, mostrar el resumen y dar
+  // opción de hacer un nuevo registro (raro pero posible: doble turno).
+  var todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  var todayEnd = new Date(todayStart.getTime() + 86400000);
+
+  var todayRes = null;
+  try {
+    var r = await sb.from('local_closures')
+      .select('*')
+      .gte('closed_at', todayStart.toISOString())
+      .lt('closed_at', todayEnd.toISOString())
+      .order('closed_at', {ascending: false})
+      .limit(1);
+    if (r && r.data && r.data.length) todayRes = r.data[0];
+  } catch (e) {
+    // Tabla podría no existir todavía — guiamos al usuario al SQL.
+    body.innerHTML = '';
+    var errCard = mk('div','card');
+    errCard.style.borderLeft = '4px solid var(--red)';
+    errCard.innerHTML = '<div class="lbl" style="color:var(--red)">Tabla no encontrada</div>'
+      + '<div style="font-size:12px;color:var(--wh2);line-height:1.5;margin-bottom:8px">'
+      + 'Esta pestaña requiere la tabla <code style="background:#f4f4f4;padding:1px 6px;'
+      + 'border-radius:3px">local_closures</code> en Supabase. Ejecuta el SQL del comentario'
+      + ' al inicio de la sección "CIERRE DE LOCAL" en <code>index.html</code>.</div>'
+      + '<div style="font-size:11px;color:var(--wh3)">Detalle técnico: ' + escapeHtml(String(e && e.message || e)) + '</div>';
+    body.appendChild(errCard);
+    return;
+  }
+
+  body.innerHTML = '';
+
+  // Header con fecha y responsable.
+  var head = mk('div','card-accent');
+  head.style.marginBottom = '10px';
+  var weekday = todayStart.toLocaleDateString('es-CL', {weekday:'long'});
+  var dayLabel = todayStart.toLocaleDateString('es-CL', {day:'2-digit', month:'long', year:'numeric'});
+  head.innerHTML = '<div class="lbl">Checklist de cierre · ' + weekday[0].toUpperCase() + weekday.slice(1) + '</div>'
+    + '<div style="font-size:13px;font-weight:700;font-family:\'Rajdhani\',sans-serif;'
+    + 'text-transform:uppercase;color:#111">' + dayLabel + '</div>'
+    + '<div style="font-size:11px;color:var(--wh3);margin-top:4px">'
+    + 'Responsable del cierre: <strong>' + escapeHtml(CU.name) + '</strong></div>';
+  body.appendChild(head);
+
+  // Si ya hay cierre hoy, mostrar resumen y opción de ver/editar.
+  if (todayRes) {
+    var existing = mk('div','card');
+    existing.style.borderLeft = '4px solid ' + (todayRes.is_complete ? 'var(--green)' : 'var(--gold3)');
+    var hh = new Date(todayRes.closed_at).toLocaleTimeString('es-CL', {hour:'2-digit', minute:'2-digit'});
+    var stTxt = todayRes.is_complete ? 'Completo' : 'Incompleto';
+    var stColor = todayRes.is_complete ? 'var(--green)' : 'var(--gold3)';
+    existing.innerHTML = '<div class="lbl" style="color:' + stColor + '">'
+      + 'Cierre registrado hoy · ' + stTxt + '</div>'
+      + '<div style="font-size:12px;color:var(--wh2);margin-bottom:6px">Hora: <strong>' + hh + '</strong>'
+      + ' · Responsable: <strong>' + escapeHtml(todayRes.responsible_name || '—') + '</strong></div>'
+      + (todayRes.missing_items && todayRes.missing_items.length
+          ? '<div style="font-size:11px;color:var(--red);margin-bottom:6px">'
+            + '⚠ ' + todayRes.missing_items.length + ' item' + (todayRes.missing_items.length === 1 ? '' : 's') + ' sin cumplir</div>'
+          : '');
+    var btnEdit = mk('button','btn-sm');
+    btnEdit.textContent = todayRes.is_complete ? 'Ver detalle' : 'Continuar y completar';
+    btnEdit.onclick = function() { _cierreLocalEdit(todayRes, body); };
+    existing.appendChild(btnEdit);
+    body.appendChild(existing);
+  }
+
+  // Botón principal: nuevo cierre (o continuar si hay incompleto)
+  var newBtn = mk('button','btn btn-red');
+  newBtn.style.marginBottom = '12px';
+  newBtn.textContent = todayRes
+    ? (todayRes.is_complete ? 'Registrar cierre adicional' : 'Continuar cierre de hoy')
+    : 'Iniciar checklist de cierre';
+  newBtn.onclick = function() {
+    if (todayRes && !todayRes.is_complete) {
+      _cierreLocalEdit(todayRes, body);
+    } else {
+      _cierreLocalNew(body);
+    }
+  };
+  body.appendChild(newBtn);
+
+  // Histórico de últimos cierres (30 días) y dashboard de incumplimientos.
+  await _cierreLocalRenderHistory(body);
+}
+
+async function _cierreLocalRenderHistory(body) {
+  var thirtyAgo = new Date(Date.now() - 30 * 86400000);
+  var r;
+  try {
+    r = await sb.from('local_closures')
+      .select('*')
+      .gte('closed_at', thirtyAgo.toISOString())
+      .order('closed_at', {ascending: false})
+      .limit(60);
+  } catch (e) { return; }
+  var rows = (r && r.data) || [];
+
+  // Dashboard: % de cumplimiento últimos 30 días + items que más fallan.
+  if (rows.length) {
+    var dashCard = mk('div','');
+    dashCard.style.marginBottom = '10px';
+    dashCard.innerHTML = '<div class="lbl" style="margin-left:4px">'
+      + '<span style="color:var(--red)">▸</span> Cumplimiento (últimos 30 días)</div>';
+    var dashGrid = mk('div','');
+    dashGrid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:6px';
+
+    var completos = rows.filter(function(x) { return x.is_complete; }).length;
+    var pctOk = rows.length > 0 ? Math.round((completos / rows.length) * 100) : 0;
+    var pctColor = pctOk >= 90 ? 'var(--green)' : pctOk >= 70 ? 'var(--gold3)' : 'var(--red)';
+
+    // Conteo de items faltantes a lo largo del periodo.
+    var missCount = {};
+    rows.forEach(function(x) {
+      var miss = Array.isArray(x.missing_items) ? x.missing_items : [];
+      miss.forEach(function(k) { missCount[k] = (missCount[k] || 0) + 1; });
+    });
+    var topMiss = Object.keys(missCount).sort(function(a, b) { return missCount[b] - missCount[a]; })[0];
+    var topMissLabel = '—';
+    if (topMiss) {
+      // Buscar el label legible del item.
+      CIERRE_LOCAL_CHECKLIST.forEach(function(sec) {
+        sec.items.forEach(function(it) {
+          if (it.key === topMiss) topMissLabel = it.label;
+        });
+      });
+    }
+
+    function smallKpi(label, value, sub, color) {
+      var d = mk('div','');
+      d.style.cssText = 'background:#fff;border:1px solid var(--wh5);border-radius:3px;'
+        + 'padding:10px 12px;display:flex;flex-direction:column;justify-content:center;min-height:64px';
+      d.innerHTML = '<div style="font-size:9px;font-weight:700;color:var(--wh3);'
+        + 'text-transform:uppercase;letter-spacing:.06em;font-family:\'Rajdhani\',sans-serif;'
+        + 'margin-bottom:4px;line-height:1.2">' + label + '</div>'
+        + '<div style="font-size:18px;font-weight:800;color:' + (color || '#111') + ';'
+        + 'font-family:\'Rajdhani\',sans-serif;letter-spacing:-.01em;line-height:1.05">' + value + '</div>'
+        + (sub ? '<div style="font-size:10px;color:var(--wh3);margin-top:3px;line-height:1.2">' + sub + '</div>' : '');
+      return d;
+    }
+    dashGrid.appendChild(smallKpi('Cierres registrados', rows.length, completos + ' completos / ' + (rows.length - completos) + ' incompletos', '#111'));
+    dashGrid.appendChild(smallKpi('% Cumplimiento', pctOk + '%', 'Cierres completos sobre total', pctColor));
+    if (topMiss) {
+      dashGrid.appendChild(smallKpi('Item que más falla', topMissLabel,
+        missCount[topMiss] + ' incumplimiento' + (missCount[topMiss] === 1 ? '' : 's'),
+        'var(--red)'));
+    }
+    dashCard.appendChild(dashGrid);
+    body.appendChild(dashCard);
+  }
+
+  // Listado histórico
+  var histCard = mk('div','');
+  histCard.innerHTML = '<div class="lbl" style="margin-left:4px">'
+    + '<span style="color:var(--red)">▸</span> Historial · ' + rows.length + ' registro' + (rows.length === 1 ? '' : 's') + '</div>';
+  if (!rows.length) {
+    var emp = mk('div','empty');
+    emp.textContent = 'Sin cierres registrados aún';
+    histCard.appendChild(emp);
+  } else {
+    var listCard = mk('div','card');
+    listCard.style.padding = '0';
+    rows.forEach(function(c, idx) {
+      var d = new Date(c.closed_at);
+      var fecha = d.toLocaleDateString('es-CL', {weekday:'short', day:'2-digit', month:'short'});
+      var hora = d.toLocaleTimeString('es-CL', {hour:'2-digit', minute:'2-digit'});
+      var stColor = c.is_complete ? 'var(--green)' : 'var(--gold3)';
+      var stLabel = c.is_complete ? 'Completo' : 'Incompleto';
+      var rowEl = mk('div','');
+      rowEl.style.cssText = 'display:flex;align-items:center;gap:10px;padding:10px 12px;'
+        + (idx > 0 ? 'border-top:1px solid var(--wh5);' : '')
+        + 'cursor:pointer';
+      rowEl.onclick = function() { _cierreLocalView(c); };
+      rowEl.innerHTML = '<div style="width:8px;height:8px;border-radius:50%;background:' + stColor + ';flex-shrink:0"></div>'
+        + '<div style="flex:1;min-width:0">'
+        + '<div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111">' + fecha + ' · ' + hora + '</div>'
+        + '<div style="font-size:11px;color:var(--wh3)">' + escapeHtml(c.responsible_name || '—') + '</div>'
+        + '</div>'
+        + '<div style="font-size:10px;font-weight:700;color:' + stColor + ';text-transform:uppercase;letter-spacing:.04em;font-family:\'Rajdhani\',sans-serif">' + stLabel
+        + (c.missing_items && c.missing_items.length ? ' · ' + c.missing_items.length + ' faltan' : '')
+        + '</div>';
+      listCard.appendChild(rowEl);
+    });
+    histCard.appendChild(listCard);
+  }
+  body.appendChild(histCard);
+}
+
+function _cierreLocalNew(body) {
+  _cierreLocalState = { checklist: {}, notes: '', inProgressId: null };
+  _cierreLocalRenderForm(body);
+}
+
+function _cierreLocalEdit(existing, body) {
+  _cierreLocalState = {
+    checklist: existing.checklist || {},
+    notes: existing.notes || '',
+    inProgressId: existing.id
+  };
+  _cierreLocalRenderForm(body);
+}
+
+function _cierreLocalRenderForm(body) {
+  body.innerHTML = '';
+  var today = new Date();
+
+  var headBack = mk('div','');
+  headBack.style.cssText = 'margin-bottom:10px;display:flex;align-items:center;gap:8px';
+  var backBtn = mk('button','btn-sm');
+  backBtn.textContent = '← Volver';
+  backBtn.onclick = function() { renderBossCierreLocal(body); };
+  headBack.appendChild(backBtn);
+  var ttl = mk('div','');
+  ttl.style.cssText = 'font-size:14px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111';
+  ttl.textContent = _cierreLocalState.inProgressId ? 'Continuar cierre' : 'Nuevo cierre de local';
+  headBack.appendChild(ttl);
+  body.appendChild(headBack);
+
+  // Render por sección
+  CIERRE_LOCAL_CHECKLIST.forEach(function(sec) {
+    var secCard = mk('div','card');
+    secCard.style.marginBottom = '10px';
+    var secHead = mk('div','');
+    secHead.style.cssText = 'font-size:11px;font-weight:700;color:var(--red);'
+      + 'text-transform:uppercase;letter-spacing:.06em;font-family:\'Rajdhani\',sans-serif;'
+      + 'margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid rgba(189,29,29,.18)';
+    secHead.textContent = sec.section;
+    secCard.appendChild(secHead);
+
+    sec.items.forEach(function(it) {
+      var dow = today.getDay();
+      var optional = it.mandatoryDays && it.mandatoryDays.length && it.mandatoryDays.indexOf(dow) === -1;
+      var st = _cierreLocalState.checklist[it.key] || {};
+      var row = mk('div','');
+      row.style.cssText = 'padding:8px 0;border-top:1px solid var(--wh5);' + (optional ? 'opacity:.7;' : '');
+      row.dataset.itemKey = it.key;
+      var labelHtml = '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">'
+        + '<div style="font-size:12px;color:#111;line-height:1.3;flex:1">'
+        + escapeHtml(it.label)
+        + (optional ? '<span style="font-size:10px;color:var(--wh3);margin-left:6px">(opcional hoy)</span>' : '')
+        + (it.hint ? '<div style="font-size:10px;color:var(--wh3);margin-top:2px">' + escapeHtml(it.hint) + '</div>' : '')
+        + '</div>'
+        + '</div>';
+      var btnRow = mk('div','');
+      btnRow.style.cssText = 'display:flex;gap:6px;margin-top:6px;flex-wrap:wrap';
+      ['ok','na'].forEach(function(kind) {
+        var btn = mk('button','sel-btn');
+        btn.style.cssText = 'flex:0 0 auto;padding:6px 12px;font-size:11px;min-width:80px';
+        var active = (kind === 'ok' && st.ok === true) || (kind === 'na' && st.na === true);
+        if (active) btn.classList.add('on');
+        btn.textContent = kind === 'ok' ? '✓ OK' : 'N/A';
+        btn.onclick = function() {
+          // Toggle exclusivo entre ok / na
+          var prev = _cierreLocalState.checklist[it.key] || {};
+          var next = {};
+          if (kind === 'ok') {
+            next.ok = !prev.ok; next.na = false;
+          } else {
+            next.na = !prev.na; next.ok = false;
+          }
+          if (prev.notes) next.notes = prev.notes;
+          _cierreLocalState.checklist[it.key] = next;
+          _cierreLocalRenderForm(body);
+        };
+        btnRow.appendChild(btn);
+      });
+      row.innerHTML = labelHtml;
+      row.appendChild(btnRow);
+      secCard.appendChild(row);
+    });
+    body.appendChild(secCard);
+  });
+
+  // Notas generales del cierre
+  var notesCard = mk('div','card');
+  notesCard.innerHTML = '<div class="lbl">Observaciones del cierre (opcional)</div>';
+  var ta = mk('textarea','inp');
+  ta.style.cssText = 'min-height:64px';
+  ta.placeholder = 'Cualquier nota relevante: incidente, material faltante, llave perdida, etc.';
+  ta.value = _cierreLocalState.notes || '';
+  ta.oninput = function() { _cierreLocalState.notes = this.value; };
+  notesCard.appendChild(ta);
+  body.appendChild(notesCard);
+
+  // Estado de completitud + botón de guardar
+  var compl = _cierreLocalCompletion(_cierreLocalState, today);
+  var statusCard = mk('div','card-accent');
+  statusCard.style.cssText = 'margin-top:10px;border-left:4px solid '
+    + (compl.isComplete ? 'var(--green)' : 'var(--gold3)');
+  statusCard.innerHTML = '<div class="lbl">Estado del checklist</div>'
+    + '<div style="font-size:13px;font-weight:700;color:'
+    + (compl.isComplete ? 'var(--green)' : 'var(--gold3)') + '">'
+    + (compl.isComplete ? '✓ Completo · listo para registrar' :
+        ('⏳ Faltan ' + (compl.totalRequired - compl.doneRequired) + ' item' +
+         (compl.totalRequired - compl.doneRequired === 1 ? '' : 's') + ' obligatorio' +
+         (compl.totalRequired - compl.doneRequired === 1 ? '' : 's')))
+    + '</div>'
+    + '<div style="font-size:11px;color:var(--wh3);margin-top:4px">'
+    + compl.doneRequired + ' de ' + compl.totalRequired + ' obligatorios · ' + compl.pct + '%</div>';
+  body.appendChild(statusCard);
+
+  var saveBtn = mk('button','btn btn-red');
+  saveBtn.style.marginTop = '10px';
+  saveBtn.textContent = compl.isComplete ? 'Registrar cierre completo' : 'Guardar avance (incompleto)';
+  saveBtn.onclick = function() {
+    if (!compl.isComplete) {
+      if (!confirm('Faltan ' + (compl.totalRequired - compl.doneRequired) + ' items obligatorios. ¿Guardar de todas formas?')) return;
+    }
+    _cierreLocalSave(body);
+  };
+  body.appendChild(saveBtn);
+}
+
+async function _cierreLocalSave(body) {
+  var today = new Date();
+  var compl = _cierreLocalCompletion(_cierreLocalState, today);
+  var payload = {
+    closed_at: new Date().toISOString(),
+    responsible_id: CU.id || null,
+    responsible_name: CU.name,
+    checklist: _cierreLocalState.checklist,
+    notes: _cierreLocalState.notes || null,
+    is_complete: compl.isComplete,
+    missing_items: compl.missing
+  };
+  try {
+    var res;
+    if (_cierreLocalState.inProgressId) {
+      res = await sb.from('local_closures')
+        .update(payload)
+        .eq('id', _cierreLocalState.inProgressId);
+    } else {
+      res = await sb.from('local_closures').insert(payload);
+    }
+    if (res.error) throw res.error;
+    showGlobalError(compl.isComplete ? 'Cierre registrado correctamente' : 'Cierre guardado como incompleto', 3500);
+    _cierreLocalState = { checklist: {}, notes: '', inProgressId: null };
+    renderBossCierreLocal(body);
+  } catch (e) {
+    showGlobalError('Error guardando cierre: ' + (e.message || e), 5000);
+  }
+}
+
+function _cierreLocalView(closure) {
+  var d = new Date(closure.closed_at);
+  var html = '<div style="padding:14px">'
+    + '<div class="lbl">Cierre del ' + d.toLocaleDateString('es-CL', {weekday:'long', day:'2-digit', month:'long'})
+    + ' · ' + d.toLocaleTimeString('es-CL', {hour:'2-digit', minute:'2-digit'}) + '</div>'
+    + '<div style="font-size:11px;color:var(--wh3);margin-bottom:10px">Responsable: <strong>'
+    + escapeHtml(closure.responsible_name || '—') + '</strong></div>';
+
+  CIERRE_LOCAL_CHECKLIST.forEach(function(sec) {
+    html += '<div style="font-size:10px;font-weight:700;color:var(--red);'
+      + 'text-transform:uppercase;letter-spacing:.06em;font-family:\'Rajdhani\',sans-serif;'
+      + 'margin:10px 0 4px;padding-bottom:2px;border-bottom:1px solid rgba(189,29,29,.18)">'
+      + sec.section + '</div>';
+    sec.items.forEach(function(it) {
+      var v = (closure.checklist || {})[it.key] || {};
+      var icon, color;
+      if (v.ok) { icon = '✓'; color = 'var(--green)'; }
+      else if (v.na) { icon = 'N/A'; color = 'var(--wh3)'; }
+      else { icon = '✗'; color = 'var(--red)'; }
+      html += '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;padding:4px 0;border-top:1px solid var(--wh5);font-size:11px">'
+        + '<span style="color:#111;flex:1">' + escapeHtml(it.label) + '</span>'
+        + '<span style="color:' + color + ';font-weight:700;font-family:\'Rajdhani\',sans-serif">' + icon + '</span>'
+        + '</div>';
+    });
+  });
+
+  if (closure.notes) {
+    html += '<div style="margin-top:12px;padding:8px;background:#f6f6f6;border-radius:3px;font-size:11px;color:var(--wh2);line-height:1.4">'
+      + '<strong>Observaciones:</strong> ' + escapeHtml(closure.notes) + '</div>';
+  }
+  html += '<button class="btn btn-ghost" style="margin-top:10px;width:100%" onclick="closeModal(\'m-cierre-local-view\')">Cerrar</button>';
+  html += '</div>';
+
+  // Crear/reutilizar overlay genérico
+  var existingM = document.getElementById('m-cierre-local-view');
+  if (existingM) existingM.remove();
+  var m = mk('div','overlay');
+  m.id = 'm-cierre-local-view';
+  m.style.display = 'none';
+  m.innerHTML = '<div class="modal" style="max-width:520px;padding:0">' + html + '</div>';
+  document.body.appendChild(m);
+  openModal('m-cierre-local-view');
 }
 
 // ═══════════════════════════════════════════════════════════════
