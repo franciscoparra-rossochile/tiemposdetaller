@@ -8331,25 +8331,23 @@ function _planCapacityMinForDate(date) {
 }
 
 // _planServiceEstimatedMin(event, liveSession, history) → minutos a contar
-// para el cómputo de carga. Maneja los 3 casos:
+// para el cómputo de carga del día. Maneja los 3 casos:
 //   1) Servicio agendado sin tocar: goal_minutes (o fallback 120)
-//   2) Servicio en curso: tiempo consumido + restante estimado
-//   3) Servicio completado (en history hoy): tiempo real consumido
+//   2) Servicio en curso o pausado: SOLO el goal_minutes (el servicio "ocupa"
+//      el slot planificado en el día del técnico, no las horas acumuladas en
+//      días previos). Antes contábamos consumido+restante, lo que inflaba la
+//      carga cuando un servicio cruzaba múltiples días.
+//   3) Servicio completado en history hoy: tiempo real consumido (esa
+//      capacidad del día ya fue gastada).
 function _planServiceEstimatedMin(event, liveSession, historyEntry) {
   var goalMin = event.goal_minutes || 120; // fallback 2h
   if (historyEntry && historyEntry.seconds) {
-    // Caso 3: ya cerrado, cuenta tiempo real
+    // Caso 3: ya cerrado hoy → tiempo real consumido
     return Math.round(historyEntry.seconds / 60);
   }
-  if (liveSession) {
-    // Caso 2: en curso. Consumido + restante estimado (no negativo).
-    var consumedSec = 0;
-    try { consumedSec = liveSecondsNow(liveSession); } catch(_){}
-    var consumedMin = Math.round(consumedSec / 60);
-    var remainingMin = Math.max(0, goalMin - consumedMin);
-    return consumedMin + remainingMin; // total esperado = max(goal, consumido)
-  }
-  // Caso 1: agendado puro
+  // Casos 1 y 2: agendado puro o en curso/pausado → goal planificado.
+  // El servicio en curso "ocupa" su slot del día independiente de si
+  // ya llevaba horas acumuladas de días previos.
   return goalMin;
 }
 
@@ -8385,13 +8383,20 @@ function _planOpenCellDetail(techId, dateISO) {
   if (!cellData || !cellData.events || !cellData.events.length) return;
   var techName = cellData.techName || 'Sin asignar';
   var dateLbl = new Date(dateISO).toLocaleDateString('es-CL', {weekday:'long', day:'2-digit', month:'long'});
-  var html = '<div class="modal-t">' + escapeHtml(techName) + '</div>'
+  var isUnassigned = (techId === '__none__');
+
+  var detailHTML = '<div class="modal-t">' + escapeHtml(techName) + '</div>'
     + '<div class="modal-s">' + dateLbl + ' · ' + cellData.events.length + ' servicio' + (cellData.events.length !== 1 ? 's' : '') + '</div>'
-    + '<div style="margin-top:10px;padding:8px;background:#fffbf2;border-left:3px solid var(--gold);border-radius:3px;font-size:11px;line-height:1.5">'
-    +   '<b>Capacidad del día:</b> ' + Math.round(cellData.capacityMin/60*10)/10 + 'h<br/>'
-    +   '<b>Carga estimada:</b> ' + Math.round(cellData.loadMin/60*10)/10 + 'h <span style="color:var(--wh3)">(' + cellData.pct + '%)</span>'
-    + '</div>'
-    + '<div style="margin-top:12px;display:flex;flex-direction:column;gap:6px">'
+    + (isUnassigned
+        ? '<div style="margin-top:10px;padding:8px;background:#fff8f8;border-left:3px solid var(--red);border-radius:3px;font-size:11px;line-height:1.5">'
+        +   '<b style="color:var(--red)">Sin técnico asignado.</b> Estos servicios requieren designación antes del ingreso al taller. Toca cada uno para asignar.'
+        + '</div>'
+        : '<div style="margin-top:10px;padding:8px;background:#fffbf2;border-left:3px solid var(--gold);border-radius:3px;font-size:11px;line-height:1.5">'
+        +   '<b>Capacidad del día:</b> ' + Math.round(cellData.capacityMin/60*10)/10 + 'h<br/>'
+        +   '<b>Carga estimada:</b> ' + Math.round(cellData.loadMin/60*10)/10 + 'h <span style="color:var(--wh3)">(' + cellData.pct + '%)</span>'
+        + '</div>'
+      )
+    + '<div style="margin-top:12px;display:flex;flex-direction:column;gap:6px;max-height:60vh;overflow-y:auto">'
     + cellData.events.map(function(e){
         var hh = new Date(e.scheduled_at).toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'});
         var bm = e.plate ? plateBrandModel(e.plate) : null;
@@ -8415,21 +8420,282 @@ function _planOpenCellDetail(techId, dateISO) {
           + '</div>'
           + '</div>';
       }).join('')
-    + '</div>';
-  var modal = document.getElementById('m-plan-cell');
-  if (!modal) {
-    // Crear el modal al vuelo si no existe
-    modal = document.createElement('div');
-    modal.id = 'm-plan-cell';
-    modal.className = 'modal';
-    modal.innerHTML = '<div class="modal-inner"><button class="modal-close" onclick="closeModal(\'m-plan-cell\')">×</button><div id="m-plan-cell-body"></div></div>';
-    document.body.appendChild(modal);
+    + '</div>'
+    + '<button class="btn btn-out" onclick="closeModal(\'m-plan-cell\')" style="margin-top:12px;width:100%">Cerrar</button>';
+
+  // Reutilizar overlay existente o crearlo siguiendo la estructura estándar
+  // del sistema: <div class="overlay"> → <div class="modal">. NO inventar
+  // contenedores nuevos (modal-inner, modal-close) que no existen en el CSS.
+  var overlay = document.getElementById('m-plan-cell');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'm-plan-cell';
+    overlay.className = 'overlay';
+    overlay.style.display = 'none';
+    var modalDiv = document.createElement('div');
+    modalDiv.className = 'modal';
+    modalDiv.id = 'm-plan-cell-body';
+    overlay.appendChild(modalDiv);
+    document.body.appendChild(overlay);
   }
   var bodyEl = document.getElementById('m-plan-cell-body');
-  if (bodyEl) bodyEl.innerHTML = html;
+  if (bodyEl) bodyEl.innerHTML = detailHTML;
   openModal('m-plan-cell');
 }
 window._planOpenCellDetail = _planOpenCellDetail;
+
+// ═══════════════════════════════════════════════════════════════
+// _planOpenFreeSlotPicker — modal de asignación rápida a slot libre
+// ═══════════════════════════════════════════════════════════════
+// Cuando el jefe hace click en una celda "Libre" de un técnico/día,
+// abre un picker con 3 secciones priorizadas:
+//   1) Servicios YA agendados sin técnico designado (resolver primero)
+//   2) Vehículos en taller con OT abierta y sin servicio agendado
+//      (asignar trabajo a vehículos varados)
+//   3) Botón "Agendar servicio nuevo" (flujo libre)
+//
+// En cada vehículo/servicio se muestra "X días en taller" calculado
+// desde work_orders.created_at, para priorizar atrasos.
+async function _planOpenFreeSlotPicker(techId, dateISO) {
+  if (!hasPerm(CU, 'can_schedule_services')) {
+    showGlobalError('No tienes permiso para agendar servicios.', 4500);
+    return;
+  }
+  // Identificar técnico del cache (puede no tener fila si no había eventos previos)
+  var techName = 'técnico';
+  var techRows = (window._planCache && Object.values(window._planCache)) || [];
+  var match = techRows.find(function(c){ return c.techId === techId; });
+  if (match) techName = match.techName;
+  var date = new Date(dateISO);
+  var dateLbl = date.toLocaleDateString('es-CL', {weekday:'long', day:'2-digit', month:'long'});
+
+  // Garantizar overlay con estructura estándar
+  var overlay = document.getElementById('m-plan-freeslot');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'm-plan-freeslot';
+    overlay.className = 'overlay';
+    overlay.style.display = 'none';
+    var modalDiv = document.createElement('div');
+    modalDiv.className = 'modal';
+    modalDiv.id = 'm-plan-freeslot-body';
+    overlay.appendChild(modalDiv);
+    document.body.appendChild(overlay);
+  }
+  var bodyEl = document.getElementById('m-plan-freeslot-body');
+  // Estado loading
+  bodyEl.innerHTML = '<div class="modal-t">Asignar trabajo</div>'
+    + '<div class="modal-s">' + escapeHtml(techName) + ' · ' + dateLbl + '</div>'
+    + '<div style="padding:20px;text-align:center;color:var(--wh3)"><span class="spin"></span> Cargando opciones...</div>';
+  openModal('m-plan-freeslot');
+
+  // 1) Servicios agendados sin técnico (en el día seleccionado o futuros)
+  var unassignedScheduled = [];
+  try {
+    var dayStart = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0,0,0,0);
+    var in14 = new Date(dayStart); in14.setDate(in14.getDate()+14); in14.setHours(23,59,59,999);
+    var rUn = await sb.from('scheduled_services').select('*')
+      .gte('scheduled_at', dayStart.toISOString())
+      .lte('scheduled_at', in14.toISOString())
+      .is('technician_id', null)
+      .neq('status','cancelado')
+      .order('scheduled_at');
+    unassignedScheduled = (rUn && rUn.data) || [];
+  } catch(_){}
+
+  // 2) Vehículos con OT abierta y SIN servicio agendado activo
+  var vehiclesInShop = [];
+  try {
+    var rOT = await sb.from('work_orders').select('id, ot_number, service_classification, vehicle_id, client_id, created_at, scheduled_service_id, status')
+      .in('status', ['open','assigned','in_progress','pending_double_check','pending_visado'])
+      .order('created_at', {ascending: true});
+    var ots = (rOT && rOT.data) || [];
+    if (ots.length) {
+      var vehIds = Array.from(new Set(ots.map(function(o){return o.vehicle_id;}).filter(Boolean)));
+      var cliIds = Array.from(new Set(ots.map(function(o){return o.client_id;}).filter(Boolean)));
+      var vehs = {}, clis = {};
+      if (vehIds.length) {
+        var rv = await sb.from('client_vehicles').select('id, plate, brand, model').in('id', vehIds);
+        (rv.data || []).forEach(function(v){ vehs[v.id] = v; });
+      }
+      if (cliIds.length) {
+        var rc = await sb.from('clients').select('id, name').in('id', cliIds);
+        (rc.data || []).forEach(function(c){ clis[c.id] = c; });
+      }
+      // Filtrar: solo OTs que no estén ya agendadas (scheduled_service_id NULL),
+      // o que estén agendadas pero sin técnico asignado al día actual.
+      // Para simplificar esta iteración: incluir todas las OTs activas y dejar
+      // que el jefe decida — más útil que filtrar erróneamente.
+      var nowMs = Date.now();
+      vehiclesInShop = ots.map(function(o){
+        var v = vehs[o.vehicle_id] || {};
+        var c = clis[o.client_id] || {};
+        var createdMs = o.created_at ? new Date(o.created_at).getTime() : null;
+        var daysInShop = createdMs ? Math.floor((nowMs - createdMs) / 86400000) : null;
+        var srvDef = SERVICES_INGRESO.find(function(x){return x.key === o.service_classification;});
+        var srvLabel = srvDef ? srvDef.label : (o.service_classification || '?');
+        return {
+          ot: o,
+          plate: v.plate || '',
+          brand: v.brand || '',
+          model: v.model || '',
+          clientName: c.name || '',
+          daysInShop: daysInShop,
+          serviceLabel: srvLabel
+        };
+      });
+    }
+  } catch(_){}
+
+  // Render del picker
+  var html = '<div class="modal-t">Asignar trabajo</div>'
+    + '<div class="modal-s">' + escapeHtml(techName) + ' · ' + dateLbl + '</div>';
+
+  // SECCIÓN 1: Servicios agendados sin técnico
+  if (unassignedScheduled.length) {
+    html += '<div style="margin-top:14px">'
+      + '<div style="font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.05em;color:var(--red);margin-bottom:6px;font-family:\'Rajdhani\',sans-serif">⚠ Servicios agendados sin técnico (' + unassignedScheduled.length + ')</div>'
+      + '<div style="font-size:10px;color:var(--wh3);margin-bottom:8px;line-height:1.4">Asígnale uno de estos al técnico. Ya tienen fecha y patente fijada.</div>'
+      + '<div style="display:flex;flex-direction:column;gap:5px;max-height:32vh;overflow-y:auto">';
+    unassignedScheduled.forEach(function(s){
+      var sdt = new Date(s.scheduled_at);
+      var dayDelta = Math.round((sdt - new Date()) / 86400000);
+      var deltaLbl = dayDelta < 0 ? '⚠ atrasado ' + Math.abs(dayDelta) + 'd' : dayDelta === 0 ? 'hoy' : 'en ' + dayDelta + 'd';
+      var goalMin = s.goal_minutes || 120;
+      var bm = s.plate ? plateBrandModel(s.plate) : null;
+      html += '<div onclick="_planAssignScheduledToTech(\'' + s.id + '\', \'' + techId + '\', \'' + dateISO + '\')" '
+        +    'style="background:#fff8f8;border:1px solid #f4d4d4;border-left:3px solid var(--red);border-radius:3px;padding:8px;cursor:pointer">'
+        + '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px">'
+        +   '<div style="flex:1;min-width:0">'
+        +     '<div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111">' + escapeHtml(s.service || '?') + '</div>'
+        +     '<div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-top:2px">'
+        +       (s.plate ? '<span class="plate-tag">' + escapeHtml(s.plate) + '</span>' : '<span style="font-size:10px;color:var(--wh4)">sin patente</span>')
+        +       (bm ? '<span style="font-size:10px;color:var(--wh3);font-weight:600;text-transform:uppercase">' + escapeHtml(bm) + '</span>' : '')
+        +       '<span style="font-size:10px;color:#666;font-family:var(--mono)">' + sdt.toLocaleDateString('es-CL',{day:'2-digit',month:'short'}) + ' ' + sdt.toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'}) + '</span>'
+        +       '<span style="font-size:10px;color:#888">~' + Math.round(goalMin/60*10)/10 + 'h</span>'
+        +     '</div>'
+        +   '</div>'
+        +   '<div style="font-size:9px;font-weight:700;color:' + (dayDelta < 0 ? 'var(--red)' : 'var(--gold3)') + ';text-transform:uppercase;flex-shrink:0">' + deltaLbl + '</div>'
+        + '</div>'
+        + '</div>';
+    });
+    html += '</div></div>';
+  }
+
+  // SECCIÓN 2: Vehículos en taller
+  if (vehiclesInShop.length) {
+    html += '<div style="margin-top:14px">'
+      + '<div style="font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.05em;color:#5a4500;margin-bottom:6px;font-family:\'Rajdhani\',sans-serif">🚗 Vehículos en taller (' + vehiclesInShop.length + ')</div>'
+      + '<div style="font-size:10px;color:var(--wh3);margin-bottom:8px;line-height:1.4">Ordenados por antigüedad — los más arriba llevan más días esperando trabajo.</div>'
+      + '<div style="display:flex;flex-direction:column;gap:5px;max-height:32vh;overflow-y:auto">';
+    vehiclesInShop.forEach(function(v){
+      var d = v.daysInShop;
+      var dColor = d == null ? 'var(--wh4)' : d >= 7 ? 'var(--red)' : d >= 3 ? 'var(--gold3)' : 'var(--green)';
+      var dLbl = d == null ? '—' : (d === 0 ? 'hoy' : d + 'd en taller');
+      var dIcon = d == null ? '' : d >= 7 ? '🔴' : d >= 3 ? '🟡' : '🟢';
+      html += '<div onclick="_planScheduleFromOT(\'' + v.ot.id + '\', \'' + techId + '\', \'' + dateISO + '\')" '
+        +    'style="background:#fff;border:1px solid #eee;border-left:3px solid ' + dColor + ';border-radius:3px;padding:8px;cursor:pointer">'
+        + '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px">'
+        +   '<div style="flex:1;min-width:0">'
+        +     '<div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111">OT-' + (v.ot.ot_number || '?') + ' · ' + escapeHtml(v.serviceLabel) + '</div>'
+        +     '<div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-top:2px">'
+        +       (v.plate ? '<span class="plate-tag">' + escapeHtml(v.plate) + '</span>' : '')
+        +       '<span style="font-size:10px;color:var(--wh3);font-weight:600;text-transform:uppercase">' + escapeHtml(v.brand) + ' ' + escapeHtml(v.model) + '</span>'
+        +       (v.clientName ? '<span style="font-size:10px;color:#888">· ' + escapeHtml(v.clientName) + '</span>' : '')
+        +     '</div>'
+        +   '</div>'
+        +   '<div style="font-size:10px;font-weight:700;color:' + dColor + ';text-transform:uppercase;flex-shrink:0;text-align:right">' + dIcon + ' ' + dLbl + '</div>'
+        + '</div>'
+        + '</div>';
+    });
+    html += '</div></div>';
+  }
+
+  // Caso vacío
+  if (!unassignedScheduled.length && !vehiclesInShop.length) {
+    html += '<div style="margin-top:14px;padding:16px;text-align:center;color:var(--wh3);background:#fafafa;border-radius:4px;font-size:11px">'
+      + 'No hay servicios sin asignar ni vehículos esperando en taller.'
+      + '</div>';
+  }
+
+  // SECCIÓN 3: Botón agendar servicio nuevo
+  html += '<div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">'
+    + '<button class="btn btn-red" onclick="_planNewServiceFromSlot(\'' + techId + '\', \'' + dateISO + '\')" style="width:100%">+ Agendar servicio nuevo</button>'
+    + '<button class="btn btn-out" onclick="closeModal(\'m-plan-freeslot\')" style="width:100%;margin-top:6px">Cancelar</button>'
+    + '</div>';
+
+  bodyEl.innerHTML = html;
+}
+window._planOpenFreeSlotPicker = _planOpenFreeSlotPicker;
+
+// Crear scheduled_service desde una OT abierta, prellenando técnico+fecha
+async function _planScheduleFromOT(otId, techId, dateISO) {
+  closeModal('m-plan-freeslot');
+  // Reusar scheduleOTNow que ya tiene toda la lógica de precarga desde OT.
+  // Después manualmente seteamos técnico y datetime.
+  await scheduleOTNow(otId);
+  // scheduleOTNow abrió m-event con servicio/patente/goal precargados.
+  // Setear técnico:
+  var techSel = document.getElementById('m-ev-tech');
+  if (techSel && techId !== '__none__') {
+    for (var i = 0; i < techSel.options.length; i++) {
+      if (techSel.options[i].value === techId) { techSel.selectedIndex = i; break; }
+    }
+  }
+  // Setear datetime al día/hora apropiado: 9:00 de ese día
+  var dtEl = document.getElementById('m-ev-dt');
+  if (dtEl) {
+    var d = new Date(dateISO);
+    d.setHours(9,0,0,0);
+    // datetime-local format: YYYY-MM-DDTHH:mm (sin zona)
+    var pad = function(n){return String(n).padStart(2,'0');};
+    dtEl.value = d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate()) + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+  }
+  if (typeof refreshEventTechHint === 'function') refreshEventTechHint();
+}
+window._planScheduleFromOT = _planScheduleFromOT;
+
+// Asignar un scheduled_service existente (sin técnico) al técnico/fecha elegidos
+async function _planAssignScheduledToTech(scheduledId, techId, dateISO) {
+  closeModal('m-plan-freeslot');
+  // Cargar el evento, abrir el editor con precargado, y dejar al jefe que confirme
+  await openEditEvent(scheduledId);
+  // Setear técnico
+  var techSel = document.getElementById('m-ev-tech');
+  if (techSel && techId !== '__none__') {
+    for (var i = 0; i < techSel.options.length; i++) {
+      if (techSel.options[i].value === techId) { techSel.selectedIndex = i; break; }
+    }
+  }
+  // Ajustar fecha al día elegido (mantiene hora original si la había)
+  var dtEl = document.getElementById('m-ev-dt');
+  if (dtEl && dtEl.value) {
+    var orig = new Date(dtEl.value);
+    var newD = new Date(dateISO);
+    newD.setHours(orig.getHours(), orig.getMinutes(), 0, 0);
+    var pad = function(n){return String(n).padStart(2,'0');};
+    dtEl.value = newD.getFullYear() + '-' + pad(newD.getMonth()+1) + '-' + pad(newD.getDate()) + 'T' + pad(newD.getHours()) + ':' + pad(newD.getMinutes());
+  }
+  if (typeof refreshEventTechHint === 'function') refreshEventTechHint();
+}
+window._planAssignScheduledToTech = _planAssignScheduledToTech;
+
+// Abrir agendamiento de servicio nuevo con técnico+fecha precargados
+async function _planNewServiceFromSlot(techId, dateISO) {
+  closeModal('m-plan-freeslot');
+  var d = new Date(dateISO);
+  d.setHours(9,0,0,0);
+  await openNewEvent(d);
+  // Setear técnico
+  var techSel = document.getElementById('m-ev-tech');
+  if (techSel && techId !== '__none__') {
+    for (var i = 0; i < techSel.options.length; i++) {
+      if (techSel.options[i].value === techId) { techSel.selectedIndex = i; break; }
+    }
+  }
+  if (typeof refreshEventTechHint === 'function') refreshEventTechHint();
+}
+window._planNewServiceFromSlot = _planNewServiceFromSlot;
 
 async function renderBossPlan(body) {
   body.innerHTML = '<div class="empty"><span class="spin"></span>Cargando Smart Planner...</div>';
@@ -8688,11 +8954,15 @@ async function renderBossPlan(body) {
 
       // Técnico real
       if (!cell || cell.events.length === 0) {
-        // Día libre
-        tableHTML += '<td style="padding:8px;border-right:1px solid #f5f5f5;vertical-align:middle">'
-          + '<div style="background:#fafafa;border:1px solid #eee;border-radius:4px;padding:8px;text-align:center;color:#bbb">'
-          +   '<div style="font-size:10px;font-weight:600;text-transform:uppercase">Libre</div>'
-          +   '<div style="font-size:9px;color:#ccc;font-family:var(--mono);margin-top:2px">0 / ' + Math.round(capMin/60*10)/10 + 'h</div>'
+        // Día libre — clickeable para abrir picker de asignación rápida.
+        // Filosofía Apple: el "+" hace obvio que esto es accionable.
+        tableHTML += '<td onclick="_planOpenFreeSlotPicker(\'' + row.techId + '\', \'' + iso + '\')" style="padding:8px;border-right:1px solid #f5f5f5;vertical-align:middle;cursor:pointer">'
+          + '<div style="background:#fafafa;border:1px dashed #ccc;border-radius:4px;padding:8px;text-align:center;color:#999;transition:all 0.2s ease" '
+          +     'onmouseover="this.style.background=\'#fff8e1\';this.style.borderColor=\'var(--gold)\';this.style.color=\'#5a4500\'" '
+          +     'onmouseout="this.style.background=\'#fafafa\';this.style.borderColor=\'#ccc\';this.style.color=\'#999\'">'
+          +   '<div style="font-size:18px;font-weight:300;line-height:1">+</div>'
+          +   '<div style="font-size:10px;font-weight:600;text-transform:uppercase;margin-top:2px">Libre</div>'
+          +   '<div style="font-size:9px;color:#bbb;font-family:var(--mono);margin-top:2px">' + Math.round(capMin/60*10)/10 + 'h disponibles</div>'
           + '</div>'
           + '</td>';
         return;
