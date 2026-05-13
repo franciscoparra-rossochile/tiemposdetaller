@@ -8269,183 +8269,500 @@ async function calNav(dir) {
 // ═══════════════════════════════════════════════
 // BOSS: PLANIFICACION
 // ═══════════════════════════════════════════════
-async function renderBossPlan(body) {
-  body.innerHTML = '<div class="empty"><span class="spin"></span>Cargando...</div>';
+// ═══════════════════════════════════════════════════════════════
+// FASE 4.5 — SMART PLANNER (Frente 3)
+// ═══════════════════════════════════════════════════════════════
+// Vista visual de carga vs capacidad por técnico por día. Reemplaza el
+// listado por técnico de la pestaña Planificación con una grilla
+// capacidad-vs-carga que responde a la pregunta "¿tengo cupo hoy/mañana
+// para meter este servicio?"
+//
+// Reglas operacionales:
+//   - Capacidad por día por técnico = WORK_HOURS de ese día (9h L-M, 8h J, 7h V).
+//   - Carga = suma de goal_minutes de servicios agendados ese día para ese técnico.
+//   - Fallback si goal_minutes es NULL: 120 min (2h) — valor conservador.
+//   - Servicios en curso (cronómetro corriendo): consumido_real + restante_estimado.
+//     Si ya excedió el goal_minutes, contamos consumido_real (no negativo).
+//   - Servicios completados (history hoy): cuentan como consumidos del día.
+//   - Servicios sin técnico asignado: van a una fila "SIN ASIGNAR" especial.
+
+// State del selector de vista (persistido en memoria por sesión)
+var _planView = 'week'; // 'today' | 'week' | '2weeks'
+
+// _planDateRange(view) → {from: Date, to: Date, days: [Date,...]}
+// Devuelve rango y array de fechas (00:00:00) según vista elegida.
+function _planDateRange(view) {
   var today = new Date(); today.setHours(0,0,0,0);
-  var in7 = new Date(); in7.setDate(in7.getDate()+7); in7.setHours(23,59,59,999);
+  var days = [];
+  var to;
+  if (view === 'today') {
+    days.push(new Date(today));
+    to = new Date(today); to.setHours(23,59,59,999);
+  } else if (view === '2weeks') {
+    // Hoy + próximos 14 días, saltando sábados/domingos
+    var d = new Date(today);
+    while (days.length < 14 && days.length < 20) {
+      var dow = d.getDay();
+      if (dow !== 0 && dow !== 6) days.push(new Date(d));
+      d.setDate(d.getDate() + 1);
+    }
+    to = new Date(days[days.length - 1]); to.setHours(23,59,59,999);
+  } else {
+    // 'week': hoy + 5 días hábiles
+    var d2 = new Date(today);
+    while (days.length < 6) {
+      var dow2 = d2.getDay();
+      if (dow2 !== 0 && dow2 !== 6) days.push(new Date(d2));
+      d2.setDate(d2.getDate() + 1);
+    }
+    to = new Date(days[days.length - 1]); to.setHours(23,59,59,999);
+  }
+  return {from: today, to: to, days: days};
+}
+
+// _planCapacityMinForDate(date) → minutos laborales totales del día.
+// Lee directo de WORK_HOURS. Sáb/Dom retornan 0.
+function _planCapacityMinForDate(date) {
+  var dow = date.getDay();
+  var blocks = WORK_HOURS[dow] || [];
+  var total = 0;
+  blocks.forEach(function(b){ total += (b[1] - b[0]); });
+  return total;
+}
+
+// _planServiceEstimatedMin(event, liveSession, history) → minutos a contar
+// para el cómputo de carga. Maneja los 3 casos:
+//   1) Servicio agendado sin tocar: goal_minutes (o fallback 120)
+//   2) Servicio en curso: tiempo consumido + restante estimado
+//   3) Servicio completado (en history hoy): tiempo real consumido
+function _planServiceEstimatedMin(event, liveSession, historyEntry) {
+  var goalMin = event.goal_minutes || 120; // fallback 2h
+  if (historyEntry && historyEntry.seconds) {
+    // Caso 3: ya cerrado, cuenta tiempo real
+    return Math.round(historyEntry.seconds / 60);
+  }
+  if (liveSession) {
+    // Caso 2: en curso. Consumido + restante estimado (no negativo).
+    var consumedSec = 0;
+    try { consumedSec = liveSecondsNow(liveSession); } catch(_){}
+    var consumedMin = Math.round(consumedSec / 60);
+    var remainingMin = Math.max(0, goalMin - consumedMin);
+    return consumedMin + remainingMin; // total esperado = max(goal, consumido)
+  }
+  // Caso 1: agendado puro
+  return goalMin;
+}
+
+// _planLoadColor(pct) → color según semáforo
+function _planLoadColor(pct) {
+  if (pct <= 0)   return {bg:'#f5f5f5', border:'#ddd',     label:'#999',         badge:''};
+  if (pct <= 70)  return {bg:'#e8f5e9', border:'#4caf50',  label:'#1b5e20',      badge:'var(--green)'};
+  if (pct <= 95)  return {bg:'#fff8e1', border:'var(--gold)', label:'#5a4500',   badge:'var(--gold)'};
+  if (pct <= 100) return {bg:'#ffe0b2', border:'#ff9800',  label:'#5c3a00',      badge:'#ff9800'};
+  return                {bg:'#ffcdd2', border:'var(--red)', label:'#5c0a0a',    badge:'var(--red)'};
+}
+
+// _planSameDay(d1, d2) → true si misma fecha local
+function _planSameDay(d1, d2) {
+  return d1.getFullYear() === d2.getFullYear()
+      && d1.getMonth() === d2.getMonth()
+      && d1.getDate() === d2.getDate();
+}
+
+// _planSetView(view) → cambia vista y re-renderiza
+function _planSetView(view) {
+  _planView = view;
+  var body = document.getElementById('b-plan');
+  if (body) renderBossPlan(body);
+}
+window._planSetView = _planSetView;
+
+// _planOpenCellDetail(techId, dateISO) → modal con detalle del día/técnico
+function _planOpenCellDetail(techId, dateISO) {
+  var cache = window._planCache || {};
+  var key = (techId || '__none__') + '|' + dateISO;
+  var cellData = cache[key];
+  if (!cellData || !cellData.events || !cellData.events.length) return;
+  var techName = cellData.techName || 'Sin asignar';
+  var dateLbl = new Date(dateISO).toLocaleDateString('es-CL', {weekday:'long', day:'2-digit', month:'long'});
+  var html = '<div class="modal-t">' + escapeHtml(techName) + '</div>'
+    + '<div class="modal-s">' + dateLbl + ' · ' + cellData.events.length + ' servicio' + (cellData.events.length !== 1 ? 's' : '') + '</div>'
+    + '<div style="margin-top:10px;padding:8px;background:#fffbf2;border-left:3px solid var(--gold);border-radius:3px;font-size:11px;line-height:1.5">'
+    +   '<b>Capacidad del día:</b> ' + Math.round(cellData.capacityMin/60*10)/10 + 'h<br/>'
+    +   '<b>Carga estimada:</b> ' + Math.round(cellData.loadMin/60*10)/10 + 'h <span style="color:var(--wh3)">(' + cellData.pct + '%)</span>'
+    + '</div>'
+    + '<div style="margin-top:12px;display:flex;flex-direction:column;gap:6px">'
+    + cellData.events.map(function(e){
+        var hh = new Date(e.scheduled_at).toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'});
+        var bm = e.plate ? plateBrandModel(e.plate) : null;
+        var stLabel = e._statusLabel || (e.status || 'pendiente').toUpperCase();
+        var stColor = e._statusColor || 'var(--wh3)';
+        var estMin = e._estimatedMin || (e.goal_minutes || 120);
+        return '<div onclick="closeModal(\'m-plan-cell\');openEditEvent(\'' + e.id + '\')" style="background:#fff;border:1px solid #eee;border-left:4px solid ' + stColor + ';border-radius:3px;padding:9px;cursor:pointer">'
+          + '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">'
+          +   '<div style="flex:1;min-width:0">'
+          +     '<div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111">' + escapeHtml(e.service || '?') + '</div>'
+          +     '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:3px">'
+          +       (e.plate ? '<span class="plate-tag">' + escapeHtml(e.plate) + '</span>' : '')
+          +       (bm ? '<span style="font-size:10px;color:var(--wh3);font-weight:600;text-transform:uppercase">' + escapeHtml(bm) + '</span>' : '')
+          +       '<span style="font-size:10px;color:#666;font-family:var(--mono)">' + hh + '</span>'
+          +       '<span style="font-size:10px;color:#888">~' + Math.round(estMin/60*10)/10 + 'h</span>'
+          +     '</div>'
+          +   '</div>'
+          +   '<div style="text-align:right;flex-shrink:0">'
+          +     '<span style="font-size:9px;font-weight:700;color:#fff;background:' + stColor + ';padding:2px 6px;border-radius:2px;text-transform:uppercase">' + stLabel + '</span>'
+          +   '</div>'
+          + '</div>'
+          + '</div>';
+      }).join('')
+    + '</div>';
+  var modal = document.getElementById('m-plan-cell');
+  if (!modal) {
+    // Crear el modal al vuelo si no existe
+    modal = document.createElement('div');
+    modal.id = 'm-plan-cell';
+    modal.className = 'modal';
+    modal.innerHTML = '<div class="modal-inner"><button class="modal-close" onclick="closeModal(\'m-plan-cell\')">×</button><div id="m-plan-cell-body"></div></div>';
+    document.body.appendChild(modal);
+  }
+  var bodyEl = document.getElementById('m-plan-cell-body');
+  if (bodyEl) bodyEl.innerHTML = html;
+  openModal('m-plan-cell');
+}
+window._planOpenCellDetail = _planOpenCellDetail;
+
+async function renderBossPlan(body) {
+  body.innerHTML = '<div class="empty"><span class="spin"></span>Cargando Smart Planner...</div>';
+
+  // FASE 4.5: rango según vista seleccionada
+  var range = _planDateRange(_planView);
+  var rangeFrom = range.from;
+  var rangeTo = range.to;
+  var rangeDays = range.days;
 
   // FASE 2.6 FIX (v5): forzar fetchLive si liveData esta vacio o stale.
-  // Si el admin entra directo a Planificacion sin pasar por En Curso,
-  // liveData puede estar vacio y el cruce no muestra el estado real.
   try {
     if (!liveData || liveData.length === 0) await fetchLive();
   } catch(_){}
 
-  var r1 = await sb.from('scheduled_services').select('*').gte('scheduled_at',today.toISOString()).lte('scheduled_at',in7.toISOString()).neq('status','cancelado').order('scheduled_at');
+  // 1) Eventos agendados en el rango
+  var r1 = await sb.from('scheduled_services').select('*')
+    .gte('scheduled_at', rangeFrom.toISOString())
+    .lte('scheduled_at', rangeTo.toISOString())
+    .neq('status','cancelado')
+    .order('scheduled_at');
   var events = r1.data || [];
 
-  // FASE 4.0: precargar marca/modelo de patentes agendadas
+  // 2) Precarga de marca/modelo
   try {
     var planPlates = events.map(function(e){ return e.plate; }).filter(Boolean);
     if (planPlates.length) await preloadPlateInfo(planPlates);
   } catch(_){}
 
-  // FASE 2.6 FIX (v4): Cruce en vivo con active_sessions y history.
-  // Para CADA evento, miramos si hay una sesion activa o finalizada hoy con la
-  // misma patente. Si la hay, sobreescribimos el status para mostrar el estado
-  // real, sin depender de que la BD scheduled_services.status este sincronizado.
+  // 3) Cruce con sesiones vivas y history del rango (para servicios en curso/cerrados)
+  var liveByPlate = {};
+  var liveSessByPlate = {};
+  (liveData || []).forEach(function(s){
+    if (s.plate && s.plate !== 'Logistica de taller') {
+      var p = (s.plate || '').toUpperCase().replace(/[^A-Z0-9]/g,'');
+      liveByPlate[p] = s.status;
+      liveSessByPlate[p] = s;
+    }
+  });
+
+  var histByPlate = {};
   try {
-    var liveByPlate = {};
-    (liveData || []).forEach(function(s){
-      if (s.plate && s.plate !== 'Logistica de taller') {
-        // Normalizar: comparar sin guiones ni espacios
-        var p = (s.plate || '').toUpperCase().replace(/[^A-Z0-9]/g,'');
-        liveByPlate[p] = s.status;
-      }
-    });
-    // Tambien consultar history de hoy para marcar 'completado'
-    var todayStartISO = today.toISOString();
     var rhist = await sb.from('history')
-      .select('plate, ended_at')
-      .gte('ended_at', todayStartISO)
+      .select('plate, ended_at, seconds')
+      .gte('ended_at', rangeFrom.toISOString())
       .order('ended_at', {ascending: false});
-    var histByPlate = {};
     if (rhist && rhist.data) {
       rhist.data.forEach(function(h){
         if (h.plate) {
           var p = (h.plate || '').toUpperCase().replace(/[^A-Z0-9]/g,'');
-          if (!histByPlate[p]) histByPlate[p] = h.ended_at;
+          if (!histByPlate[p]) histByPlate[p] = h;
         }
       });
     }
-    events.forEach(function(e){
-      if (!e.plate) return;
-      // FASE 3.2: estado canónico por patente. Antes había dos copias de la
-      // misma lógica con criterios distintos (técnico vs boss). Ahora ambas
-      // pasan por computeServiceState — fuente única de verdad.
-      var ep = normalizePlate(e.plate || '');
-      var liveSt = liveByPlate[ep];
-      var hasHist = !!histByPlate[ep];
-      var canon = computeServiceState({
-        liveSession: liveSt ? {status: liveSt} : null,
-        hasHistory: hasHist
-      });
-      if (canon.status === 'en_proceso')      e._derived_status = 'en_proceso';
-      else if (canon.status === 'pausado')    e._derived_status = 'pausado';
-      else if (canon.status === 'completado' && hasHist) e._derived_status = 'completado';
-      // (en otro caso no seteamos _derived_status, dejamos que prevalezca e.status de BD)
+  } catch(_){}
+
+  // 4) Anotar cada evento con su status derivado y minutos estimados
+  events.forEach(function(e){
+    var ep = normalizePlate(e.plate || '');
+    var liveSt = liveByPlate[ep];
+    var liveSess = liveSessByPlate[ep];
+    var histRow = histByPlate[ep];
+    var canon = computeServiceState({
+      liveSession: liveSt ? {status: liveSt} : null,
+      hasHistory: !!histRow
     });
-    logR('PLAN_LIVE_CROSS', {events: events.length, live_keys: Object.keys(liveByPlate).length, hist_keys: Object.keys(histByPlate).length});
-  } catch(e){ logR('PLAN_CROSS_ERR', {msg: e.message}, 'warn'); }
+    if (canon.status === 'en_proceso')      e._derived_status = 'en_proceso';
+    else if (canon.status === 'pausado')    e._derived_status = 'pausado';
+    else if (canon.status === 'completado' && histRow) e._derived_status = 'completado';
+    // minutos estimados para cómputo de carga
+    e._estimatedMin = _planServiceEstimatedMin(e, liveSess, histRow);
+    // label/color para el modal de detalle
+    var st = e._derived_status || e.status || 'pendiente';
+    e._statusLabel = (st === 'en_proceso') ? 'EN PROCESO'
+                   : (st === 'pausado')    ? 'PAUSADO'
+                   : (st === 'completado') ? 'COMPLETADO'
+                   : (st === 'cancelado')  ? 'CANCELADO'
+                   : 'PENDIENTE';
+    e._statusColor = (st === 'en_proceso') ? 'var(--green)'
+                   : (st === 'pausado')    ? 'var(--gold)'
+                   : (st === 'completado') ? 'var(--blue)'
+                   : 'var(--wh3)';
+  });
+
+  // 5) Agrupar eventos por (técnico, día)
+  // _planCache permite que _planOpenCellDetail acceda al detalle por celda.
+  var cache = {};
+  events.forEach(function(e){
+    if (!e.scheduled_at) return;
+    var dt = new Date(e.scheduled_at);
+    var dayStart = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate(), 0,0,0,0);
+    // Buscar día en rangeDays
+    var dayMatch = rangeDays.find(function(d){ return _planSameDay(d, dayStart); });
+    if (!dayMatch) return;
+    var tid = e.technician_id || '__none__';
+    var key = tid + '|' + dayMatch.toISOString();
+    if (!cache[key]) {
+      cache[key] = {
+        techId: tid,
+        techName: e.technician_name || 'Sin asignar',
+        date: dayMatch,
+        events: [],
+        loadMin: 0,
+        capacityMin: _planCapacityMinForDate(dayMatch),
+        pct: 0
+      };
+    }
+    cache[key].events.push(e);
+    cache[key].loadMin += e._estimatedMin;
+  });
+  // Calcular %
+  Object.keys(cache).forEach(function(k){
+    var c = cache[k];
+    c.pct = c.capacityMin > 0 ? Math.round((c.loadMin / c.capacityMin) * 100) : 0;
+  });
+  window._planCache = cache;
+
+  // 6) Lista de técnicos activos en el rango (los que tienen al menos 1 evento)
+  // Más "__none__" si hay servicios sin asignar.
+  var techIdsInRange = {};
+  events.forEach(function(e){
+    var tid = e.technician_id || '__none__';
+    if (!techIdsInRange[tid]) {
+      techIdsInRange[tid] = e.technician_name || 'Sin asignar';
+    }
+  });
+  // Ordenar: __none__ primero (sin asignar al tope), luego alfabético
+  var techRows = Object.keys(techIdsInRange).map(function(tid){
+    return {techId: tid, techName: techIdsInRange[tid]};
+  }).sort(function(a,b){
+    if (a.techId === '__none__') return -1;
+    if (b.techId === '__none__') return 1;
+    return a.techName.localeCompare(b.techName);
+  });
+
+  // 7) Render
   body.innerHTML = '';
 
-  // FASE 4.0: ALERTA — servicios agendados para HOY que aún no tienen técnico asignado.
-  // Aparecen pegados arriba en planificación para que la jefatura los corrija antes
-  // de que el cliente llegue al taller. Si no hay ninguno, no se muestra el bloque.
+  // 7a) Header con selector de vista + botón agendar
+  var header = mk('div','');
+  header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px';
+  var viewBtns = [
+    {key:'today',  label:'Hoy'},
+    {key:'week',   label:'Semana'},
+    {key:'2weeks', label:'2 semanas'}
+  ];
+  var selectorHTML = '<div style="display:flex;gap:4px;background:#f4f4f4;padding:3px;border-radius:6px">';
+  viewBtns.forEach(function(v){
+    var active = (_planView === v.key);
+    selectorHTML += '<button type="button" onclick="_planSetView(\'' + v.key + '\')" style="'
+      + 'border:0;padding:6px 12px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;'
+      + (active ? 'background:#fff;color:#111;box-shadow:0 1px 2px rgba(0,0,0,.1)' : 'background:transparent;color:#666')
+      + '">' + v.label + '</button>';
+  });
+  selectorHTML += '</div>';
+
+  var addBtnHTML = '<button class="btn btn-red" onclick="openNewEvent(null)" style="font-size:12px;padding:7px 14px">+ Agendar servicio</button>';
+  header.innerHTML = selectorHTML + addBtnHTML;
+  body.appendChild(header);
+
+  // 7b) Alerta de sin-asignar HOY (mantenemos de la versión anterior)
   try {
-    var todayEnd = new Date(); todayEnd.setHours(23,59,59,999);
+    var todayEnd = new Date(rangeFrom); todayEnd.setHours(23,59,59,999);
     var todayUnassigned = events.filter(function(e){
       if (!e.scheduled_at) return false;
       if (e.status === 'cancelado' || e.status === 'completado') return false;
       var sdt = new Date(e.scheduled_at);
-      var isToday = sdt >= today && sdt <= todayEnd;
+      var isToday = sdt >= rangeFrom && sdt <= todayEnd;
       return isToday && !e.technician_id;
     });
     if (todayUnassigned.length) {
       var alertBox = mk('div','card-red');
-      alertBox.style.cssText = 'border-left:4px solid var(--red);background:#fff8f8;margin-bottom:14px;padding:12px';
-      var alertHTML = '<div style="font-size:13px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.04em;color:var(--red);margin-bottom:6px">⚠ ' + todayUnassigned.length + ' servicio' + (todayUnassigned.length>1?'s':'') + ' de hoy sin técnico asignado</div>'
-        + '<div style="font-size:11px;color:var(--wh3);line-height:1.4;margin-bottom:8px">Estos vehículos están agendados para hoy pero no tienen técnico designado. Asigna a cada uno antes del ingreso al taller — la regla operacional no permite servicios sin designación el mismo día.</div>';
-      todayUnassigned.forEach(function(e){
-        var sdt = new Date(e.scheduled_at);
-        var hh = sdt.toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'});
-        var bm = e.plate ? plateBrandModel(e.plate) : null;
-        alertHTML += '<div onclick="openEditEvent(\'' + e.id + '\')" style="background:#fff;border:1px solid #f4d4d4;border-radius:3px;padding:8px 10px;margin-bottom:5px;cursor:pointer;display:flex;align-items:center;gap:8px">'
-          + '<span style="font-size:14px;font-weight:700;font-family:var(--mono);color:var(--red);min-width:46px">' + hh + '</span>'
-          + '<div style="flex:1;min-width:0">'
-          +   '<div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111">' + escapeHtml(e.service || '?') + '</div>'
-          +   '<div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-top:2px">'
-          +     (e.plate ? '<span class="plate-tag">' + escapeHtml(e.plate) + '</span>' : '<span style="font-size:10px;color:var(--wh4)">sin patente</span>')
-          +     (bm ? '<span style="font-size:10px;color:var(--wh3);font-weight:600;text-transform:uppercase">' + escapeHtml(bm) + '</span>' : '')
-          +   '</div>'
-          + '</div>'
-          + '<button class="btn-sm" style="background:var(--red);color:#fff;border-color:var(--red);flex-shrink:0" onclick="event.stopPropagation();openEditEvent(\'' + e.id + '\')">Asignar</button>'
-          + '</div>';
-      });
-      alertBox.innerHTML = alertHTML;
+      alertBox.style.cssText = 'border-left:4px solid var(--red);background:#fff8f8;margin-bottom:14px;padding:10px 12px;font-size:11px';
+      alertBox.innerHTML = '<div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.04em;color:var(--red)">⚠ ' + todayUnassigned.length + ' servicio' + (todayUnassigned.length>1?'s':'') + ' de hoy sin técnico</div>'
+        + '<div style="color:var(--wh3);margin-top:2px;line-height:1.4">Asigna técnico antes del ingreso al taller. Toca la celda "SIN ASIGNAR" abajo para ver detalle.</div>';
       body.appendChild(alertBox);
     }
-  } catch(eAlert) { logR('PLAN_TODAY_ALERT_ERR', {msg: eAlert.message}, 'warn'); }
+  } catch(_){}
 
-  var addBtn = mk('button','btn btn-red'); addBtn.textContent = '+ Agendar servicio'; addBtn.style.marginBottom = '12px';
-  addBtn.onclick = function() { openNewEvent(null); };
-  applyPermToControl(addBtn, 'can_schedule_services', 'No tienes permiso para agendar servicios');
-  body.appendChild(addBtn);
-  var hd = mk('div',''); hd.innerHTML = '<div class="lbl">Proximos 7 dias - ' + events.length + ' servicio' + (events.length!==1?'s':'') + '</div>'; body.appendChild(hd);
-  if (!events.length) { var emp = mk('div','empty'); emp.style.marginTop='16px'; emp.textContent='Sin servicios planificados'; body.appendChild(emp); return; }
-  var byTech = {};
-  events.forEach(function(e) {
-    var tid = e.technician_id || '__none__';
-    if (!byTech[tid]) byTech[tid] = {name: e.technician_name||'Sin asignar', events:[]};
-    byTech[tid].events.push(e);
+  if (!events.length) {
+    var emp = mk('div','empty');
+    emp.style.marginTop='16px';
+    emp.textContent = 'Sin servicios planificados en este rango';
+    body.appendChild(emp);
+    return;
+  }
+
+  // 7c) Grilla principal: tabla con header de días + fila por técnico
+  var grid = mk('div','');
+  grid.style.cssText = 'border:1px solid var(--border);border-radius:4px;background:#fff;overflow:hidden';
+
+  // Header de columnas (días)
+  var totalCapacityByDay = {};
+  var totalLoadByDay = {};
+  rangeDays.forEach(function(d){
+    var iso = d.toISOString();
+    totalCapacityByDay[iso] = _planCapacityMinForDate(d) * techRows.filter(function(r){return r.techId !== '__none__';}).length;
+    totalLoadByDay[iso] = 0;
   });
-  var sorted = Object.entries(byTech).sort(function(a,b) { return a[0]==='__none__'?-1:b[0]==='__none__'?1:a[1].name.localeCompare(b[1].name); });
-  var now = new Date();
-  sorted.forEach(function(entry) {
-    var tid = entry[0]; var grp = entry[1];
-    var gDiv = mk('div',''); gDiv.style.marginBottom = '16px';
-    var h = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;padding-bottom:6px;border-bottom:2px solid var(--red)">';
-    h += avatarHTMLById(grp.name, tid==='__none__' ? null : tid, 36, tid==='__none__' ? 'av-adm' : 'av-tech');
-    h += '<div style="font-size:14px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111">' + grp.name + '</div>';
-    h += '<span class="badge b-over">' + grp.events.length + ' srv</span></div>';
-    grp.events.forEach(function(e) {
-      var dt = new Date(e.scheduled_at);
-      var dm = Math.round((dt-now)/60000);
-      var past=dm<0; var soon=dm>=0&&dm<=60;
-      // FASE 3.2: estado derivado (live/history) > BD; labels alineados con spec.
-      var st = e._derived_status || e.status || 'pendiente';
-      var stClass = 'b-pend';
-      var stLabel = st;
-      if (st === 'en_proceso') { stClass = 'b-run'; stLabel = 'EN PROCESO'; }
-      else if (st === 'pausado') { stClass = 'b-pau'; stLabel = 'PAUSADO'; }
-      else if (st === 'completado') { stClass = 'b-done'; stLabel = 'COMPLETADO'; }
-      else if (st === 'cancelado') { stClass = 'b-over'; stLabel = 'CANCELADO'; }
-      else if (st === 'reagendado') { stClass = 'b-pend'; stLabel = 'REAGENDADO'; }
-      // FASE 3.0 FIX: el color del borde sigue al estado real, no al "past".
-      // Antes: si scheduled_at < now siempre se pintaba rojo aunque ya estuviera
-      // EN CURSO o COMPLETADO. Ahora el borde respeta el estado derivado.
-      var bc;
-      if (st === 'en_proceso') bc = 'var(--green)';
-      else if (st === 'pausado') bc = 'var(--gold)';
-      else if (st === 'completado') bc = 'var(--blue)';
-      else if (st === 'cancelado') bc = '#999';
-      else if (past) bc = 'var(--red)';
-      else if (soon) bc = 'var(--gold)';
-      else bc = 'var(--blue)';
-      h += '<div onclick="openEditEvent(\'' + e.id + '\')" style="background:#fff;border:1px solid #eee;border-left:4px solid ' + bc + ';border-radius:3px;padding:9px;margin-bottom:6px;cursor:pointer">';
-      h += '<div style="display:flex;justify-content:space-between;align-items:flex-start">';
-      h += '<div><div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111">' + e.service + '</div>';
-      h += '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:3px">';
-      if (e.plate) {
-        h += '<span class="plate-tag">' + e.plate + '</span>';
-        // FASE 4.0: marca + modelo
-        var bmPlan = plateBrandModel(e.plate);
-        if (bmPlan) h += '<span style="font-size:10px;color:var(--wh3);font-weight:600;text-transform:uppercase">' + escapeHtml(bmPlan) + '</span>';
+  Object.values(cache).forEach(function(c){
+    var iso = c.date.toISOString();
+    if (totalLoadByDay[iso] !== undefined) totalLoadByDay[iso] += c.loadMin;
+  });
+
+  // Construir HTML como tabla — más limpio para alineación que flex en mobile
+  var tableHTML = '<div style="overflow-x:auto;-webkit-overflow-scrolling:touch">'
+    + '<table style="width:100%;border-collapse:collapse;min-width:' + Math.max(600, 160 + rangeDays.length * 130) + 'px">';
+
+  // Header de días
+  tableHTML += '<thead><tr style="background:#fafafa;border-bottom:2px solid var(--red)">';
+  tableHTML += '<th style="text-align:left;padding:10px 12px;font-size:11px;font-weight:700;color:#666;text-transform:uppercase;letter-spacing:.05em;position:sticky;left:0;background:#fafafa;z-index:2;min-width:140px">Técnico</th>';
+  rangeDays.forEach(function(d){
+    var capMin = _planCapacityMinForDate(d);
+    var dayLbl = d.toLocaleDateString('es-CL', {weekday:'short', day:'2-digit', month:'short'});
+    var isToday = _planSameDay(d, rangeFrom);
+    tableHTML += '<th style="text-align:center;padding:8px 6px;font-size:10px;font-weight:700;color:#666;text-transform:uppercase;min-width:120px' + (isToday ? ';background:#fff3c4' : '') + '">'
+      + '<div style="font-family:\'Rajdhani\',sans-serif;color:#111;font-size:12px">' + dayLbl + (isToday ? ' • HOY' : '') + '</div>'
+      + '<div style="color:#999;font-weight:600;font-size:9px;margin-top:2px">Cap. ' + Math.round(capMin/60*10)/10 + 'h</div>'
+      + '</th>';
+  });
+  tableHTML += '</tr></thead><tbody>';
+
+  // Filas por técnico
+  techRows.forEach(function(row){
+    var isUnassigned = (row.techId === '__none__');
+    var rowBg = isUnassigned ? '#fffbf2' : '#fff';
+    tableHTML += '<tr style="border-bottom:1px solid #eee;background:' + rowBg + '">';
+    // Celda fija de nombre de técnico
+    tableHTML += '<td style="padding:10px 12px;position:sticky;left:0;background:' + rowBg + ';z-index:1;border-right:1px solid #eee">'
+      + '<div style="display:flex;align-items:center;gap:8px">'
+      +   avatarHTMLById(row.techName, isUnassigned ? null : row.techId, 32, isUnassigned ? 'av-adm' : 'av-tech')
+      +   '<div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:' + (isUnassigned ? 'var(--red)' : '#111') + '">' + escapeHtml(row.techName) + '</div>'
+      + '</div>'
+      + '</td>';
+    // Celdas por día
+    rangeDays.forEach(function(d){
+      var iso = d.toISOString();
+      var key = row.techId + '|' + iso;
+      var cell = cache[key];
+      var capMin = _planCapacityMinForDate(d);
+
+      if (isUnassigned) {
+        // Sin asignar: no aplica capacidad, solo contar servicios
+        if (cell && cell.events.length) {
+          tableHTML += '<td onclick="_planOpenCellDetail(\'__none__\', \'' + iso + '\')" style="padding:8px;cursor:pointer;border-right:1px solid #f5f5f5;vertical-align:middle">'
+            + '<div style="background:#fff3c4;border:1px dashed var(--gold);border-radius:4px;padding:8px;text-align:center">'
+            +   '<div style="font-size:14px;font-weight:800;color:var(--red);font-family:\'Rajdhani\',sans-serif">' + cell.events.length + '</div>'
+            +   '<div style="font-size:9px;color:#5a4500;font-weight:600;text-transform:uppercase">por asignar</div>'
+            + '</div>'
+            + '</td>';
+        } else {
+          tableHTML += '<td style="padding:8px;border-right:1px solid #f5f5f5"></td>';
+        }
+        return;
       }
-      h += '<span style="font-size:10px;color:#666">' + dt.toLocaleDateString('es-CL',{weekday:'short',day:'2-digit',month:'short'}) + ' ' + dt.toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'}) + '</span>';
-      if (e.goal_minutes) h += '<span style="font-size:9px;color:#aaa;text-transform:uppercase">OBJ:' + e.goal_minutes + 'm</span>';
-      h += '</div>' + (e.notes ? '<div style="font-size:10px;color:#999;margin-top:3px">' + e.notes + '</div>' : '') + '</div>';
-      h += '<div style="text-align:right;flex-shrink:0;margin-left:8px"><span class="badge ' + stClass + '">' + stLabel + '</span>';
-      // FASE 3.0 FIX: el sub-tag "ATRASADO" SOLO se muestra si NO hay actividad
-      // real asociada a la patente (no en_proceso, no pausado, no completado).
-      // Caso José: con sesión en curso, ya no aparece "Atrasado".
-      var hasActivity = (st === 'en_proceso' || st === 'pausado' || st === 'completado');
-      if (past && !hasActivity) h += '<div style="font-size:9px;color:var(--red);font-weight:700;margin-top:2px">ATRASADO</div>';
-      else if (soon && !hasActivity) h += '<div style="font-size:9px;color:var(--gold);font-weight:700;margin-top:2px">EN ' + dm + 'min</div>';
-      h += '</div></div></div>';
+
+      // Técnico real
+      if (!cell || cell.events.length === 0) {
+        // Día libre
+        tableHTML += '<td style="padding:8px;border-right:1px solid #f5f5f5;vertical-align:middle">'
+          + '<div style="background:#fafafa;border:1px solid #eee;border-radius:4px;padding:8px;text-align:center;color:#bbb">'
+          +   '<div style="font-size:10px;font-weight:600;text-transform:uppercase">Libre</div>'
+          +   '<div style="font-size:9px;color:#ccc;font-family:var(--mono);margin-top:2px">0 / ' + Math.round(capMin/60*10)/10 + 'h</div>'
+          + '</div>'
+          + '</td>';
+        return;
+      }
+
+      var pct = cell.pct;
+      var col = _planLoadColor(pct);
+      var barPct = Math.min(100, pct); // visual cap a 100%
+      var srvCount = cell.events.length;
+      var loadH = Math.round(cell.loadMin / 60 * 10) / 10;
+      var capH = Math.round(capMin / 60 * 10) / 10;
+      var alertTag = '';
+      if (pct > 100) alertTag = '<span style="font-size:8px;font-weight:800;color:#fff;background:var(--red);padding:1px 4px;border-radius:2px;margin-left:4px;text-transform:uppercase">⚠ Sobrecarga</span>';
+      else if (pct > 95) alertTag = '<span style="font-size:8px;font-weight:800;color:#fff;background:#ff9800;padding:1px 4px;border-radius:2px;margin-left:4px;text-transform:uppercase">Al tope</span>';
+
+      tableHTML += '<td onclick="_planOpenCellDetail(\'' + row.techId + '\', \'' + iso + '\')" style="padding:8px;cursor:pointer;border-right:1px solid #f5f5f5;vertical-align:middle">'
+        + '<div style="background:' + col.bg + ';border:1px solid ' + col.border + ';border-radius:4px;padding:8px">'
+        +   '<div style="height:8px;background:#fff;border-radius:2px;overflow:hidden;margin-bottom:6px">'
+        +     '<div style="height:100%;width:' + barPct + '%;background:' + col.border + ';transition:width 0.3s ease"></div>'
+        +   '</div>'
+        +   '<div style="display:flex;justify-content:space-between;align-items:center;gap:4px">'
+        +     '<div style="font-size:11px;font-weight:800;color:' + col.label + ';font-family:var(--mono)">' + loadH + ' / ' + capH + 'h</div>'
+        +     '<div style="font-size:9px;font-weight:700;color:' + col.label + '">' + pct + '%</div>'
+        +   '</div>'
+        +   '<div style="font-size:9px;color:' + col.label + ';margin-top:2px;font-weight:600">'
+        +     srvCount + ' servicio' + (srvCount !== 1 ? 's' : '')
+        +     alertTag
+        +   '</div>'
+        + '</div>'
+        + '</td>';
     });
-    gDiv.innerHTML = h; body.appendChild(gDiv);
+    tableHTML += '</tr>';
   });
+
+  // Fila footer: total taller por día
+  tableHTML += '<tr style="background:#1a1a1a;color:#fff;border-top:2px solid var(--red)">';
+  tableHTML += '<td style="padding:10px 12px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;position:sticky;left:0;background:#1a1a1a;z-index:1">Total taller</td>';
+  rangeDays.forEach(function(d){
+    var iso = d.toISOString();
+    var totalCap = totalCapacityByDay[iso];
+    var totalLoad = totalLoadByDay[iso];
+    var totalPct = totalCap > 0 ? Math.round((totalLoad / totalCap) * 100) : 0;
+    var loadH = Math.round(totalLoad / 60 * 10) / 10;
+    var capH = Math.round(totalCap / 60 * 10) / 10;
+    var totalColor = totalPct > 100 ? '#ff5252' : totalPct > 95 ? '#ff9800' : totalPct > 70 ? '#ffc107' : totalPct > 0 ? '#4caf50' : '#666';
+    tableHTML += '<td style="padding:10px 6px;text-align:center;font-family:var(--mono);font-size:11px;border-right:1px solid #333">'
+      + '<div style="font-weight:800;color:' + totalColor + '">' + totalPct + '%</div>'
+      + '<div style="font-size:9px;color:#aaa;margin-top:2px">' + loadH + ' / ' + capH + 'h</div>'
+      + '</td>';
+  });
+  tableHTML += '</tr>';
+
+  tableHTML += '</tbody></table></div>';
+  grid.innerHTML = tableHTML;
+  body.appendChild(grid);
+
+  // 7d) Leyenda visual
+  var legend = mk('div','');
+  legend.style.cssText = 'margin-top:12px;padding:10px 12px;background:#fafafa;border:1px solid var(--border);border-radius:4px;font-size:11px;color:#666';
+  legend.innerHTML = '<div style="font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#111;margin-bottom:6px;font-family:\'Rajdhani\',sans-serif">Cómo leer el Smart Planner</div>'
+    + '<div style="display:flex;flex-wrap:wrap;gap:14px;line-height:1.5">'
+    +   '<span><span style="display:inline-block;width:10px;height:10px;background:#4caf50;border-radius:2px;vertical-align:middle;margin-right:4px"></span>0-70% cómodo</span>'
+    +   '<span><span style="display:inline-block;width:10px;height:10px;background:var(--gold);border-radius:2px;vertical-align:middle;margin-right:4px"></span>70-95% ajustado</span>'
+    +   '<span><span style="display:inline-block;width:10px;height:10px;background:#ff9800;border-radius:2px;vertical-align:middle;margin-right:4px"></span>95-100% al tope</span>'
+    +   '<span><span style="display:inline-block;width:10px;height:10px;background:var(--red);border-radius:2px;vertical-align:middle;margin-right:4px"></span>+100% sobrecarga</span>'
+    + '</div>'
+    + '<div style="margin-top:6px;color:var(--wh3);font-size:10px">Toca cualquier celda para ver los servicios del día. Capacidad: L-M 9h, J 8h, V 7h por técnico.</div>';
+  body.appendChild(legend);
+
+  logR('PLAN_GRID_RENDERED', {view: _planView, events: events.length, techs: techRows.length, days: rangeDays.length});
 }
 
 // ═══════════════════════════════════════════════
@@ -12797,6 +13114,26 @@ function openDoubleCheck(otId) {
   // según las reglas operacionales (técnico responsable + fecha/hora).
   var nowStr = new Date().toLocaleString('es-CL', {dateStyle:'short', timeStyle:'short'});
   var plateView = (row.vehicle && row.vehicle.plate) ? row.vehicle.plate : '';
+
+  // FASE 4.4 — Botón rápido "Marcar items de aceite como N/A" cuando el
+  // servicio NO espera aceite. Antes el técnico debía marcar manualmente N/A
+  // en 3 items + escribir el motivo 3 veces (6 toques + 3 textos). Ahora
+  // 1 toque resuelve todo. El técnico puede sobreescribir si quiere.
+  var expectsOil = serviceExpectsOil(o.service_classification);
+  var quickFillBanner = '';
+  if (!expectsOil) {
+    quickFillBanner =
+        '<div id="m-dc-quickfill-banner" style="margin-top:10px;padding:10px 12px;background:linear-gradient(135deg,#fff8e1 0%,#fff3c4 100%);border:1px solid var(--gold);border-left:4px solid var(--gold);border-radius:4px">'
+      +   '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">'
+      +     '<div style="flex:1;min-width:200px">'
+      +       '<div style="font-size:12px;font-weight:700;color:#111;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.04em">⚡ Servicio sin cambio de aceite</div>'
+      +       '<div style="font-size:11px;color:#5a4500;margin-top:2px;line-height:1.4">Los 3 items de aceite no aplican a este servicio. Tócalo para marcarlos como N/A automáticamente.</div>'
+      +     '</div>'
+      +     '<button type="button" class="btn" onclick="quickFillOilNADoubleCheck()" style="background:var(--gold);color:#111;border-color:var(--gold);font-weight:700;font-size:12px;padding:8px 14px;white-space:nowrap;flex-shrink:0">⚡ Marcar N/A</button>'
+      +   '</div>'
+      + '</div>';
+  }
+
   var html = '<div class="modal-t">Doble control de cierre</div>'
     + '<div class="modal-s">OT-' + (o.ot_number || '?') + ' · marca cada ítem antes de cerrar</div>'
     + '<div style="margin-top:10px;padding:8px;background:#fffbf2;border-left:3px solid var(--gold);border-radius:3px;font-size:11px;line-height:1.5">'
@@ -12804,6 +13141,7 @@ function openDoubleCheck(otId) {
     +   '<b>Fecha/hora:</b> ' + nowStr + ' <span style="color:var(--wh3)">(captura automática)</span>'
     +   (plateView ? '<br/><b>Patente:</b> ' + escapeHtml(plateView) : '')
     + '</div>'
+    + quickFillBanner
     + '<div style="margin-top:12px">'
     + CHECKLIST_DOBLE_CONTROL.map(function(it){
         // FIX 2026-05-04: pasar también el motivo previo (<key>_reason) al
@@ -12821,6 +13159,54 @@ function openDoubleCheck(otId) {
   // siempre está visible y opcional).
   updateDcNaReasonVisibility();
 }
+
+// ═══════════════════════════════════════════════════════════════
+// FASE 4.4 — QUICK-FILL N/A PARA ITEMS DE ACEITE EN DOBLE CONTROL
+// ═══════════════════════════════════════════════════════════════
+// Marca los 3 items DC_OIL_DEPENDENT_KEYS como N/A con motivo precargado.
+// Filosofía Apple: cero fricción para el caso común (servicio sin aceite).
+// Si el técnico quiere ser más específico puede editar cada motivo después.
+// Si quiere desmarcar y poner Sí o No, también puede — los botones siguen
+// activos como siempre.
+function quickFillOilNADoubleCheck() {
+  var motivoAuto = 'Servicio sin cambio de aceite — N/A automático';
+  var scope = document.getElementById('m-dc-body');
+  if (!scope) return;
+  var marcados = 0;
+  DC_OIL_DEPENDENT_KEYS.forEach(function(key){
+    var row = scope.querySelector('[data-bc-item-row="' + key + '"]');
+    if (!row) return;
+    // Solo marcar si el item está actualmente sin marcar (no pisar decisión
+    // del técnico que ya tocó algo).
+    var currentState = row.getAttribute('data-bc-state') || '';
+    if (currentState === 'true' || currentState === 'false') return;
+    // Marcar como N/A
+    var naBtn = row.querySelector('button[data-bc-value="N/A"]');
+    if (naBtn) {
+      bcSetBool(naBtn);
+      marcados++;
+    }
+    // Llenar motivo si está vacío
+    var reasonTa = row.querySelector('textarea[data-bc-reason-key="' + key + '"]');
+    if (reasonTa && !reasonTa.value.trim()) {
+      reasonTa.value = motivoAuto;
+    }
+    // Flash dorado para feedback visual
+    row.style.transition = 'background-color 0.6s ease';
+    row.style.backgroundColor = '#fff3c4';
+    setTimeout(function(){ row.style.backgroundColor = ''; }, 1200);
+  });
+  // Esconder el banner después del uso (no tiene sentido seguir mostrándolo)
+  var banner = document.getElementById('m-dc-quickfill-banner');
+  if (banner && marcados > 0) {
+    banner.style.transition = 'opacity 0.4s ease, height 0.4s ease, padding 0.4s ease, margin 0.4s ease';
+    banner.style.opacity = '0';
+    setTimeout(function(){ if (banner.parentNode) banner.parentNode.removeChild(banner); }, 400);
+  }
+  // Log para auditoría
+  try { logR('DC_QUICKFILL_OIL_NA', {marcados: marcados, ot: _activeOT && _activeOT.ot && _activeOT.ot.id}); } catch(_){}
+}
+window.quickFillOilNADoubleCheck = quickFillOilNADoubleCheck;
 
 // ═══════════════════════════════════════════════════════════════
 // FIX DEFINITIVO 2026-05-04: helpers UNIVERSALES para items bool en TODOS los
