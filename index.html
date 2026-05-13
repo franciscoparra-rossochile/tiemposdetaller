@@ -7133,6 +7133,64 @@ function setBossOnlineFilter(f) {
   renderBossOnline();
 }
 
+// KPI OPERACIONAL 2026-05-13: ALERTAS DE CONTINGENCIA
+// ═══════════════════════════════════════════════════════════════
+// Dos KPIs critIcos visibles desde el panel principal de jefatura:
+// 1) Sesiones pausadas >8h hAbiles (riesgo de abandono / OT zombie)
+// 2) OTs en pending_visado >24h (cliente esperando, visador desbordado)
+// Ambas alimentan banners rojos en renderBossOnline y badges inline
+// en los cards de buildSessCard.
+// ═══════════════════════════════════════════════════════════════
+
+// Retorna horas habiles que lleva pausada la sesion. Usa effectivePauseMsBetween
+// (que ya descuenta noches/findes/cierre de local). Retorna 0 si no aplica.
+function pausedHoursWorking(sess) {
+  if (!sess || (sess.status !== 'paused' && sess.running !== false)) return 0;
+  if (!sess.paused_at) return 0;
+  try {
+    var pausedMs = new Date(sess.paused_at).getTime();
+    if (isNaN(pausedMs)) return 0;
+    return effectivePauseMsBetween(pausedMs, Date.now()) / 3600000;
+  } catch(_) { return 0; }
+}
+window.pausedHoursWorking = pausedHoursWorking;
+
+// Cache del count de OTs en visado vencido (>24h). Se hidrata async cada 60s
+// desde renderBossOnline. El primer render despues de fetchLive puede mostrar
+// el cache stale; el siguiente render ya tiene el valor fresco.
+var _visadoOverdue24hCount = 0;
+var _visadoOverdueLastFetch = 0;
+async function refreshVisadoOverdueCount(opts) {
+  opts = opts || {};
+  var maxAgeMs = opts.force ? 0 : 60000; // cache 60s por defecto
+  if (Date.now() - _visadoOverdueLastFetch < maxAgeMs) return _visadoOverdue24hCount;
+  _visadoOverdueLastFetch = Date.now();
+  try {
+    var r = await sb.from('work_orders')
+      .select('id, updated_at, checklist_data')
+      .eq('status', 'pending_visado')
+      .limit(200);
+    if (r && r.error) { logR('VISADO_OVERDUE_FETCH_ERR', {msg: r.error.message}, 'warn'); return _visadoOverdue24hCount; }
+    var nowMs = Date.now();
+    var critical = 0;
+    (r && r.data || []).forEach(function(o) {
+      var cd = o.checklist_data || {};
+      // Preferir double_check_completed_at (momento exacto en que entra a visado).
+      // Fallback a updated_at si por alguna razon falta.
+      var dcAt = cd.double_check_completed_at ? new Date(cd.double_check_completed_at).getTime() : null;
+      var refMs = dcAt || (o.updated_at ? new Date(o.updated_at).getTime() : null);
+      if (refMs && (nowMs - refMs) > 24 * 3600 * 1000) critical++;
+    });
+    _visadoOverdue24hCount = critical;
+    logR('VISADO_OVERDUE_REFRESH', {critical: critical});
+    return critical;
+  } catch(e) {
+    logR('VISADO_OVERDUE_THREW', {msg: e.message}, 'warn');
+    return _visadoOverdue24hCount;
+  }
+}
+window.refreshVisadoOverdueCount = refreshVisadoOverdueCount;
+
 function renderBossOnline() {
   var body = document.getElementById('boss-body');
   if (curBossTab !== 'b-online') return;
@@ -7162,7 +7220,12 @@ function renderBossOnline() {
   // pestañas) y agrega un banner explicativo arriba del listado.
   refreshPausedAlert(arrPaused.length);
 
-  logR('RENDER_BOSS_ONLINE', {liveCount: liveData.length, running: arrRunning.length, paused: arrPaused.length, filter: _bossOnlineFilter});
+  // KPI OPERACIONAL 2026-05-13: detectar pausas >8h habiles + visado >24h.
+  // Dispara fetch async del count de visado vencido (cache 60s).
+  var longPaused = arrPaused.filter(function(s){ return pausedHoursWorking(s) >= 8; });
+  refreshVisadoOverdueCount(); // dispara y olvida; se hidrata async en _visadoOverdue24hCount
+
+  logR('RENDER_BOSS_ONLINE', {liveCount: liveData.length, running: arrRunning.length, paused: arrPaused.length, longPaused: longPaused.length, visadoOverdue: _visadoOverdue24hCount, filter: _bossOnlineFilter});
 
   // Banner de alerta cuando paused supera el umbral. Se muestra arriba de
   // los chips para que el admin lo vea apenas entra a la pestaña.
@@ -7180,6 +7243,45 @@ function renderBossOnline() {
       + '</span>'
       + '</div>';
   }
+
+  // KPI OPERACIONAL 2026-05-13: banner critico rojo para pausas >8h habiles.
+  // Diferente del banner dorado (cantidad): este escala con severidad.
+  var longPausedBanner = '';
+  if (longPaused.length > 0) {
+    var lpDetail = longPaused.slice(0, 3).map(function(s){
+      return escapeHtml(s.technician || s.username || '?') + ' (' + Math.round(pausedHoursWorking(s)) + 'h)';
+    }).join(', ');
+    if (longPaused.length > 3) lpDetail += ' y ' + (longPaused.length - 3) + ' más';
+    longPausedBanner = ''
+      + '<div role="alert" style="background:#fff5f5;border:1px solid var(--red);border-left:4px solid var(--red);'
+      + 'border-radius:4px;padding:9px 12px;margin-bottom:10px;font-size:12px;color:#7a1d1d;font-family:var(--head);'
+      + 'display:flex;align-items:center;gap:9px">'
+      + '<span style="font-size:16px;line-height:1">⏰</span>'
+      + '<span><strong>' + longPaused.length + ' servicio' + (longPaused.length===1?'':'s') + ' pausado' + (longPaused.length===1?'':'s') + ' hace +8h hábiles</strong> &mdash; ' + lpDetail + '. '
+      + '<button type="button" onclick="setBossOnlineFilter(\'paused\')" style="background:transparent;border:0;'
+      + 'color:var(--red);text-decoration:underline;cursor:pointer;font-family:inherit;font-size:12px;font-weight:700;padding:0">Ver pausados</button>'
+      + '</span>'
+      + '</div>';
+  }
+
+  // KPI OPERACIONAL 2026-05-13: banner critico para OTs en visado >24h.
+  // Cuenta viene de cache async (_visadoOverdue24hCount). En el primer render
+  // puede ser 0 hasta que termine el fetch; el siguiente render lo refleja.
+  var visadoOverdueBanner = '';
+  if (_visadoOverdue24hCount > 0) {
+    visadoOverdueBanner = ''
+      + '<div role="alert" style="background:#fff5f5;border:1px solid var(--red);border-left:4px solid var(--red);'
+      + 'border-radius:4px;padding:9px 12px;margin-bottom:10px;font-size:12px;color:#7a1d1d;font-family:var(--head);'
+      + 'display:flex;align-items:center;gap:9px">'
+      + '<span style="font-size:16px;line-height:1">⚖️</span>'
+      + '<span><strong>' + _visadoOverdue24hCount + ' OT' + (_visadoOverdue24hCount===1?'':'s') + ' esperando visado hace +24h</strong> &mdash; cliente puede estar reclamando. '
+      + '<button type="button" onclick="bossTab(\'b-visado\')" style="background:transparent;border:0;'
+      + 'color:var(--red);text-decoration:underline;cursor:pointer;font-family:inherit;font-size:12px;font-weight:700;padding:0">Ir al panel visado</button>'
+      + '</span>'
+      + '</div>';
+  }
+  // Concatenar: rojo primero (mayor severidad), luego dorado.
+  alertBanner = longPausedBanner + visadoOverdueBanner + alertBanner;
 
   // Header con chips de filtro (siempre visible, incluso con 0 servicios).
   var pausedHighlight = (arrPaused.length >= threshold);
@@ -7410,6 +7512,14 @@ function buildSessCard(s, isTech) {
       + '<span class="js-support-timer" data-started="' + escapeHtml(supStartIso) + '" style="font-family:var(--mono);font-weight:700">' + fmtT(supSecSess) + '</span>'
       + '</div>';
   } else if (lastPause) h += '<div style="background:var(--gold2);border:1px solid var(--gold);border-radius:3px;padding:2px 7px;margin-top:4px;font-size:10px;color:var(--gold3);font-weight:700;display:inline-block">PAUSA: ' + escapeHtml(lastPause.reason || '') + '</div>';
+  // KPI OPERACIONAL 2026-05-13: badge rojo si la pausa lleva >8h habiles.
+  // Visible en vista jefatura para que el problema sea evidente sin click.
+  if (paused) {
+    var pausedHrs = pausedHoursWorking(s);
+    if (pausedHrs >= 8) {
+      h += '<div style="background:#fff5f5;border:1.5px solid var(--red);border-radius:3px;padding:2px 7px;margin-top:4px;margin-left:4px;font-size:10px;color:var(--red);font-weight:800;display:inline-block">⏰ +' + Math.round(pausedHrs) + 'h PAUSADO</div>';
+    }
+  }
   // Marcador para inyectar el menu admin inline, al lado del badge PAUSA o de la patente
   h += '<span class="adm-inline-slot" style="display:inline-block;vertical-align:middle;margin-left:6px"></span>';
   h += '</div></div>';
@@ -14402,16 +14512,24 @@ async function loadVisadoOTs() {
     if (cliIds.length) { var rc = await sb.from('clients').select('id,name,rut,phone').in('id', cliIds); (rc.data || []).forEach(function(c){clis[c.id]=c;}); }
     _visadoCache = ots.map(function(o){return {ot:o, vehicle:vehs[o.vehicle_id]||null, client:clis[o.client_id]||null};});
     // FASE 3.1: contadores y meta enriquecida
+    // KPI OPERACIONAL 2026-05-13: escalado a 3 niveles. El umbral critico
+    // sube a 24h (operativo: cliente esperando dia completo). El umbral
+    // intermedio se conserva en 4h como warning. < 1h se mantiene OK.
     var nowMs = Date.now();
-    var nUrgent = 0, nResubmit = 0;
+    var nUrgent = 0, nCritical = 0, nResubmit = 0;
     _visadoCache.forEach(function(r){
       var cd = r.ot.checklist_data || {};
       var dcAt = cd.double_check_completed_at ? new Date(cd.double_check_completed_at).getTime() : null;
-      if (dcAt && (nowMs - dcAt) > (4 * 3600 * 1000)) nUrgent++;
+      if (dcAt) {
+        var waitH = (nowMs - dcAt) / 3600000;
+        if (waitH > 24) nCritical++;
+        else if (waitH > 4) nUrgent++;
+      }
       if (cd.visado_rejection && cd.visado_rejection.reason) nResubmit++;
     });
     meta.innerHTML = ots.length + ' OT' + (ots.length===1?'':'s') + ' pendiente' + (ots.length===1?'':'s')
-      + (nUrgent ? ' · <span style="color:var(--red);font-weight:700">' + nUrgent + ' &gt; 4h</span>' : '')
+      + (nCritical ? ' · <span style="color:var(--red);font-weight:800">' + nCritical + ' &gt; 24h ⏰</span>' : '')
+      + (nUrgent ? ' · <span style="color:var(--gold3);font-weight:700">' + nUrgent + ' &gt; 4h</span>' : '')
       + (nResubmit ? ' · <span style="color:var(--gold3);font-weight:700">' + nResubmit + ' re-envío</span>' : '');
     list.innerHTML = _visadoCache.map(function(r){
       var o=r.ot, v=r.vehicle, c=r.client;
@@ -14423,13 +14541,14 @@ async function loadVisadoOTs() {
       var techBy = cd.tech_completed_by_name || '?';
       var dcAtMs = cd.double_check_completed_at ? new Date(cd.double_check_completed_at).getTime() : null;
       var dcAt = cd.double_check_completed_at ? new Date(cd.double_check_completed_at).toLocaleString('es-CL') : '?';
-      // FASE 3.1: semáforo de tiempo de espera
+      // FASE 3.1 + KPI 2026-05-13: semáforo de tiempo de espera (4 niveles)
       var waitMs = dcAtMs ? (nowMs - dcAtMs) : 0;
-      var waitColor, waitLabel;
+      var waitColor, waitLabel, isCritical = false;
       if (!dcAtMs) { waitColor = 'var(--wh4)'; waitLabel = ''; }
       else if (waitMs < 1 * 3600 * 1000) { waitColor = 'var(--green)'; waitLabel = '< 1h'; }
       else if (waitMs < 4 * 3600 * 1000) { waitColor = 'var(--gold3)'; waitLabel = Math.round(waitMs/3600000) + 'h'; }
-      else { waitColor = 'var(--red)'; waitLabel = Math.round(waitMs/3600000) + 'h ⚠'; }
+      else if (waitMs < 24 * 3600 * 1000) { waitColor = 'var(--red)'; waitLabel = Math.round(waitMs/3600000) + 'h ⚠'; }
+      else { waitColor = 'var(--red)'; waitLabel = Math.round(waitMs/3600000) + 'h ⏰'; isCritical = true; }
       // Marca de re-envío
       var isResubmit = !!(cd.visado_rejection && cd.visado_rejection.reason);
       var resubmitTag = isResubmit
@@ -14438,7 +14557,7 @@ async function loadVisadoOTs() {
       var leftBorder = (waitColor === 'var(--red)') ? 'var(--red)'
                      : (waitColor === 'var(--gold3)') ? 'var(--gold)'
                      : 'var(--gold)';
-      return '<div style="background:#fff;border:1px solid ' + (waitColor === 'var(--red)' ? 'var(--red)' : 'var(--gold)') + ';border-left:4px solid ' + leftBorder + ';border-radius:3px;padding:10px;margin-bottom:6px;cursor:pointer" onclick="openVisadoModal(\'' + o.id + '\')">'
+      return '<div style="background:' + (isCritical ? '#fff5f5' : '#fff') + ';border:' + (isCritical ? '2px' : '1px') + ' solid ' + (waitColor === 'var(--red)' ? 'var(--red)' : 'var(--gold)') + ';border-left:4px solid ' + leftBorder + ';border-radius:3px;padding:10px;margin-bottom:6px;cursor:pointer' + (isCritical ? ';box-shadow:0 2px 8px rgba(229,62,62,.15)' : '') + '" onclick="openVisadoModal(\'' + o.id + '\')">'
         + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:4px">'
         +   '<div style="font-size:13px;font-weight:700;font-family:\'Rajdhani\',sans-serif">' + resubmitTag + 'OT-' + (o.ot_number || '?') + ' · ' + escapeHtml(srvLabel) + '</div>'
         +   '<div style="font-size:10px;color:' + waitColor + ';font-weight:800;font-family:var(--mono)">' + waitLabel + '</div>'
