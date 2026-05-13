@@ -1784,6 +1784,128 @@ window.validateKPIs = validateKPIs;
 //   Una OT NO puede ir directo a 'visado_pendiente' saltándose el doble
 //   control. La progresión es checklist → doble control → visado → cierre.
 // ═══════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
+// FASE 4.1 — DERIVACIÓN AUTORITATIVA DE STATUS DE OT
+// ═══════════════════════════════════════════════════════════════
+// FUENTE ÚNICA DE VERDAD: dado un work_order, devuelve el status canónico
+// derivado de los HECHOS registrados (timestamps en checklist_data).
+//
+// Antes el bug clásico era que el cierre del cronómetro subía la OT a
+// 'pending_visado' aunque tech_completed_at estuviera null, y el visador
+// veía la OT en su panel sin poder aprobarla (guard interno la rechazaba).
+// Tres vistas distintas mostraban tres verdades distintas.
+//
+// Regla de oro: si los flags no respaldan el status, los flags ganan.
+//
+// Mapeo:
+//   visado_approved=true + visado_at                     → closed
+//   visado_rejection activo (más reciente que visado_at) → in_progress
+//   double_check_completed_at presente                   → pending_visado
+//   tech_completed_at presente                           → pending_double_check
+//   otro caso                                            → in_progress
+//   status='cancelled' es terminal y se respeta tal cual.
+function deriveOTStatus(o) {
+  if (!o) return null;
+  if (o.status === 'cancelled') return 'cancelled';
+  var cd = o.checklist_data || {};
+
+  // Visado aprobado → cerrado (caso terminal)
+  if (cd.visado_approved === true && cd.visado_at) return 'closed';
+
+  // Rechazo de visado más reciente que la última aprobación → vuelve a in_progress
+  if (cd.visado_rejection && cd.visado_rejection.reason) {
+    var rejAt = cd.visado_rejection.at ? new Date(cd.visado_rejection.at).getTime() : 0;
+    var apAt = cd.visado_at ? new Date(cd.visado_at).getTime() : 0;
+    if (rejAt > apAt) return 'in_progress';
+  }
+
+  // Pipeline normal en orden estricto de hechos
+  if (cd.double_check_completed_at) return 'pending_visado';
+  if (cd.tech_completed_at)         return 'pending_double_check';
+
+  // OT cerrada por flujo sin checklist (logística, lavado) preserva 'closed'
+  if (o.status === 'closed') return 'closed';
+
+  return 'in_progress';
+}
+window.deriveOTStatus = deriveOTStatus;
+
+// ¿El status escrito en BD es consistente con los flags?
+// false → OT desincronizada (usar para detectar OTs históricas a normalizar)
+function isOTStatusConsistent(o) {
+  if (!o) return true;
+  return deriveOTStatus(o) === o.status;
+}
+window.isOTStatusConsistent = isOTStatusConsistent;
+
+// ═══════════════════════════════════════════════════════════════
+// FASE 4.2 — GATEKEEPER CENTRALIZADO DE ACCIONES CRÍTICAS
+// ═══════════════════════════════════════════════════════════════
+// Antes la app validaba permisos solo en el RENDER de la pestaña, pero los
+// handlers (approveVisado, rejectVisado, saveDoubleCheck) NO revalidaban.
+// Defense-in-depth: cada handler crítico llama a este gatekeeper antes de
+// tocar BD. Si alguien agrega un handler nuevo en el futuro, este es el
+// único punto a auditar.
+//
+// Retorna {ok: boolean, reason: string}.
+function canUserAction(action, ctx) {
+  ctx = ctx || {};
+  var u = ctx.user || (typeof CU !== 'undefined' ? CU : null);
+  if (!u) return {ok:false, reason:'Sesión no iniciada'};
+
+  // Super admin pasa siempre (excepción auditada vía isSuperAdmin)
+  if (typeof isSuperAdmin === 'function' && isSuperAdmin()) return {ok:true};
+
+  var perms = u.permissions || {};
+  var isAdminRole = (u.role === 'admin' || u.role === 'super_admin');
+
+  switch (action) {
+    case 'visado.approve':
+    case 'visado.reject':
+      if (perms.can_visar !== true) {
+        return {ok:false, reason:'No tienes permiso para visar. Solo el encargado designado puede aprobar o rechazar este servicio.'};
+      }
+      return {ok:true};
+
+    case 'doble_control.save':
+      // Solo el técnico designado de la OT cierra su doble control.
+      // Excepción: admin/super_admin pueden intervenir manualmente.
+      if (isAdminRole) return {ok:true};
+      var otDC = ctx.workOrder || null;
+      if (otDC && otDC.technician_id && u.id && otDC.technician_id !== u.id) {
+        return {ok:false, reason:'Solo el técnico designado de esta OT puede cerrar el doble control. Si estás ayudando, usa "Prestar apoyo".'};
+      }
+      return {ok:true};
+
+    case 'tech_checklist.save':
+      // Mismo principio: solo el técnico designado llena el checklist técnico.
+      if (isAdminRole) return {ok:true};
+      var otCK = ctx.workOrder || null;
+      if (otCK && otCK.technician_id && u.id && otCK.technician_id !== u.id) {
+        return {ok:false, reason:'Solo el técnico designado de esta OT puede llenar el checklist técnico. Si estás ayudando, usa "Prestar apoyo".'};
+      }
+      return {ok:true};
+
+    case 'service.finish':
+      // Finalizar cronómetro principal: solo el dueño de la sesión.
+      var sess = ctx.session || null;
+      if (sess && sess.username && u.username && sess.username !== u.username) {
+        return {ok:false, reason:'Solo el técnico dueño del cronómetro puede finalizar este servicio.'};
+      }
+      return {ok:true};
+
+    case 'support.start':
+      // Cualquier técnico autenticado puede iniciar apoyo a otra patente.
+      return {ok:true};
+
+    default:
+      // Acción no clasificada: permitir + loggear para auditoría.
+      try { logR('CAN_USER_ACTION_UNKNOWN', {action: action}); } catch(_){}
+      return {ok:true};
+  }
+}
+window.canUserAction = canUserAction;
+
 function computeServiceState(ctx) {
   ctx = ctx || {};
   var live = ctx.liveSession || null;
@@ -1797,27 +1919,23 @@ function computeServiceState(ctx) {
     if (live.status === 'checklist_pending') return {status:'checklist_pendiente', label:'CHECKLIST PENDIENTE', color:'var(--blue)'};
   }
 
-  // Sin sesión activa: usar estado de OT si existe.
+  // Sin sesión activa: derivar estado de OT desde flags (fuente única de verdad).
+  // FASE 4.1: pasa por deriveOTStatus para garantizar que flags y status nunca
+  // se contradigan. Antes este bloque leía ot.status directo y se desincronizaba.
   if (ot) {
-    var s = ot.status;
-    if (s === 'closed' || s === 'cancelled')     return {status:'completado',           label:'COMPLETADO',           color:'var(--blue)'};
-    if (s === 'pending_visado')                  return {status:'visado_pendiente',     label:'VISADO PENDIENTE',     color:'var(--gold)'};
-    if (s === 'pending_double_check')            return {status:'doble_control_pendiente', label:'DOBLE CONTROL PENDIENTE', color:'var(--gold)'};
-    var cd = ot.checklist_data || {};
-    // Si tiene checklist técnico completo pero la OT está en in_progress,
-    // se considera doble_control_pendiente.
-    if (cd.tech_completed_at && !cd.double_check_completed_at) {
-      return {status:'doble_control_pendiente', label:'DOBLE CONTROL PENDIENTE', color:'var(--gold)'};
+    var derived = deriveOTStatus(ot);
+    if (derived === 'closed' || derived === 'cancelled') {
+      return {status:'completado', label:'COMPLETADO', color:'var(--blue)'};
     }
-    if (cd.double_check_completed_at && !cd.visado_at) {
+    if (derived === 'pending_visado') {
       return {status:'visado_pendiente', label:'VISADO PENDIENTE', color:'var(--gold)'};
     }
-    if (s === 'in_progress' || s === 'open' || s === 'assigned') {
-      // Está en in_progress sin checklist técnico aún → checklist pendiente
-      // (a menos que haya history, lo que indica que ya cerraron pero falta llenar).
-      if (hasHist) return {status:'checklist_pendiente', label:'CHECKLIST PENDIENTE', color:'var(--blue)'};
-      return {status:'sin_registro', label:'SIN REGISTRO', color:'var(--wh3)'};
+    if (derived === 'pending_double_check') {
+      return {status:'doble_control_pendiente', label:'DOBLE CONTROL PENDIENTE', color:'var(--gold)'};
     }
+    // derived === 'in_progress'
+    if (hasHist) return {status:'checklist_pendiente', label:'CHECKLIST PENDIENTE', color:'var(--blue)'};
+    return {status:'sin_registro', label:'SIN REGISTRO', color:'var(--wh3)'};
   }
 
   // Sin OT, sin live: si hay history, completado de facto (servicio sin OT formal).
@@ -4301,6 +4419,206 @@ async function saveLiveFinding() {
 }
 
 // FASE 2.6: Asistir en otro servicio
+// ═══════════════════════════════════════════════════════════════
+// FASE 4.3 — BACKEND DE APOYOS TEMPORALES (Frente 4 base)
+// ═══════════════════════════════════════════════════════════════
+// Helpers de bajo nivel para gestionar tramos en service_time_entries
+// con cierre automático defensivo. La UI de apoyo se reemplaza en
+// iteración 2; estas funciones quedan disponibles desde ya para que
+// doFinish y autoPauseAtShiftEnd cierren tramos huérfanos.
+
+// Abre un tramo de apoyo. Retorna {ok, entry_id, error}.
+async function startSupportEntry(plate, opts) {
+  opts = opts || {};
+  var gate = canUserAction('support.start', {});
+  if (!gate.ok) return {ok:false, error: gate.reason};
+  if (!CU || !CU.id) return {ok:false, error:'Sesión no iniciada'};
+
+  var cleanPlate = (plate || '').trim().toUpperCase();
+  if (!cleanPlate || cleanPlate.length < 4) {
+    return {ok:false, error:'Patente requerida (mínimo 4 caracteres)'};
+  }
+
+  // Resolver OT abierta por patente
+  var assistedWoId = null;
+  try {
+    var found = await findOpenOTByPlate(cleanPlate);
+    if (found) assistedWoId = found.id;
+  } catch(_){}
+  if (!assistedWoId) {
+    return {ok:false, error:'No se encontró OT abierta para la patente ' + cleanPlate};
+  }
+
+  // Verificar que no tenga ya un apoyo abierto a la misma OT
+  try {
+    var rDup = await sb.from('service_time_entries')
+      .select('id')
+      .eq('technician_id', CU.id)
+      .eq('work_order_id', assistedWoId)
+      .eq('type', 'assistance')
+      .is('ended_at', null)
+      .limit(1)
+      .maybeSingle();
+    if (rDup && rDup.data && rDup.data.id) {
+      return {ok:false, error:'Ya tienes un apoyo abierto a esta patente. Ciérralo primero.'};
+    }
+  } catch(_){}
+
+  var supportingKey = opts.supportingSessionKey || (typeof T !== 'undefined' && T.sessionKey) || null;
+  var entry = {
+    work_order_id: assistedWoId,
+    technician_id: CU.id,
+    technician_username: CU.username,
+    technician_name: CU.name,
+    session_key: (supportingKey || 'manual') + '_assist_' + Date.now(),
+    type: 'assistance',
+    started_at: new Date().toISOString(),
+    ended_at: null,
+    duration_seconds: null,
+    assisted_plate: cleanPlate,
+    supporting_session_key: supportingKey,
+    notes: opts.notes || ('Apoyo a patente ' + cleanPlate)
+  };
+
+  try {
+    var rste = await sb.from('service_time_entries').insert(entry).select('id').maybeSingle();
+    if (rste && rste.error) {
+      // Fallback si supporting_session_key aún no existe en BD
+      var msgLower = (rste.error.message || '').toLowerCase();
+      if (msgLower.indexOf('supporting_session_key') !== -1) {
+        logR('STE_NO_SUPPORTING_COL', {msg: rste.error.message}, 'warn');
+        delete entry.supporting_session_key;
+        var rste2 = await sb.from('service_time_entries').insert(entry).select('id').maybeSingle();
+        if (rste2 && rste2.error) {
+          return {ok:false, error: rste2.error.message};
+        }
+        logR('SUPPORT_STARTED', {plate: cleanPlate, wo: assistedWoId, entry_id: rste2.data && rste2.data.id});
+        return {ok:true, entry_id: rste2.data && rste2.data.id, work_order_id: assistedWoId};
+      }
+      return {ok:false, error: rste.error.message};
+    }
+    logR('SUPPORT_STARTED', {plate: cleanPlate, wo: assistedWoId, entry_id: rste.data && rste.data.id});
+    return {ok:true, entry_id: rste.data && rste.data.id, work_order_id: assistedWoId};
+  } catch(e) {
+    return {ok:false, error: e.message};
+  }
+}
+window.startSupportEntry = startSupportEntry;
+
+// Cierra UN tramo de apoyo específico. Calcula duration_seconds desde started_at.
+async function endSupportEntry(entryId, opts) {
+  opts = opts || {};
+  if (!entryId) return {ok:false, error:'entry_id requerido'};
+  try {
+    var rGet = await sb.from('service_time_entries').select('started_at,ended_at').eq('id', entryId).maybeSingle();
+    if (!rGet || !rGet.data) return {ok:false, error:'Tramo no encontrado'};
+    if (rGet.data.ended_at) return {ok:true, already_closed:true};
+    var startedMs = new Date(rGet.data.started_at).getTime();
+    var nowMs = Date.now();
+    var durSec = Math.max(1, Math.round((nowMs - startedMs) / 1000));
+    var patch = {
+      ended_at: new Date(nowMs).toISOString(),
+      duration_seconds: durSec
+    };
+    if (opts.autoClose) {
+      patch.auto_closed_at = patch.ended_at;
+      patch.auto_close_reason = opts.reason || 'auto';
+    }
+    var rUp = await sb.from('service_time_entries').update(patch).eq('id', entryId);
+    if (rUp && rUp.error) {
+      // Fallback si auto_close_* aún no existen en BD
+      var msgL = (rUp.error.message || '').toLowerCase();
+      if (msgL.indexOf('auto_closed_at') !== -1 || msgL.indexOf('auto_close_reason') !== -1) {
+        delete patch.auto_closed_at; delete patch.auto_close_reason;
+        var rUp2 = await sb.from('service_time_entries').update(patch).eq('id', entryId);
+        if (rUp2 && rUp2.error) return {ok:false, error: rUp2.error.message};
+      } else {
+        return {ok:false, error: rUp.error.message};
+      }
+    }
+    logR('SUPPORT_ENDED', {entry_id: entryId, duration_seconds: durSec, auto: !!opts.autoClose});
+    return {ok:true, duration_seconds: durSec};
+  } catch(e) {
+    return {ok:false, error: e.message};
+  }
+}
+window.endSupportEntry = endSupportEntry;
+
+// Cierra apoyos abiertos del técnico actual, con guard de antigüedad.
+// Tramos > MAX_AUTO_CLOSE_HOURS NO se auto-cierran con duración calculada
+// (inflaría KPIs por horas/días de olvido). En su lugar se anulan con
+// duration_seconds=0 y se notifica a admin para revisión manual.
+async function closeOpenSupportsForUser(userId, opts) {
+  opts = opts || {};
+  if (!userId) return {ok:false, closed:0, error:'userId requerido'};
+  var MAX_AUTO_CLOSE_HOURS = 8; // tope de jornada normal
+  try {
+    var rOpen = await sb.from('service_time_entries')
+      .select('id,started_at,assisted_plate,work_order_id')
+      .eq('technician_id', userId)
+      .eq('type', 'assistance')
+      .is('ended_at', null);
+    if (rOpen && rOpen.error) return {ok:false, closed:0, error: rOpen.error.message};
+    var open = (rOpen && rOpen.data) || [];
+    if (!open.length) return {ok:true, closed:0, nullified:0};
+    var closed = 0, nullified = 0;
+    var nowMs = Date.now();
+    for (var i = 0; i < open.length; i++) {
+      var entry = open[i];
+      var ageH = (nowMs - new Date(entry.started_at).getTime()) / 3600000;
+      if (ageH > MAX_AUTO_CLOSE_HOURS) {
+        // Tramo demasiado viejo: anular en vez de cerrar con duración calculada.
+        var nullPatch = {
+          ended_at: new Date(new Date(entry.started_at).getTime() + 1000).toISOString(),
+          duration_seconds: 0
+        };
+        var nullPatchExt = Object.assign({}, nullPatch, {
+          auto_closed_at: new Date(nowMs).toISOString(),
+          auto_close_reason: 'stale_>' + MAX_AUTO_CLOSE_HOURS + 'h_nullified'
+        });
+        var rN = await sb.from('service_time_entries').update(nullPatchExt).eq('id', entry.id);
+        if (rN && rN.error) {
+          // Fallback sin columnas nuevas
+          await sb.from('service_time_entries').update(nullPatch).eq('id', entry.id);
+        }
+        nullified++;
+        logR('SUPPORT_NULLIFIED_STALE', {
+          entry_id: entry.id,
+          plate: entry.assisted_plate,
+          wo: entry.work_order_id,
+          age_hours: Math.round(ageH * 10) / 10
+        }, 'warn');
+        // Notificar a admins
+        try {
+          if (typeof getUsersWithExplicitPerm === 'function') {
+            var admins = await getUsersWithExplicitPerm('can_manage_perms') || [];
+            if (admins.length) {
+              await sb.from('notifications').insert(admins.map(function(a){
+                return {
+                  type: 'admin_alert',
+                  title: '⚠ Apoyo huérfano anulado',
+                  sub: 'Patente ' + (entry.assisted_plate||'?') + ' · ' + Math.round(ageH) + 'h sin cerrar · revisar manualmente',
+                  target_user_id: a.id,
+                  work_order_id: entry.work_order_id
+                };
+              }));
+            }
+          }
+        } catch(_){}
+      } else {
+        // Tramo dentro de jornada razonable: cierre normal con duración calculada.
+        var r = await endSupportEntry(entry.id, {autoClose:true, reason: opts.reason || 'finish_principal'});
+        if (r && r.ok && !r.already_closed) closed++;
+      }
+    }
+    logR('SUPPORTS_AUTO_PROCESSED', {user: userId, closed: closed, nullified: nullified, reason: opts.reason});
+    return {ok:true, closed: closed, nullified: nullified};
+  } catch(e) {
+    return {ok:false, closed:0, error: e.message};
+  }
+}
+window.closeOpenSupportsForUser = closeOpenSupportsForUser;
+
 function openAsistenciaModal() {
   closeModal('m-pause');
   var inp = document.getElementById('m-asistir-plate');
@@ -5908,52 +6226,61 @@ async function doFinish(checklist, sessionKey) {
           showGlobalError('Aviso: el tramo de tiempo no se guardó en service_time_entries (' + rste.error.message + '). El servicio sí se finalizó. Avisa a admin.', 6000);
         }
 
-        // FASE 2.7 BUG-FIX: auto-promover la OT a pending_visado al cerrar el cronometro.
-        // Antes el tecnico se auto-marcaba "visado aprobado" en su propio checklist y la OT
-        // se quedaba en assigned/open. Ahora al finalizar se manda a Benjamin / visadores.
-        // FASE 2.7-fix abr 2026: skip para servicios de apoyo logistico (Lavado, Estandar
-        // de taller, Compras, Movimiento, Cierre). Estos no llevan checklist tecnico ni
-        // necesitan visado: cierran directo. Ver srvNeedsChecklist().
+        // ═══════════════════════════════════════════════════════════════
+        // FASE 4.1 — NUEVO MODELO DE PROGRESIÓN
+        // ═══════════════════════════════════════════════════════════════
+        // Antes (BUG): cerrar el cronómetro saltaba la OT a 'pending_visado'
+        // aunque tech_completed_at estuviera null. El visador veía la OT
+        // pendiente pero el guard interno le bloqueaba aprobarla. Tres vistas
+        // mostraban tres verdades.
+        //
+        // Ahora la regla es estricta:
+        //   - Servicio con checklist (DPF, Mantenciones, etc.):
+        //       cronómetro cierra → status='in_progress'.
+        //       El técnico llena checklist → status='pending_double_check'.
+        //       El técnico cierra doble control → status='pending_visado'
+        //       y AHÍ se notifica a visadores (en saveDoubleCheck).
+        //   - Servicio sin checklist (Lavado, Logística, Compras, etc.):
+        //       cronómetro cierra → status='closed' directo. Sin visado.
+        //
+        // El status SIEMPRE puede derivarse desde checklist_data con
+        // deriveOTStatus(). Esta escritura es solo conveniencia para queries.
         var skipVisado = (sess && sess.service && !srvNeedsChecklist(sess.service));
-        if (skipVisado) {
-          logR('OT_SKIP_VISADO_LOGISTICO', {srv: sess && sess.service, wo: woId});
-        }
         try {
           var rGet = await sb.from('work_orders').select('status,ot_number,service_classification').eq('id', woId).maybeSingle();
-          if (rGet && rGet.data && !skipVisado && ['open','assigned','in_progress','pending_double_check'].indexOf(rGet.data.status) !== -1) {
-            await sb.from('work_orders').update({
-              status: 'pending_visado',
-              updated_by: CU ? CU.id : null
-            }).eq('id', woId);
-            logR('OT_AUTO_TO_VISADO', {wo: woId, ot: rGet.data.ot_number, from: rGet.data.status});
-            // Notificar a visadores
-            // FIX bug 2026-04-29: getUsersWithExplicitPerm es async; sin await
-            // devolvía una Promise (no un array) y el for nunca entraba, por
-            // lo que las notificaciones a visadores nunca llegaban.
-            // FIX QW-7 (2026-04-30): un solo INSERT con array, en vez de N
-            // round-trips secuenciales (antes con 5 visadores eran 1.5-3s
-            // extra al cierre del servicio).
-            try {
-              var visadores = [];
-              if (typeof getUsersWithExplicitPerm === 'function') {
-                try { visadores = await getUsersWithExplicitPerm('can_visar') || []; }
-                catch(_) { visadores = []; }
+          if (rGet && rGet.data) {
+            var curSt = rGet.data.status;
+            if (skipVisado) {
+              // Logística/lavado/etc.: cerrar directo si está en ejecución.
+              if (['open','assigned','in_progress'].indexOf(curSt) !== -1) {
+                await sb.from('work_orders').update({
+                  status: 'closed',
+                  updated_by: CU ? CU.id : null
+                }).eq('id', woId);
+                logR('OT_CLOSED_LOGISTICO', {wo: woId, ot: rGet.data.ot_number, from: curSt});
               }
-              if (visadores.length) {
-                var subText = 'OT-' + (rGet.data.ot_number || '?') + ' · ' + (rGet.data.service_classification || '?') + ' · ' + (finPlate || '?') + ' por ' + CU.name;
-                await sb.from('notifications').insert(visadores.map(function(v) {
-                  return {
-                    type: 'visado',
-                    title: 'Nueva OT pendiente de visado',
-                    sub: subText,
-                    target_user_id: v.id,
-                    work_order_id: woId
-                  };
-                }));
-              }
-            } catch(_){}
+            } else {
+              // Servicio con checklist: NO promover. Sigue en in_progress.
+              // El técnico debe entrar a Mis OTs y llenar el checklist.
+              // La notificación a visadores se dispara al cerrar doble control.
+              logR('OT_AWAITING_CHECKLIST', {wo: woId, ot: rGet.data.ot_number, srv: sess && sess.service});
+            }
           }
-        } catch(e) { logR('OT_AUTO_VISADO_ERR', {msg: e.message}, 'warn'); }
+        } catch(e) { logR('OT_FINISH_STATUS_ERR', {msg: e.message}, 'warn'); }
+      }
+    } catch(_){}
+
+    // FASE 4.3: cerrar automáticamente cualquier apoyo huérfano del técnico
+    // antes de finalizar el cronómetro principal. Si el técnico olvidó cerrar
+    // un apoyo manualmente, igual queda contabilizado y la BD no acumula
+    // tramos abiertos indefinidos (que inflarían el tiempo total de la OT
+    // asistida).
+    try {
+      if (typeof closeOpenSupportsForUser === 'function' && CU && CU.id) {
+        var rClosed = await closeOpenSupportsForUser(CU.id, {reason:'finish_principal'});
+        if (rClosed && rClosed.closed > 0) {
+          logR('FINISH_AUTO_CLOSED_SUPPORTS', {count: rClosed.closed});
+        }
       }
     } catch(_){}
 
@@ -12322,6 +12649,16 @@ async function saveTechChecklist() {
   var err = document.getElementById('m-techchk-err');
   err.style.display = 'none';
   err.innerHTML = '';
+
+  // FASE 4.2: gatekeeper. Solo el técnico designado puede llenar el checklist
+  // técnico de su OT. El apoyo NO firma el trabajo del titular.
+  var gateC = canUserAction('tech_checklist.save', {workOrder: o});
+  if (!gateC.ok) {
+    err.textContent = gateC.reason;
+    err.style.display = 'block';
+    logR('TECHCHK_SAVE_DENIED', {user: CU && CU.username, ot: o.id, designated: o.technician_id, reason: gateC.reason}, 'warn');
+    return;
+  }
   // FIX 2026-05-04: validación con motivos inline para items bool en No/N/A.
   var data = {};
   var problems = []; // {key, label, kind: 'no_selection' | 'no_reason'}
@@ -12679,6 +13016,17 @@ async function _saveDoubleCheckInner() {
   var err = document.getElementById('m-dc-err');
   err.style.display = 'none';
 
+  // FASE 4.2: gatekeeper. Solo el técnico designado puede cerrar el doble
+  // control de su OT. Antes cualquier técnico que abriera la OT desde
+  // Protocolos o Mis OTs podía cerrarla, generando cierres por error.
+  var gateD = canUserAction('doble_control.save', {workOrder: o});
+  if (!gateD.ok) {
+    err.textContent = gateD.reason;
+    err.style.display = 'block';
+    logR('DC_SAVE_DENIED', {user: CU && CU.username, ot: o.id, designated: o.technician_id, reason: gateD.reason}, 'warn');
+    return;
+  }
+
   // FASE 3.2: el doble control no puede cerrarse si NO hay checklist técnico
   // previo. La progresión es checklist → doble control → visado, sin atajos.
   var cdPrev = o.checklist_data || {};
@@ -12803,6 +13151,34 @@ async function _saveDoubleCheckInner() {
       origin: 'm-double-check'
     });
   } catch(_){}
+
+  // FASE 4.1: notificar a visadores AHORA (antes se hacía al cerrar el
+  // cronómetro, lo que generaba falsas promesas: el visador recibía la
+  // alerta pero la OT no era aprobable porque tech_completed_at era null).
+  // Ahora la notificación sale solo cuando el técnico ya completó checklist
+  // y doble control — el visador puede aprobar al primer toque.
+  try {
+    var visadores = [];
+    if (typeof getUsersWithExplicitPerm === 'function') {
+      try { visadores = await getUsersWithExplicitPerm('can_visar') || []; }
+      catch(_) { visadores = []; }
+    }
+    if (visadores.length) {
+      var plateNotif = (_activeOT.vehicle && _activeOT.vehicle.plate) || '?';
+      var srvNotif = o.service_classification || '?';
+      var subTextDC = 'OT-' + (o.ot_number || '?') + ' · ' + srvNotif + ' · ' + plateNotif + ' por ' + (CU ? CU.name : '?');
+      await sb.from('notifications').insert(visadores.map(function(v) {
+        return {
+          type: 'visado',
+          title: 'Nueva OT pendiente de visado',
+          sub: subTextDC,
+          target_user_id: v.id,
+          work_order_id: o.id
+        };
+      }));
+      logR('VISADORES_NOTIFIED', {wo: o.id, count: visadores.length});
+    }
+  } catch(eNotif) { logR('VISADORES_NOTIFY_ERR', {msg: eNotif.message}, 'warn'); }
 
   btn.innerHTML = 'Cerrar doble control'; btn.disabled = false;
   closeModal('m-double-check');
@@ -13459,6 +13835,23 @@ async function _approveVisadoInner() {
   if (!_activeVisadoOT) return;
   var o = _activeVisadoOT.ot;
 
+  // FASE 4.2: gatekeeper de permiso. Aunque la pestaña Visado se oculta sin
+  // can_visar, el handler PUEDE ser invocado por un técnico que tenía la
+  // pestaña abierta cuando se le revocó el permiso, o por configuración
+  // errónea de admin. Defense-in-depth.
+  var gateA = canUserAction('visado.approve', {workOrder: o});
+  if (!gateA.ok) {
+    var ebPerm = document.getElementById('m-visado-chk-err');
+    if (ebPerm) {
+      ebPerm.textContent = gateA.reason;
+      ebPerm.style.display = 'block';
+    } else {
+      showGlobalError(gateA.reason, 5000);
+    }
+    logR('VISADO_APPROVE_DENIED', {user: CU && CU.username, ot: o.id, reason: gateA.reason}, 'warn');
+    return;
+  }
+
   // FASE 3.2: el visado NO puede aprobarse si la OT no completó el doble
   // control de cierre. Esto ataja el bug donde un visador podía cerrar
   // una OT que el técnico todavía no había auto-verificado.
@@ -13596,6 +13989,15 @@ async function rejectVisado() {
 
 async function _rejectVisadoInner() {
   if (!_activeVisadoOT) return;
+
+  // FASE 4.2: gatekeeper de permiso. Defense-in-depth.
+  var gateR = canUserAction('visado.reject', {workOrder: _activeVisadoOT.ot});
+  if (!gateR.ok) {
+    showGlobalError(gateR.reason, 5000);
+    logR('VISADO_REJECT_DENIED', {user: CU && CU.username, ot: _activeVisadoOT.ot.id, reason: gateR.reason}, 'warn');
+    return;
+  }
+
   var rej = document.getElementById('m-visado-rejection');
   var reason = rej && rej.value ? rej.value.trim() : '';
   if (!reason) { showGlobalError('Indica el motivo del rechazo', 4000); return; }
