@@ -1872,7 +1872,7 @@ function canUserAction(action, ctx) {
       // Excepción: admin/super_admin pueden intervenir manualmente.
       if (isAdminRole) return {ok:true};
       var otDC = ctx.workOrder || null;
-      if (otDC && otDC.technician_id && u.id && otDC.technician_id !== u.id) {
+      if (otDC && otDC.assigned_user_id && u.id && otDC.assigned_user_id !== u.id) {
         return {ok:false, reason:'Solo el técnico designado de esta OT puede cerrar el doble control. Si estás ayudando, usa "Prestar apoyo".'};
       }
       return {ok:true};
@@ -1881,7 +1881,7 @@ function canUserAction(action, ctx) {
       // Mismo principio: solo el técnico designado llena el checklist técnico.
       if (isAdminRole) return {ok:true};
       var otCK = ctx.workOrder || null;
-      if (otCK && otCK.technician_id && u.id && otCK.technician_id !== u.id) {
+      if (otCK && otCK.assigned_user_id && u.id && otCK.assigned_user_id !== u.id) {
         return {ok:false, reason:'Solo el técnico designado de esta OT puede llenar el checklist técnico. Si estás ayudando, usa "Prestar apoyo".'};
       }
       return {ok:true};
@@ -12656,7 +12656,7 @@ async function saveTechChecklist() {
   if (!gateC.ok) {
     err.textContent = gateC.reason;
     err.style.display = 'block';
-    logR('TECHCHK_SAVE_DENIED', {user: CU && CU.username, ot: o.id, designated: o.technician_id, reason: gateC.reason}, 'warn');
+    logR('TECHCHK_SAVE_DENIED', {user: CU && CU.username, ot: o.id, designated: o.assigned_user_id, reason: gateC.reason}, 'warn');
     return;
   }
   // FIX 2026-05-04: validación con motivos inline para items bool en No/N/A.
@@ -13023,7 +13023,7 @@ async function _saveDoubleCheckInner() {
   if (!gateD.ok) {
     err.textContent = gateD.reason;
     err.style.display = 'block';
-    logR('DC_SAVE_DENIED', {user: CU && CU.username, ot: o.id, designated: o.technician_id, reason: gateD.reason}, 'warn');
+    logR('DC_SAVE_DENIED', {user: CU && CU.username, ot: o.id, designated: o.assigned_user_id, reason: gateD.reason}, 'warn');
     return;
   }
 
