@@ -3820,6 +3820,25 @@ function startPolling() {
         }
       }
     }
+    // FRENTE 4 FASE 2: cronometro vivo del apoyo. Funciona aunque T.running sea
+    // false (el servicio principal esta pausado durante el apoyo). Cada elemento
+    // guarda su started_at en data-started y el tick recorre todos los marcados
+    // con la clase .js-support-timer (panel principal + cards de Mis Servicios).
+    try {
+      var supEls = document.querySelectorAll('.js-support-timer');
+      if (supEls && supEls.length) {
+        var nowMsSup = Date.now();
+        for (var iSup = 0; iSup < supEls.length; iSup++) {
+          var el = supEls[iSup];
+          var startedStr = el.getAttribute('data-started');
+          if (!startedStr) continue;
+          var startedMsSup = new Date(startedStr).getTime();
+          if (isNaN(startedMsSup)) continue;
+          var supSec2 = Math.max(0, Math.floor((nowMsSup - startedMsSup) / 1000));
+          el.textContent = fmtT(supSec2);
+        }
+      }
+    } catch(_){}
     refreshLiveUI();
   }, window.RossoConfig.TICK_INTERVAL_MS);
 }
@@ -4629,6 +4648,11 @@ function openAsistenciaModal() {
   setTimeout(function(){ if (inp) inp.focus(); }, 100);
 }
 
+// FRENTE 4 FASE 2 (2026-05-13): el modal de asistir delega a startSupportEntry
+// (backend de apoyos FASE 4.3) en lugar de insertar directo en service_time_entries.
+// Esto da: entry_id retornado para cerrar limpio + supporting_session_key correcto
+// + duplicate-guard automatico. El pause entry guarda support_entry_id y
+// support_started_at para que el render dibuje la lamina dorada con cronometro vivo.
 async function confirmAsistencia() {
   var inp = document.getElementById('m-asistir-plate');
   var info = document.getElementById('m-asistir-info');
@@ -4637,74 +4661,145 @@ async function confirmAsistencia() {
     if (info) info.textContent = 'Patente requerida (mínimo 4 caracteres).';
     return;
   }
-  // FASE 2.6 FIX (v3): buscar OT abierta vía vehicle_id
-  var assistedWoId = null;
-  var foundAssisted = await findOpenOTByPlate(plate);
-  if (foundAssisted) assistedWoId = foundAssisted.id;
-  if (!assistedWoId) {
-    if (info) info.textContent = '⚠ No se encontró OT abierta para esta patente. La asistencia no se podrá sumar.';
-    return;
-  }
-
-  // Pausar la sesión propia con motivo "Asistencia a [patente]"
-  // y guardar el work_order_id asistido en la sesión para que se sume al display.
+  // La sesion principal del tecnico debe estar corriendo para poder pausar y apoyar.
   var sess = liveData.find(function(s){ return s.username === CU.username && s.status === 'running'; });
   if (!sess) {
     if (info) info.textContent = 'No hay servicio en curso para pausar.';
     return;
   }
+  // No apoyar a la misma patente que ya estas atendiendo.
+  if (sess.plate && normalizePlate(sess.plate) === normalizePlate(plate)) {
+    if (info) info.textContent = 'No puedes apoyar a la misma patente que estás atendiendo.';
+    return;
+  }
+
   try {
-    // Crear tramo de asistencia (entry abierto, ended_at=null) en service_time_entries
-    var ste = {
-      work_order_id: assistedWoId,
-      technician_id: CU.id,
-      technician_username: CU.username,
-      technician_name: CU.name,
-      session_key: sess.session_key + '_assist_' + Date.now(),
-      type: 'assistance',
-      started_at: new Date().toISOString(),
-      ended_at: null,
-      duration_seconds: null,
-      assisted_plate: plate,
-      notes: 'Asistencia desde servicio principal: ' + (sess.service || '?') + ' patente ' + (sess.plate || '?')
-    };
-    var rste = await sb.from('service_time_entries').insert(ste);
-    if (rste && rste.error) {
-      showGlobalError('Error al iniciar asistencia: ' + rste.error.message, 5000);
+    // 1) Crear tramo de apoyo via backend (valida patente, OT abierta y duplicados).
+    var r = await startSupportEntry(plate, {
+      supportingSessionKey: sess.session_key,
+      notes: 'Apoyo desde servicio principal: ' + (sess.service || '?') + ' patente ' + (sess.plate || '?')
+    });
+    if (!r || !r.ok) {
+      if (info) info.textContent = '⚠ ' + (r && r.error ? r.error : 'No se pudo iniciar el apoyo.');
       return;
     }
-    // Marcar la sesión propia como pausada por asistencia
+    var supportEntryId = r.entry_id;
+    var assistedWoId = r.work_order_id;
+    var supportStartedAt = new Date().toISOString();
+
+    // 2) Pausar la sesion propia y guardar el support_entry_id en el pause entry.
+    // El render usa estos campos para mostrar la lamina dorada con cronometro vivo.
     var pauseEntry = {
-      reason: 'Asistencia a patente ' + plate,
+      reason: '🤝 Apoyando a patente ' + plate,
       at: fmtT(liveSecondsNow(sess)),
-      paused_at: new Date().toISOString(),
+      paused_at: supportStartedAt,
       resumed_at: null,
       duration_ms: null,
-      assisting_plate: plate
+      assisting_plate: plate,
+      support_entry_id: supportEntryId,
+      support_started_at: supportStartedAt,
+      support_assisted_wo_id: assistedWoId,
+      support_ended_at: null,
+      support_duration_seconds: null
     };
     var newPauses = (sess.pauses || []).concat([pauseEntry]);
     var ru = await sb.from('active_sessions').update({
       status: 'paused',
-      paused_at: new Date().toISOString(),
+      running: false,
+      paused_at: supportStartedAt,
       pauses: newPauses,
       assisting_plate: plate,
       assisting_work_order_id: assistedWoId,
       updated_at: new Date().toISOString()
     }).eq('session_key', sess.session_key);
     if (ru && ru.error) {
+      // Rollback: si fallo el update de active_sessions, cerrar el tramo de apoyo
+      // para no dejar STE huerfanos.
+      try { await endSupportEntry(supportEntryId, {autoClose:true, reason:'rollback_session_update_failed'}); } catch(_){}
       showGlobalError('Error al pausar para asistir: ' + ru.error.message, 5000);
       return;
     }
+
     closeModal('m-asistir');
     T.pauses = newPauses;
     T.running = false;
-    showGlobalError('✓ Pausaste tu servicio. El tiempo de asistencia se está sumando a la patente ' + plate + '. Reanudá tu servicio cuando termines.', 6000);
+    logR('SUPPORT_PAUSE_OK', {sess: sess.session_key, plate: plate, entry_id: supportEntryId, wo: assistedWoId});
+    showGlobalError('✓ Pausaste tu servicio. Apoyo en curso a patente ' + plate + '. Cuando termines, presiona "Terminar apoyo" en la lámina dorada.', 7000);
     await fetchLive();
   } catch(e) {
     logR('ASISTIR_THREW', {msg: e.message}, 'err');
     showGlobalError('Error inesperado: ' + e.message, 5000);
   }
 }
+
+// FRENTE 4 FASE 2: cerrar el apoyo activo del tecnico actual sin reanudar la sesion
+// principal. El tecnico decide despues si reanuda, finaliza o sigue pausado.
+// Lee support_entry_id del ultimo pause y lo cierra via endSupportEntry.
+async function endActiveSupport(sessionKey) {
+  if (!CU || !CU.id) { showGlobalError('Sesion no iniciada', 4000); return; }
+  var sess = liveData.find(function(s){ return s.session_key === sessionKey; });
+  if (!sess) { showGlobalError('Sesión no encontrada', 4000); return; }
+  if (sess.username !== CU.username) { showGlobalError('Solo el técnico dueño del servicio puede terminar su apoyo', 4000); return; }
+
+  var pauses = (sess.pauses || []).slice();
+  // Buscar de atras hacia adelante el ultimo pause de apoyo aun abierto.
+  var idx = -1;
+  for (var i = pauses.length - 1; i >= 0; i--) {
+    if (pauses[i] && pauses[i].support_entry_id && !pauses[i].support_ended_at) { idx = i; break; }
+  }
+  if (idx < 0) {
+    showGlobalError('No hay apoyo activo para cerrar', 4000);
+    return;
+  }
+  var pauseEntry = pauses[idx];
+  var entryId = pauseEntry.support_entry_id;
+  var assistedPlate = pauseEntry.assisting_plate || '';
+
+  try {
+    var r = await endSupportEntry(entryId);
+    if (!r || !r.ok) {
+      showGlobalError('Error al cerrar apoyo: ' + (r && r.error ? r.error : 'desconocido'), 5000);
+      return;
+    }
+    var endedAt = new Date().toISOString();
+    pauses[idx] = Object.assign({}, pauseEntry, {
+      support_ended_at: endedAt,
+      support_duration_seconds: r.duration_seconds || null,
+      reason: pauseEntry.reason || ''
+    });
+    // Limpiar assisting_* en active_sessions (la sesion sigue pausada pero ya sin apoyo activo).
+    var ru = await sb.from('active_sessions').update({
+      pauses: pauses,
+      assisting_plate: null,
+      assisting_work_order_id: null,
+      updated_at: new Date().toISOString()
+    }).eq('session_key', sessionKey);
+    if (ru && ru.error) {
+      showGlobalError('Apoyo cerrado pero error al actualizar sesión: ' + ru.error.message, 5000);
+      return;
+    }
+    if (T.sessionKey === sessionKey) T.pauses = pauses;
+    logR('SUPPORT_ENDED_OK', {entry_id: entryId, dur: r.duration_seconds, plate: assistedPlate});
+    showGlobalError('✓ Apoyo a ' + assistedPlate + ' cerrado (' + fmtT(r.duration_seconds || 0) + '). Ya puedes reanudar tu servicio.', 6000);
+    await fetchLive();
+  } catch(e) {
+    logR('END_SUPPORT_THREW', {msg: e.message}, 'err');
+    showGlobalError('Error inesperado al cerrar apoyo: ' + e.message, 5000);
+  }
+}
+window.endActiveSupport = endActiveSupport;
+
+// Helper: detecta si una sesion tiene un apoyo abierto (last pause con
+// support_entry_id sin support_ended_at). Retorna el pause entry o null.
+function getActiveSupportPause(sess) {
+  if (!sess || !sess.pauses || !sess.pauses.length) return null;
+  for (var i = sess.pauses.length - 1; i >= 0; i--) {
+    var p = sess.pauses[i];
+    if (p && p.support_entry_id && !p.support_ended_at) return p;
+  }
+  return null;
+}
+window.getActiveSupportPause = getActiveSupportPause;
 
 // Retorna SEGUNDOS enteros.
 function liveSecondsNow(s) {
@@ -5536,10 +5631,19 @@ function renderTimerCard(body, sess) {
   var isPaused = sess.status === 'paused' || !sess.running;
   var over = sess.goal_minutes && sec > sess.goal_minutes * 60;
   var lastPause = isPaused && sess.pauses && sess.pauses.length ? sess.pauses[sess.pauses.length-1] : null;
+  // FRENTE 4 FASE 2: detectar apoyo activo y diferenciar el render.
+  var activeSupport = getActiveSupportPause(sess);
   var tc = over ? 'var(--red)' : isPaused ? 'var(--gold)' : '#111';
   var pct = sess.goal_minutes ? Math.min(100, Math.round(sec / (sess.goal_minutes * 60) * 100)) : null;
   
   var wrap = mk('div','timer-wrap');
+  // Si hay apoyo activo, el card del servicio principal se ve "deshabilitado":
+  // opacidad reducida y borde dorado mas suave, para que la vista enfoque
+  // visualmente en la lamina de apoyo que viene abajo.
+  if (activeSupport) {
+    wrap.style.opacity = '0.55';
+    wrap.style.filter = 'grayscale(0.3)';
+  }
   // FIX QW-3 (2026-04-30): escapeHtml en sess.service, sess.plate y
   // lastPause.reason. Estos datos pueden contener < y > si un tecnico
   // tipea HTML (intencional o accidentalmente) en motivo de pausa o
@@ -5550,10 +5654,49 @@ function renderTimerCard(body, sess) {
     + (sess.goal_minutes ? '<div style="font-size:10px;color:var(--wh4);margin-top:4px">OBJ: ' + escapeHtml(String(sess.goal_minutes)) + ' min</div>'
       + '<div class="prog-bar"><div class="prog-fill" id="timer-prog" style="width:' + pct + '%;background:' + (over ? 'var(--red)' : 'var(--green)') + '"></div></div>' : '')
     + '<div style="margin-top:10px">'
-    + (over ? '<span class="badge b-over">Tiempo superado</span>' : isPaused ? '<span class="badge b-pau">Pausado</span>' : '<span class="badge b-run">En curso</span>')
+    + (over ? '<span class="badge b-over">Tiempo superado</span>'
+       : activeSupport ? '<span class="badge b-pau" style="background:#fff3cd;border-color:var(--gold);color:var(--gold3);font-weight:800">⏸ PAUSADO POR APOYO</span>'
+       : isPaused ? '<span class="badge b-pau">Pausado</span>'
+       : '<span class="badge b-run">En curso</span>')
     + '</div>'
-    + (lastPause ? '<div style="background:var(--gold2);border:1px solid var(--gold);border-radius:3px;padding:6px 10px;margin-top:8px;font-size:11px;color:var(--gold3);font-weight:600">Motivo: ' + escapeHtml(lastPause.reason || '') + '</div>' : '');
+    + (lastPause && !activeSupport ? '<div style="background:var(--gold2);border:1px solid var(--gold);border-radius:3px;padding:6px 10px;margin-top:8px;font-size:11px;color:var(--gold3);font-weight:600">Motivo: ' + escapeHtml(lastPause.reason || '') + '</div>' : '');
   body.appendChild(wrap);
+
+  // FRENTE 4 FASE 2: lamina dorada visible del apoyo en curso, con cronometro
+  // vivo y boton dedicado para terminarlo. El cronometro se actualiza desde el
+  // tick() leyendo support_started_at.
+  if (activeSupport) {
+    var supSec = 0;
+    try {
+      var startedMs = new Date(activeSupport.support_started_at || activeSupport.paused_at).getTime();
+      supSec = Math.max(0, Math.floor((Date.now() - startedMs) / 1000));
+    } catch(_){}
+    var assistedPlate = activeSupport.assisting_plate || '';
+    var supWrap = mk('div', 'support-lamina');
+    supWrap.style.cssText = 'background:linear-gradient(135deg,#fff3cd 0%,#ffe699 100%);'
+      + 'border:2px solid var(--gold);border-radius:8px;padding:14px;margin-bottom:12px;'
+      + 'box-shadow:0 2px 8px rgba(212,175,55,0.25);position:relative';
+    supWrap.innerHTML =
+        '<div style="font-size:11px;font-weight:800;font-family:var(--head);text-transform:uppercase;letter-spacing:.05em;color:var(--gold3);margin-bottom:6px">'
+      +   '🤝 APOYO EN CURSO'
+      + '</div>'
+      + '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">'
+      +   '<div style="flex:1;min-width:120px">'
+      +     '<span class="plate-tag" style="background:#fff;border-color:var(--gold)">' + escapeHtml(assistedPlate) + '</span>'
+      +     '<div style="font-size:10px;color:var(--gold3);margin-top:6px;font-weight:600">Tiempo del apoyo</div>'
+      +   '</div>'
+      +   '<div id="support-timer-disp" class="js-support-timer" data-started="' + escapeHtml(activeSupport.support_started_at || activeSupport.paused_at || '') + '" '
+      +        'style="font-size:30px;font-weight:700;font-family:var(--mono);color:var(--gold3);letter-spacing:2px">'
+      +     fmtT(supSec)
+      +   '</div>'
+      + '</div>';
+    var endBtn = mk('button', 'btn btn-green');
+    endBtn.style.cssText = 'margin-top:12px;padding:12px;font-size:14px;font-weight:700';
+    endBtn.innerHTML = '✓ TERMINAR APOYO';
+    endBtn.onclick = function() { endActiveSupport(sess.session_key); };
+    supWrap.appendChild(endBtn);
+    body.appendChild(supWrap);
+  }
 
   // Desglose por día (solo si la sesión cruzó al menos un día) — se
   // inyecta en su propio wrapper para que el cronómetro principal no
@@ -5593,8 +5736,21 @@ function renderTimerCard(body, sess) {
     btnWrap.appendChild(bp);
     btnWrap.appendChild(mk('div',''));
   } else {
-    var br = mk('button','btn btn-blue'); br.textContent = 'Reanudar';
-    br.onclick = doResume;
+    // FRENTE 4 FASE 2: si hay apoyo activo, el boton Reanudar queda deshabilitado
+    // visualmente para guiar al tecnico a terminar el apoyo primero. doResume
+    // tambien tiene guard logico que bloquea la accion (defensa en profundidad).
+    var br = mk('button','btn btn-blue');
+    if (activeSupport) {
+      br.textContent = 'Reanudar (termina el apoyo primero)';
+      br.style.opacity = '0.55';
+      br.style.cursor = 'not-allowed';
+      br.onclick = function() {
+        showGlobalError('Primero termina el apoyo a ' + (activeSupport.assisting_plate || '') + ' (botón verde en la lámina dorada).', 5000);
+      };
+    } else {
+      br.textContent = 'Reanudar';
+      br.onclick = doResume;
+    }
     btnWrap.appendChild(br);
     btnWrap.appendChild(mk('div',''));
   }
@@ -5739,6 +5895,16 @@ async function _doResumeInner() {
     T.plate = mine.plate || '';
     logR('RESUME_RECOVERED_STATE', {key: T.sessionKey, sec: T.sec});
   }
+  // FRENTE 4 FASE 2: bloquear reanudar si hay apoyo abierto. El tecnico debe
+  // cerrar primero el tramo de service_time_entries (boton "Terminar apoyo" en
+  // la lamina dorada) para que el tiempo se contabilice con precision.
+  var sessGuard = liveData.find(function(s) { return s.session_key === T.sessionKey; });
+  var supGuard = getActiveSupportPause(sessGuard);
+  if (supGuard) {
+    showGlobalError('No puedes reanudar: tienes un apoyo activo a ' + (supGuard.assisting_plate || '') + '. Termínalo primero (botón verde en la lámina dorada).', 6000);
+    logR('RESUME_BLOCKED_OPEN_SUPPORT', {key: T.sessionKey, entry_id: supGuard.support_entry_id});
+    return;
+  }
   // FASE 3.2: la pausa que se está cerrando se mide en HORARIO LABORAL.
   // Antes: (Date.now() - paused_at) sumaba noches completas y rompía KPIs.
   // Ahora: solo el tiempo efectivo que el taller estuvo abierto.
@@ -5809,6 +5975,13 @@ async function resumeSession(sessionKey) {
   // Check no other session is running
   var running = liveData.find(function(s) { return s.username === CU.username && s.status === 'running' && s.session_key !== sessionKey; });
   if (running) { showGlobalError('Tienes otro servicio en curso: ' + running.service + '\nPausalo primero.', 5000); return; }
+  // FRENTE 4 FASE 2: bloquear reanudar si hay apoyo abierto en esta sesion.
+  var supGuard2 = getActiveSupportPause(sess);
+  if (supGuard2) {
+    showGlobalError('No puedes reanudar: tienes un apoyo activo a ' + (supGuard2.assisting_plate || '') + '. Termínalo primero (botón verde en la lámina dorada de tu servicio).', 6000);
+    logR('RESUME_SESSION_BLOCKED_OPEN_SUPPORT', {key: sessionKey, entry_id: supGuard2.support_entry_id});
+    return;
+  }
   // Load into T
   T.sessionKey = sessionKey;
   T.srvLabel = sess.service;
@@ -6592,6 +6765,8 @@ function buildMisServCard(s, status) {
   var isRunning = status === 'running';
   var isPaused = status === 'paused';
   var isCkP = status === 'checklist_pending';
+  // FRENTE 4 FASE 2: detectar apoyo activo en esta sesion (solo aplica a pausadas).
+  var activeSup = isPaused ? getActiveSupportPause(s) : null;
   var bc = over ? 'var(--red)' : isPaused ? 'var(--gold)' : isCkP ? 'var(--blue)' : 'var(--green)';
   var lastPause = s.pauses && s.pauses.length ? s.pauses[s.pauses.length-1] : null;
   var card = mk('div','card'); card.style.borderLeft = '4px solid ' + bc;
@@ -6610,6 +6785,7 @@ function buildMisServCard(s, status) {
   }
 
   if (over) h += '<span class="badge b-over">Tiempo superado</span>';
+  else if (activeSup) h += '<span class="badge b-pau" style="background:#fff3cd;border-color:var(--gold);color:var(--gold3);font-weight:800">⏸ PAUSADO POR APOYO</span>';
   else if (isPaused) h += '<span class="badge b-pau">Pausado</span>';
   else if (isCkP) h += '<span class="badge b-cal">Checklist pendiente</span>';
   else h += '<span class="badge b-run">En curso</span>';
@@ -6626,8 +6802,28 @@ function buildMisServCard(s, status) {
     h += '<div class="prog-bar" style="margin-bottom:8px"><div class="prog-fill" style="width:' + pct + '%;background:' + (over?'var(--red)':'var(--green)') + '"></div></div>';
   }
 
-  // Pause reason
-  if (lastPause && isPaused) {
+  // FRENTE 4 FASE 2: lamina de apoyo embebida dentro del card. Cronometro vivo
+  // del apoyo (id unico por sessionKey para que multiples cards no choquen).
+  if (activeSup) {
+    var supSecCard = 0;
+    try {
+      var startedMsCard = new Date(activeSup.support_started_at || activeSup.paused_at).getTime();
+      supSecCard = Math.max(0, Math.floor((Date.now() - startedMsCard) / 1000));
+    } catch(_){}
+    var supId = 'support-timer-mis-' + s.session_key.replace(/[^A-Za-z0-9_-]/g,'');
+    h += '<div style="background:linear-gradient(135deg,#fff3cd 0%,#ffe699 100%);'
+      + 'border:2px solid var(--gold);border-radius:6px;padding:10px;margin-bottom:8px">'
+      + '<div style="font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.05em;color:var(--gold3);margin-bottom:4px">🤝 APOYO EN CURSO</div>'
+      + '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px">'
+      +   '<span class="plate-tag" style="background:#fff;border-color:var(--gold)">' + escapeHtml(activeSup.assisting_plate || '') + '</span>'
+      +   '<div class="support-timer-mis js-support-timer" data-started="' + escapeHtml(activeSup.support_started_at || activeSup.paused_at || '') + '" '
+      +        'id="' + supId + '" style="font-size:22px;font-weight:700;font-family:var(--mono);color:var(--gold3);letter-spacing:1px">' + fmtT(supSecCard) + '</div>'
+      + '</div>'
+      + '<button class="btn btn-green" style="margin-top:8px;padding:8px;font-size:12px;font-weight:700;width:100%" '
+      +         'onclick="endActiveSupport(\'' + s.session_key + '\')">✓ TERMINAR APOYO</button>'
+      + '</div>';
+  } else if (lastPause && isPaused) {
+    // Pause reason normal (solo si NO hay apoyo activo)
     h += '<div style="background:var(--gold2);border:1px solid var(--gold);border-radius:3px;padding:5px 8px;margin-bottom:6px;font-size:11px;color:var(--gold3);font-weight:600">Pausa: ' + lastPause.reason + ' (' + lastPause.at + ')</div>';
   }
 
@@ -6651,7 +6847,13 @@ function buildMisServCard(s, status) {
     h += '<button class="btn-sm" style="border-color:var(--gold);color:var(--gold)" onclick="setPauseContext(\'' + s.session_key + '\');openModal(\'m-pause\')">Pausar</button>';
     h += '<button class="btn-sm" style="border-color:var(--red);color:var(--red)" onclick="openChecklist(\'' + s.session_key + '\')">Finalizar</button>';
   } else if (isPaused) {
-    h += '<button class="btn-sm" style="border-color:var(--green);color:var(--green)" onclick="resumeSession(\'' + s.session_key + '\')">Reanudar</button>';
+    if (activeSup) {
+      // FRENTE 4 FASE 2: con apoyo activo, el boton Reanudar guia a cerrar primero el apoyo.
+      h += '<button class="btn-sm" style="border-color:#ccc;color:#999;cursor:not-allowed" '
+        +   'onclick="showGlobalError(\'Termina el apoyo primero (botón verde arriba).\',4000)">Reanudar</button>';
+    } else {
+      h += '<button class="btn-sm" style="border-color:var(--green);color:var(--green)" onclick="resumeSession(\'' + s.session_key + '\')">Reanudar</button>';
+    }
     h += '<button class="btn-sm" style="border-color:var(--red);color:var(--red)" onclick="openChecklist(\'' + s.session_key + '\')">Finalizar</button>';
   } else if (isCkP) {
     h += '<button class="btn-sm" style="border-color:var(--blue);color:var(--blue)" onclick="openChecklist(\'' + s.session_key + '\')">Completar checklist</button>';
@@ -7161,6 +7363,10 @@ function buildSessCard(s, isTech) {
   var bc = over ? 'var(--red)' : paused ? 'var(--gold)' : 'var(--green)';
   var bg = over ? '#fff8f8' : paused ? '#fffdf5' : '#fff';
   var lastPause = paused && s.pauses && s.pauses.length ? s.pauses[s.pauses.length-1] : null;
+  // FRENTE 4 FASE 2: si esta sesion tiene apoyo activo, jefatura ve un badge
+  // distintivo "APOYANDO A [PATENTE]" + cronometro vivo del apoyo, para
+  // distinguir las pausas "activas" (apoyo) de las pausas "inactivas" (baño, etc).
+  var sessActiveSup = paused ? getActiveSupportPause(s) : null;
   var card = mk('div','sess-row');
   card.style.cssText = 'border-left:4px solid ' + bc + ';background:' + bg + ';margin-bottom:8px';
   var h = '<div style="display:flex;justify-content:space-between;align-items:flex-start">';
@@ -7190,7 +7396,20 @@ function buildSessCard(s, isTech) {
       h += '<div style="font-size:10px;color:var(--blue);margin-top:3px;font-family:var(--mono)">⏱ Total OT: ' + fmtT(totalCached) + '</div>';
     }
   }
-  if (lastPause) h += '<div style="background:var(--gold2);border:1px solid var(--gold);border-radius:3px;padding:2px 7px;margin-top:4px;font-size:10px;color:var(--gold3);font-weight:700;display:inline-block">PAUSA: ' + escapeHtml(lastPause.reason || '') + '</div>';
+  if (sessActiveSup) {
+    // Badge dorado especifico con cronometro vivo del apoyo (clase js-support-timer
+    // para que el tick global lo actualice cada segundo).
+    var supStartIso = sessActiveSup.support_started_at || sessActiveSup.paused_at || '';
+    var supSecSess = 0;
+    try {
+      var supStartMs = new Date(supStartIso).getTime();
+      if (!isNaN(supStartMs)) supSecSess = Math.max(0, Math.floor((Date.now() - supStartMs) / 1000));
+    } catch(_){}
+    h += '<div style="background:linear-gradient(90deg,#fff3cd,#ffe699);border:1.5px solid var(--gold);border-radius:4px;padding:3px 8px;margin-top:4px;font-size:10px;color:var(--gold3);font-weight:800;display:inline-flex;align-items:center;gap:6px">'
+      + '🤝 APOYANDO A <span class="plate-tag" style="background:#fff;border-color:var(--gold);font-size:10px;padding:1px 5px">' + escapeHtml(sessActiveSup.assisting_plate || '') + '</span>'
+      + '<span class="js-support-timer" data-started="' + escapeHtml(supStartIso) + '" style="font-family:var(--mono);font-weight:700">' + fmtT(supSecSess) + '</span>'
+      + '</div>';
+  } else if (lastPause) h += '<div style="background:var(--gold2);border:1px solid var(--gold);border-radius:3px;padding:2px 7px;margin-top:4px;font-size:10px;color:var(--gold3);font-weight:700;display:inline-block">PAUSA: ' + escapeHtml(lastPause.reason || '') + '</div>';
   // Marcador para inyectar el menu admin inline, al lado del badge PAUSA o de la patente
   h += '<span class="adm-inline-slot" style="display:inline-block;vertical-align:middle;margin-left:6px"></span>';
   h += '</div></div>';
