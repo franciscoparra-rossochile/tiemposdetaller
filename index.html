@@ -3598,6 +3598,10 @@ const SRVS = [
   // ─── MECÁNICA GENERAL ───
   {name:'Reparaciones generales',category:'mecanica',goal:null,needsDesc:true},
   {name:'Recuperacion de DPF',category:'mecanica',goal:null,subs:['Pack esencial','Pack avanzado','Pack premium','Pack integral (DPF + Limpieza admision)']},
+  // FRENTE 10 (2026-05-14): Postura de DPF en banco de recuperación.
+  // Caso de uso: cuando el cliente trae el DPF ya extraído (sin vehículo).
+  // No requiere patente ni checklist (no hay servicio sobre el auto).
+  {name:'Postura de DPF en banco de recuperacion',category:'mecanica',goal:null,noChecklist:true,noPlate:true},
   {name:'Servicio de frenos',category:'mecanica',goal:null,subs:['Evaluacion','Pastillas delanteras + rectificado','Pastillas delanteras + cambio de discos','Pastillas/balatas traseras + rectificado','Pastillas/balatas traseras + cambio tambor/disco','Cambio liquido de frenos','Ajuste de frenos']},
   {name:'Diagnostico',category:'mecanica',goal:null,subs:['Scanner','Diagnostico basico','Diagnostico avanzado'],subGoals:{'Scanner':20,'Diagnostico basico':90,'Diagnostico avanzado':180}},
   // ─── GARANTÍA ───
@@ -3608,9 +3612,12 @@ const SRVS = [
   {name:'Cierre de taller',category:'logistica',goal:null,noChecklist:true,noPlate:true},
   {name:'Movimiento de vehiculos',category:'logistica',goal:null,noChecklist:true,noPlate:true},
   {name:'Compras',category:'logistica',goal:null,noChecklist:true,noPlate:true},
-  // Mantener "Estandar de taller" como alias oculto para compatibilidad con
-  // el filtro de reportes/histórico (no aparece en el menú de nuevo registro).
-  {name:'Estandar de taller',category:'logistica',goal:null,noChecklist:true,noPlate:true,_legacyHidden:true},
+  // FRENTE 10 (2026-05-14): "Estandar de taller" se reactiva en el menú.
+  // Caso de uso: el junior hace estándar de orden/limpieza varias veces al día,
+  // no solo en la mañana (para eso ya existe "Estandar inicial del dia").
+  // Antes estaba como _legacyHidden — ahora vuelve a ser visible. Los
+  // registros históricos con este mismo nombre se preservan en reportes.
+  {name:'Estandar de taller',category:'logistica',goal:null,noChecklist:true,noPlate:true},
   // ─── OTROS ───
   {name:'Lavado de vehiculos',category:'otros',goal:null,noChecklist:true}
 ];
@@ -3627,7 +3634,8 @@ function srvNeedsChecklist(srvLabel) {
     'Reunion de apertura',
     'Compras',
     'Movimiento de vehiculos',
-    'Cierre de taller'
+    'Cierre de taller',
+    'Postura de DPF en banco de recuperacion'
   ];
   return !noChk.some(function(n) { return srvLabel.startsWith(n); });
 }
@@ -4317,6 +4325,110 @@ async function _doLoginInner() {
   startPolling();
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// FRENTE 5 (2026-05-14): HARDENING DE CIERRE BRUSCO
+// ═══════════════════════════════════════════════════════════════════
+// Cubre los 3 agujeros identificados en la auditoría:
+//   1) Pestaña cerrada con autosave de Pauta v2 en vuelo (debounce 500ms):
+//      el último cambio se perdía silenciosamente.
+//   2) Pestaña cerrada con apoyo en curso: tramo quedaba con ended_at=null
+//      hasta que el técnico volviera a iniciar sesión Y finalizara un
+//      servicio principal — entre medio, KPIs mostraban apoyo fantasma.
+//   3) doLogout/doLogoutSilent no limpiaban _activePautaV2 ni el timer
+//      de autosave en memoria → estado fantasma entre logins.
+//
+// Estrategia:
+//   - pagehide (primario, confiable en iOS Safari) + beforeunload
+//     (fallback desktop legacy) disparan best-effort flushes. El
+//     navegador da ~50-200ms para que los requests salgan.
+//   - doLogout y doLogoutSilent ahora AWAIT al flush antes de limpiar
+//     estado, así el cierre intencional sí es completo y confiable.
+// ═══════════════════════════════════════════════════════════════════
+
+// Dispara save inmediato del autosave pendiente de Pauta v2 (si hay).
+// Síncrona: solo clearTimeout + dispatch async sin esperar. Retorna
+// true si había un timer pendiente que se flusheó.
+function flushPendingPautaV2() {
+  if (typeof _pautaV2AutosaveTimer !== 'undefined' && _pautaV2AutosaveTimer) {
+    clearTimeout(_pautaV2AutosaveTimer);
+    _pautaV2AutosaveTimer = null;
+    // Dispatch async sin await (en pagehide no podemos awaitir; el navegador
+    // da margen al request en vuelo). Si savePautaV2Partial no existe (init
+    // temprano), no romper.
+    if (typeof savePautaV2Partial === 'function' && typeof _activePautaV2 !== 'undefined' && _activePautaV2) {
+      try { savePautaV2Partial().catch(function(){}); } catch(_){}
+      return true;
+    }
+  }
+  return false;
+}
+window.flushPendingPautaV2 = flushPendingPautaV2;
+
+// Orquestador async: flushea autosave + cierra apoyos abiertos + limpia
+// estado en memoria. Usado por doLogout/doLogoutSilent que SÍ pueden
+// awaitar antes de borrar la sesión.
+async function flushPendingWorkOnExit(opts) {
+  opts = opts || {};
+  var reason = opts.reason || 'unknown';
+  // 1) Pauta v2 autosave pendiente
+  var hadPauta = flushPendingPautaV2();
+  // 2) Apoyos abiertos del usuario actual (best-effort, no bloquea logout
+  //    si falla — el guard de 8h en closeOpenSupportsForUser los recupera
+  //    eventualmente). En logout SÍ awaitamos; en pagehide no.
+  var hadSupports = false;
+  if (CU && CU.id && typeof closeOpenSupportsForUser === 'function') {
+    try {
+      if (opts.awaitSupports !== false) {
+        var r = await closeOpenSupportsForUser(CU.id, {reason: reason});
+        hadSupports = !!(r && (r.closed || r.nullified));
+      } else {
+        // Fire-and-forget para pagehide
+        closeOpenSupportsForUser(CU.id, {reason: reason}).catch(function(){});
+      }
+    } catch(_){}
+  }
+  // 3) Limpiar estado en memoria de Pauta v2 (evita fantasma entre logins)
+  if (opts.clearMemory !== false) {
+    if (typeof _activePautaV2 !== 'undefined') _activePautaV2 = null;
+    if (typeof _pautaV2AutosaveTimer !== 'undefined') _pautaV2AutosaveTimer = null;
+  }
+  logR('FLUSH_PENDING_WORK', {reason: reason, pauta: hadPauta, supports: hadSupports});
+  return {pauta: hadPauta, supports: hadSupports};
+}
+window.flushPendingWorkOnExit = flushPendingWorkOnExit;
+
+// Listener primario (mobile + desktop moderno).
+// pagehide se dispara confiablemente en iOS Safari incluso al cambiar de
+// app o cerrar la pestaña, donde beforeunload no dispara.
+window.addEventListener('pagehide', function(e) {
+  if (!CU) return;
+  // En pagehide no podemos await (browser puede matar JS en cualquier
+  // momento). Disparamos best-effort: el flushPendingPautaV2 hace clear+
+  // dispatch síncrono y closeOpenSupportsForUser queda en vuelo con
+  // margen del navegador.
+  try {
+    flushPendingPautaV2();
+    if (CU.id && typeof closeOpenSupportsForUser === 'function') {
+      closeOpenSupportsForUser(CU.id, {reason: 'pagehide'}).catch(function(){});
+    }
+    logR('PAGEHIDE_FLUSH', {persisted: e.persisted});
+  } catch(_){}
+});
+
+// Fallback para desktop legacy donde pagehide no siempre dispara.
+// NO usar preventDefault — no queremos mostrar diálogos nativos del
+// navegador ("¿Seguro que quieres salir?"); el confirm de doLogout
+// ya cubre el cierre intencional.
+window.addEventListener('beforeunload', function() {
+  if (!CU) return;
+  try {
+    flushPendingPautaV2();
+    if (CU.id && typeof closeOpenSupportsForUser === 'function') {
+      closeOpenSupportsForUser(CU.id, {reason: 'beforeunload'}).catch(function(){});
+    }
+  } catch(_){}
+});
+
 function doLogout() {
   // FIX UX (2026-04-30): si el tecnico tiene cronometro corriendo, confirmar
   // antes de cerrar sesion. Antes un toque accidental cerraba la sesion y
@@ -4332,6 +4444,13 @@ function doLogout() {
     if (!ok) return;
   }
   logR('LOGOUT', {user: CU ? CU.username : 'none'});
+  // FRENTE 5 (2026-05-14): hardening de cierre — flushear autosave de Pauta v2
+  // pendiente y cerrar apoyos abiertos ANTES de borrar la sesión. Esto evita
+  // que el técnico pierda los últimos cambios de checklist o deje un apoyo
+  // fantasma corriendo en BD. Best-effort: si falla algo, igual continuamos
+  // el logout (no bloqueamos al usuario).
+  flushPendingWorkOnExit({reason: 'logout', awaitSupports: false}).catch(function(){});
+  flushPendingPautaV2();
   // Borrar sesion persistente (intencional - si el usuario toca Salir, quiere salir)
   try { localStorage.removeItem('rosso_session'); } catch(e) {}
   stopPolling();
@@ -4339,6 +4458,10 @@ function doLogout() {
   CU = null; liveData = []; lastNotifId = null;
   selSrv = null; selSub = null; selDesc = ''; selPlate = '';
   techMode = false;  // resetear modo tecnico al salir
+  // Limpiar estado de Pauta v2 explícitamente (defense in depth: flushPendingWorkOnExit
+  // ya lo hace, pero si el flush no se completó por error, esto garantiza estado limpio).
+  if (typeof _activePautaV2 !== 'undefined') _activePautaV2 = null;
+  if (typeof _pautaV2AutosaveTimer !== 'undefined') _pautaV2AutosaveTimer = null;
   document.getElementById('li-user').value = '';
   document.getElementById('li-pass').value = '';
   document.getElementById('li-err').style.display = 'none';
@@ -4633,12 +4756,21 @@ function _stopIdleTracker() {
 
 // Variante de logout sin confirm() (para idle, no necesita preguntar).
 function doLogoutSilent() {
+  // FRENTE 5 (2026-05-14): incluso en idle-logout (después de 30+ min sin
+  // actividad), si hay autosave pendiente o apoyo abierto, hay que
+  // intentar limpiar antes de borrar la sesión. Best-effort, fire-and-forget
+  // — no bloqueamos el cierre por inactividad.
+  flushPendingWorkOnExit({reason: 'idle_logout', awaitSupports: false}).catch(function(){});
+  flushPendingPautaV2();
   try { localStorage.removeItem('rosso_session'); } catch(e) {}
   stopPolling();
   resetT();
   CU = null; liveData = []; lastNotifId = null;
   selSrv = null; selSub = null; selDesc = ''; selPlate = '';
   techMode = false;
+  // Limpiar estado en memoria de Pauta v2 (defense in depth)
+  if (typeof _activePautaV2 !== 'undefined') _activePautaV2 = null;
+  if (typeof _pautaV2AutosaveTimer !== 'undefined') _pautaV2AutosaveTimer = null;
   try {
     document.getElementById('li-user').value = '';
     document.getElementById('li-pass').value = '';
