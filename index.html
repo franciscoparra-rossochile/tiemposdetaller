@@ -5054,61 +5054,96 @@ async function findOpenOTByPlate(plate) {
 // Por qué importa: un servicio que vive en 4 manos (lavador, diagnosta,
 // mecánico, doble control) genera UN informe técnico colectivo. Cada
 // participante tiene derecho a ver y completar la parte que le toca.
+// FRENTE 9.6 (2026-05-14, refactor Opción B): el helper ahora trabaja
+// con cd.service_reports[] — un entry por cada servicio que se ejecuta
+// dentro de la OT. Antes el shell era único por OT (cd.report_started_at),
+// lo que producía el caso Benjamin/SKXS56: la OT tenía classification
+// DIAGNOSTICO pero Benjamin hizo Mantenimiento completo → su trabajo
+// quedaba pegado a un informe de Diagnóstico vacío.
+//
+// Comportamiento:
+//   1. Resolver service_classification desde srvLabel (la sesión sabe qué
+//      servicio está ejecutando — no la OT).
+//   2. Si el servicio no es informable (lavado, logística, etc) o no
+//      pudimos resolver classification → retornar (no crear nada).
+//   3. Buscar entry en cd.service_reports[] con ese classification y
+//      estado != completado. Si no existe → crear.
+//   4. Registrar al usuario actual como participante de ESE service_report.
+//   5. Mantener también los campos legacy (cd.report_started_at, etc) por
+//      compatibilidad con código que aún no migró.
 async function _ensureReportShellAndParticipant(workOrderId, srvLabel) {
   if (!workOrderId || !sb || !CU || !CU.id) return null;
-  // Servicios no informables (lavado, logística, compras, etc.): no crear shell.
-  // Pero SÍ registrar participación si el shell ya existe (puede haberlo creado
-  // otro técnico haciendo el servicio mecánico de la misma OT).
+  // Servicios sin checklist (lavado, logística, compras): no generan informe.
   var isReportable = !srvLabel || (typeof srvNeedsChecklist === 'function' && srvNeedsChecklist(srvLabel));
+  if (!isReportable) return null;
+
+  // Resolver el classification del servicio actual (NO el de la OT).
+  var srvClass = _resolveServiceClassification(srvLabel);
+  var srvSubtype = _extractSubtype(srvLabel);
+
   try {
-    var rGet = await sb.from('work_orders').select('checklist_data').eq('id', workOrderId).maybeSingle();
+    var rGet = await sb.from('work_orders').select('checklist_data, service_classification').eq('id', workOrderId).maybeSingle();
     if (rGet.error || !rGet.data) {
       logR('ENSURE_SHELL_FETCH_ERR', {wo: workOrderId, msg: rGet.error ? rGet.error.message : 'no data'}, 'warn');
       return null;
     }
     var cd = rGet.data.checklist_data || {};
+    var otClass = rGet.data.service_classification || null;
     var mutated = false;
 
-    // 1) Shell del informe: crear si no existe Y no hay informe cerrado previo.
-    //    Si tech_completed_at ya estaba seteado, NO pisamos (informe inmutable).
-    if (isReportable && !cd.report_started_at && !cd.tech_completed_at) {
+    // Migrar legacy si aplica (idempotente, solo migra la primera vez).
+    if (otClass && _migrateLegacyToServiceReports(cd, otClass)) {
+      mutated = true;
+      logR('REPORT_LEGACY_MIGRATED', {wo: workOrderId, otClass: otClass});
+    }
+
+    // Si no pudimos resolver classification del servicio actual, fallback:
+    // usar el de la OT (al menos no rompe nada). Si tampoco hay, abortar
+    // antes de mutar.
+    var effectiveClass = srvClass || otClass;
+    if (!effectiveClass) {
+      logR('ENSURE_SHELL_NO_CLASS', {wo: workOrderId, srvLabel: srvLabel}, 'warn');
+      return cd;
+    }
+
+    // Buscar/crear el service_report del servicio actual.
+    var found = _findOrCreateServiceReport(cd, effectiveClass, srvSubtype, srvLabel);
+    var report = found.report;
+    if (!report) return cd;
+    if (found.wasCreated) {
+      mutated = true;
+      logR('SERVICE_REPORT_CREATED', {wo: workOrderId, class: effectiveClass, id: report.id});
+    }
+
+    // Registrar participante en ESE report.
+    if (_addParticipantToReport(report)) {
+      mutated = true;
+      logR('SERVICE_REPORT_PARTICIPANT', {wo: workOrderId, class: effectiveClass, user: CU.username});
+    }
+
+    // COMPATIBILIDAD LEGACY: mantener también cd.report_started_at top-level
+    // si todavía no existe. Esto sirve para código que aún lee del legacy
+    // (renderInformesList con OTs que solo tienen tech_completed_at, etc).
+    // Solo escribimos legacy si NO había nada — no pisamos data existente.
+    if (!cd.report_started_at && !cd.tech_completed_at) {
       cd.report_started_at = new Date().toISOString();
       cd.report_started_by = CU.id;
       cd.report_started_by_name = CU.name;
       cd.report_state = 'en_desarrollo';
       if (!Array.isArray(cd.live_findings)) cd.live_findings = [];
       mutated = true;
-      logR('REPORT_SHELL_CREATED_VIA_HELPER', {wo: workOrderId, srv: srvLabel || null});
     }
-
-    // 2) Participante: registrar si el shell existe (o se acaba de crear).
-    //    Si el shell NO existe Y el servicio no es informable, no hay informe
-    //    al cual unirse — saltamos. Si el shell existe (lo creó otro técnico
-    //    para el servicio mecánico, por ejemplo), igual nos registramos
-    //    aunque nuestro servicio sea un lavado: facilita trazabilidad.
-    var hasShell = !!cd.report_started_at || !!cd.tech_completed_at;
-    if (hasShell) {
-      if (!Array.isArray(cd.report_participants)) cd.report_participants = [];
-      var nowIso = new Date().toISOString();
-      var existing = cd.report_participants.find(function(p){ return p && p.user_id === CU.id; });
-      if (existing) {
-        // Actualizar last_at solo si pasó más de 1 minuto (evita churn de update por cada tick).
-        var lastMs = existing.last_at ? new Date(existing.last_at).getTime() : 0;
-        if (!lastMs || (Date.now() - lastMs) > 60000) {
-          existing.last_at = nowIso;
-          mutated = true;
-        }
-      } else {
-        cd.report_participants.push({
-          user_id: CU.id,
-          user_name: CU.name,
-          username: CU.username,
-          first_at: nowIso,
-          last_at: nowIso
-        });
-        mutated = true;
-        logR('REPORT_PARTICIPANT_ADDED', {wo: workOrderId, user: CU.username, srv: srvLabel || null});
-      }
+    if (!Array.isArray(cd.report_participants)) cd.report_participants = [];
+    var inLegacyParticipants = cd.report_participants.find(function(p){ return p && p.user_id === CU.id; });
+    if (!inLegacyParticipants) {
+      cd.report_participants.push({
+        user_id: CU.id,
+        user_name: CU.name,
+        username: CU.username,
+        first_at: new Date().toISOString(),
+        last_at: new Date().toISOString()
+      });
+      mutated = true;
     }
 
     if (mutated) {
@@ -5127,8 +5162,252 @@ async function _ensureReportShellAndParticipant(workOrderId, srvLabel) {
   }
 }
 
-// FASE 2.6: detector de OT abierta + tiempo acumulado al ingresar patente
-// en "Nuevo registro". Muestra banner "Continuar trabajo de [técnico]".
+// ═══════════════════════════════════════════════════════════════
+// FRENTE 9.6 (2026-05-14): MODELO N SERVICIOS POR OT (Opción B)
+// ═══════════════════════════════════════════════════════════════
+// Una visita al taller = 1 OT. Pero una OT puede contener N servicios
+// (diagnóstico + mantenimiento + lavado). Cada servicio tiene su propio
+// informe técnico independiente, con su checklist, hallazgos y
+// participantes.
+//
+// La estructura nueva vive en cd.service_reports[] como array de objetos:
+//   {
+//     id, service_classification, service_subtype, service_label,
+//     report_started_at, by, by_name,
+//     report_state,
+//     tech_checklist: {...} (incluye pauta_v2 si aplica),
+//     tech_completed_at, by, by_name,
+//     report_participants, live_findings, report_extras
+//   }
+//
+// Compatibilidad: cd.tech_checklist, cd.report_started_at, etc legacy se
+// mantienen intactos. Para data ya guardada bajo el modelo viejo, hay un
+// shim _migrateLegacyToServiceReports() que la expone como service_reports[]
+// sin tocar el JSON original. Cuando un técnico cierre nuevos servicios,
+// se escribe en AMBOS lugares (legacy y nuevo) durante el periodo de
+// transición — eso garantiza que un rollback no pierda data.
+
+// Mapeo SRVS.name (label) → SERVICES_INGRESO.key (classification formal).
+// El label viene de active_sessions.service y de SRVS[]; la key es la que
+// usan CHECKLISTS_TECH y CHECKLISTS_TECH_PAUTAS_V2. Sin este mapeo, no
+// sabemos qué pauta corresponde al servicio que el técnico está ejecutando.
+var SRV_LABEL_TO_CLASS = {
+  'Cambio de aceite': 'CAMBIO_ACEITE',
+  'Mantenimiento express': 'MANT_EXPRESS',
+  'Mantenimiento completo': 'MANT_COMPLETO',
+  'Mantenimiento de caja automatica o manual': 'REPAR_GENERALES',
+  'Reparaciones generales': 'REPAR_GENERALES',
+  'Servicio de frenos': 'FRENOS',
+  'Diagnostico': 'DIAGNOSTICO',
+  'Garantia': 'GARANTIA',
+  'Recuperacion de DPF': 'DPF_PACK_ESENCIAL'  // se afina con sub abajo
+};
+
+// _resolveServiceClassification(srvLabel) → key formal o null.
+// El srvLabel viene típicamente como "Mantenimiento completo" o
+// "Recuperacion de DPF - Pack avanzado" (con "- subtype" concatenado).
+// Devuelve la key que se usa para indexar CHECKLISTS_TECH / PAUTAS_V2.
+function _resolveServiceClassification(srvLabel) {
+  if (!srvLabel || typeof srvLabel !== 'string') return null;
+  // Separar label principal del subtype (formato "Label - Subtype" o "Label").
+  var parts = srvLabel.split(/\s+-\s+/);
+  var mainLabel = (parts[0] || '').trim();
+  var subLabel = (parts.slice(1).join(' - ') || '').trim();
+
+  // Reparaciones generales pueden venir con descripción libre como sub.
+  if (/^Reparaciones generales/i.test(mainLabel)) return 'REPAR_GENERALES';
+  if (/^Servicio de frenos/i.test(mainLabel)) return 'FRENOS';
+  if (/^Diagn[oó]stico/i.test(mainLabel)) return 'DIAGNOSTICO';
+  if (/^Garant[ií]a/i.test(mainLabel)) return 'GARANTIA';
+  if (/^Cambio de aceite/i.test(mainLabel)) return 'CAMBIO_ACEITE';
+  if (/^Mantenimiento express/i.test(mainLabel)) return 'MANT_EXPRESS';
+  if (/^Mantenimiento completo/i.test(mainLabel)) return 'MANT_COMPLETO';
+  if (/^Mantenimiento de caja/i.test(mainLabel)) return 'REPAR_GENERALES';
+  if (/DPF extra[ií]do/i.test(mainLabel) || /^DPF extra/i.test(mainLabel)) return 'DPF_EXTRAIDO';
+  if (/^Recuperaci[oó]n de DPF/i.test(mainLabel)) {
+    if (/esencial/i.test(subLabel)) return 'DPF_PACK_ESENCIAL';
+    if (/avanzado/i.test(subLabel)) return 'DPF_PACK_AVANZADO';
+    if (/premium/i.test(subLabel)) return 'DPF_PACK_PREMIUM';
+    if (/integral/i.test(subLabel)) return 'DPF_PACK_PREMIUM';
+    return 'DPF_PACK_ESENCIAL';
+  }
+  if (/^Reprograma/i.test(mainLabel)) return 'REPROG_ECU';
+  // Si no matchea ningún patrón conocido (lavado, logística, etc), retornar
+  // null — esos servicios no generan informe técnico.
+  return SRV_LABEL_TO_CLASS[mainLabel] || null;
+}
+
+// _extractSubtype(srvLabel) → subtype string (el texto tras " - ") o null.
+function _extractSubtype(srvLabel) {
+  if (!srvLabel) return null;
+  var idx = srvLabel.indexOf(' - ');
+  if (idx === -1) return null;
+  return srvLabel.substring(idx + 3).trim() || null;
+}
+
+// _genReportId() → identificador único para un service_report. Usa Date.now()
+// + random porque no necesitamos UUID criptográfico, solo unicidad local.
+function _genReportId() {
+  return 'r_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 9);
+}
+
+// _findOrCreateServiceReport(cd, srvClass, srvSubtype, srvLabel)
+// Busca un service_report dentro de cd.service_reports[] que matchee el
+// classification dado y que NO esté completado. Si no existe, crea uno
+// nuevo y lo agrega al array. Retorna {report, wasCreated}.
+//
+// "No completado" significa report_state !== 'completado'. Permite reiniciar
+// un servicio del mismo tipo si el primero ya cerró (caso raro: dos
+// diagnósticos en la misma OT).
+function _findOrCreateServiceReport(cd, srvClass, srvSubtype, srvLabel) {
+  if (!cd || !srvClass) return {report: null, wasCreated: false};
+  if (!Array.isArray(cd.service_reports)) cd.service_reports = [];
+  // Buscar uno abierto del mismo classification.
+  var existing = cd.service_reports.find(function(r){
+    return r && r.service_classification === srvClass && r.report_state !== 'completado';
+  });
+  if (existing) return {report: existing, wasCreated: false};
+  // Crear nuevo.
+  var newReport = {
+    id: _genReportId(),
+    service_classification: srvClass,
+    service_subtype: srvSubtype || null,
+    service_label: srvLabel || null,
+    report_started_at: new Date().toISOString(),
+    report_started_by: CU ? CU.id : null,
+    report_started_by_name: CU ? CU.name : null,
+    report_state: 'en_desarrollo',
+    tech_checklist: {},
+    tech_completed_at: null,
+    tech_completed_by: null,
+    tech_completed_by_name: null,
+    report_participants: [],
+    live_findings: [],
+    report_extras: {}
+  };
+  cd.service_reports.push(newReport);
+  return {report: newReport, wasCreated: true};
+}
+
+// _addParticipantToReport(report) → mutates report.report_participants[]
+// si CU no estaba ya registrado. Idempotente: actualiza last_at si pasó
+// más de 60s desde el último registro (evita churn).
+function _addParticipantToReport(report) {
+  if (!report || !CU || !CU.id) return false;
+  if (!Array.isArray(report.report_participants)) report.report_participants = [];
+  var nowIso = new Date().toISOString();
+  var existing = report.report_participants.find(function(p){ return p && p.user_id === CU.id; });
+  if (existing) {
+    var lastMs = existing.last_at ? new Date(existing.last_at).getTime() : 0;
+    if (!lastMs || (Date.now() - lastMs) > 60000) {
+      existing.last_at = nowIso;
+      return true;
+    }
+    return false;
+  }
+  report.report_participants.push({
+    user_id: CU.id,
+    user_name: CU.name,
+    username: CU.username,
+    first_at: nowIso,
+    last_at: nowIso
+  });
+  return true;
+}
+
+// _migrateLegacyToServiceReports(cd, otServiceClass)
+// Si cd tiene data legacy (cd.tech_checklist con contenido, cd.report_started_at
+// o cd.live_findings) Y no tiene service_reports[] cubriendo ese servicio,
+// crea una entry "legacy_imported" en service_reports[] que apunta a esos
+// campos. NO duplica data: el report comparte referencias con el legacy
+// (los reads del PDF leen de cualquiera de los dos).
+// otServiceClass viene de o.service_classification (la OT).
+// Retorna true si se hizo migración (caller debe persistir).
+function _migrateLegacyToServiceReports(cd, otServiceClass) {
+  if (!cd || !otServiceClass) return false;
+  if (!Array.isArray(cd.service_reports)) cd.service_reports = [];
+  // Si ya hay un report con ese classification, no migrar.
+  var existing = cd.service_reports.find(function(r){
+    return r && r.service_classification === otServiceClass;
+  });
+  if (existing) return false;
+  // Determinar si hay data legacy que justifique migrar.
+  var legacyTc = cd.tech_checklist || {};
+  var hasChk = Object.keys(legacyTc).length > 0;
+  var hasShell = !!cd.report_started_at;
+  var hasFindings = Array.isArray(cd.live_findings) && cd.live_findings.length > 0;
+  if (!hasChk && !hasShell && !hasFindings) return false;
+  // Crear entry legacy_imported.
+  cd.service_reports.push({
+    id: _genReportId(),
+    service_classification: otServiceClass,
+    service_subtype: null,
+    service_label: null,
+    report_started_at: cd.report_started_at || null,
+    report_started_by: cd.report_started_by || null,
+    report_started_by_name: cd.report_started_by_name || null,
+    report_state: cd.tech_completed_at ? 'completado' : (cd.report_state || 'en_desarrollo'),
+    tech_checklist: legacyTc,
+    tech_completed_at: cd.tech_completed_at || null,
+    tech_completed_by: cd.tech_completed_by || null,
+    tech_completed_by_name: cd.tech_completed_by_name || null,
+    report_participants: Array.isArray(cd.report_participants) ? cd.report_participants : [],
+    live_findings: Array.isArray(cd.live_findings) ? cd.live_findings : [],
+    report_extras: cd.report_extras || {},
+    _legacy_imported: true
+  });
+  return true;
+}
+
+// _getAllReportsForOT(cd, otServiceClass)
+// Devuelve array unificado de reports para listar en la pestaña Informes.
+// Combina service_reports[] + migra legacy si corresponde + auto-detecta
+// servicios extra desde history (caso Benjamin SKXS56: history tiene
+// sesiones de MANT_COMPLETO pero la OT es DIAGNOSTICO → genera report
+// vacío para MANT_COMPLETO descubrible).
+//
+// historyRows: opcional, array de history filas con work_order_id = OT.
+// Si se pasa, detecta service_classification únicos desde history.service
+// y agrega entries vacíos por cada uno faltante.
+function _getAllReportsForOT(cd, otServiceClass, historyRows) {
+  if (!cd) return [];
+  // Migrar legacy si aplica (mutation in-memory, sin persist).
+  _migrateLegacyToServiceReports(cd, otServiceClass);
+  // Auto-detectar servicios desde history.
+  if (Array.isArray(historyRows) && historyRows.length) {
+    historyRows.forEach(function(h){
+      var srvClass = _resolveServiceClassification(h.service);
+      if (!srvClass) return;
+      var has = cd.service_reports.some(function(r){
+        return r && r.service_classification === srvClass;
+      });
+      if (!has) {
+        // Crear entry "auto_detected_from_history" — vacío pero descubrible.
+        cd.service_reports.push({
+          id: _genReportId(),
+          service_classification: srvClass,
+          service_subtype: _extractSubtype(h.service),
+          service_label: h.service,
+          report_started_at: h.started_at || h.ended_at || null,
+          report_started_by: null,
+          report_started_by_name: h.technician || null,
+          report_state: 'en_desarrollo',
+          tech_checklist: {},
+          tech_completed_at: null,
+          tech_completed_by: null,
+          tech_completed_by_name: null,
+          report_participants: [],
+          live_findings: [],
+          report_extras: {},
+          _auto_detected_from_history: true
+        });
+      }
+    });
+  }
+  return Array.isArray(cd.service_reports) ? cd.service_reports : [];
+}
+
+
 var _plateCheckTimer = null;
 function onPlateInputCheckOT(plate) {
   if (_plateCheckTimer) clearTimeout(_plateCheckTimer);
@@ -15754,7 +16033,7 @@ async function savePautaV2() {
     var prevStatus = (rcur && rcur.data && rcur.data.status) || null;
     if (!cd.tech_checklist) cd.tech_checklist = {};
     // Snapshot de la pauta (sin la metadata interna como woId)
-    cd.tech_checklist.pauta_v2 = {
+    var pautaSnapshot = {
       service: st.service,
       tiempo_objetivo_min: st.tiempo_objetivo_min,
       iniciado_at: st.iniciado_at,
@@ -15765,8 +16044,45 @@ async function savePautaV2() {
       zonas: st.zonas,
       observaciones_libres: st.observaciones_libres || ''
     };
+    // Escritura LEGACY (compatibilidad). Se mantiene para que código que aún
+    // lee de cd.tech_checklist siga funcionando durante el periodo de
+    // transición.
+    cd.tech_checklist.pauta_v2 = pautaSnapshot;
     // Mantener tambien tech_observations top-level para compat con informes editor
     if (st.observaciones_libres) cd.tech_checklist.tech_observations = st.observaciones_libres;
+
+    // FRENTE 9.6 (2026-05-14): ESCRITURA NUEVA al service_report del
+    // classification que el técnico está cerrando. st.service ES el key
+    // (MANT_COMPLETO, CAMBIO_ACEITE, etc), así que va directo.
+    // Esto resuelve el caso de OTs con varios servicios: cada uno tiene
+    // su propio informe independiente.
+    try {
+      var srvClass = st.service; // ya es el key formal en pauta v2
+      var srvSubtype = null;
+      var srvLabel = null;
+      // Si hay un service_report abierto del mismo classification, lo usamos;
+      // si no, lo creamos. Migrar legacy primero por si la OT venía vieja.
+      var otClass = (rcur && rcur.data && rcur.data.service_classification) || null;
+      if (otClass) _migrateLegacyToServiceReports(cd, otClass);
+      var foundR = _findOrCreateServiceReport(cd, srvClass, srvSubtype, srvLabel);
+      var sReport = foundR.report;
+      if (sReport) {
+        if (!sReport.tech_checklist) sReport.tech_checklist = {};
+        sReport.tech_checklist.pauta_v2 = pautaSnapshot;
+        if (st.observaciones_libres) sReport.tech_checklist.tech_observations = st.observaciones_libres;
+        sReport.tech_completed_at = new Date().toISOString();
+        sReport.tech_completed_by = CU ? CU.id : null;
+        sReport.tech_completed_by_name = CU ? CU.name : null;
+        sReport.report_state = 'completado';
+        // Registrar al técnico como participante también (idempotente).
+        _addParticipantToReport(sReport);
+        logR('SERVICE_REPORT_COMPLETED_VIA_PAUTA', {wo: st.woId, class: srvClass, id: sReport.id});
+      }
+    } catch(eSr) {
+      logR('SERVICE_REPORT_SAVE_ERR', {wo: st.woId, msg: eSr.message}, 'warn');
+      // No bloqueamos el guardado legacy si esto falla.
+    }
+
     // Metadata top-level alineada con saveTechChecklist (necesaria para
     // deriveOTStatus y para que el editor de informes muestre "completado").
     cd.tech_completed_at = new Date().toISOString();
@@ -21711,7 +22027,11 @@ function renderPautaV2InPdf(doc, pautaData, startY, pageW, pageH, marginX, conte
 }
 window.renderPautaV2InPdf = renderPautaV2InPdf;
 
-async function generateInformePdf(woId) {
+// FRENTE 9.6 (2026-05-14): el generador acepta un segundo argumento
+// serviceReportId. Si se pasa, renderiza ese service_report específico
+// (dentro de cd.service_reports[]). Si no se pasa, comportamiento legacy
+// (usa cd.tech_checklist y o.service_classification).
+async function generateInformePdf(woId, serviceReportId) {
   if (!sb) { showGlobalError('Sin conexión a BD', 4000); return; }
   var jsPDFCtor = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
   if (!jsPDFCtor) { showGlobalError('PDF no disponible: librería jsPDF no cargada. Recarga la página.', 6000); return; }
@@ -21728,12 +22048,50 @@ async function generateInformePdf(woId) {
     var v = (rV && rV.data) || {};
 
     var cd = o.checklist_data || {};
-    var tc = cd.tech_checklist || {};
-    var srvKey = o.service_classification;
+
+    // FRENTE 9.6: si nos pasaron serviceReportId, buscar ese report en
+    // cd.service_reports[]. tc, srvKey y metadata salen de ahí. Si no,
+    // fallback legacy.
+    var targetReport = null;
+    if (serviceReportId && Array.isArray(cd.service_reports)) {
+      targetReport = cd.service_reports.find(function(r){ return r && r.id === serviceReportId; });
+    }
+
+    var tc, srvKey, srvSubtype, completedAt, completedByName;
+    if (targetReport) {
+      tc = targetReport.tech_checklist || {};
+      srvKey = targetReport.service_classification;
+      srvSubtype = targetReport.service_subtype;
+      completedAt = targetReport.tech_completed_at;
+      completedByName = targetReport.tech_completed_by_name;
+      // Override propiedades de cd (objeto en memoria) para que el resto del
+      // generador (que lee cd.live_findings, cd.report_extras,
+      // cd.tech_completed_at, etc) muestre datos del REPORT específico, no
+      // los legacy de la OT. Las propiedades a nivel OT (double_check,
+      // visado_*, client_notes) se mantienen.
+      cd = Object.assign({}, cd, {
+        tech_checklist: tc,
+        tech_completed_at: targetReport.tech_completed_at,
+        tech_completed_by: targetReport.tech_completed_by,
+        tech_completed_by_name: targetReport.tech_completed_by_name,
+        live_findings: targetReport.live_findings || [],
+        report_extras: targetReport.report_extras || {},
+        report_started_at: targetReport.report_started_at,
+        report_started_by: targetReport.report_started_by,
+        report_started_by_name: targetReport.report_started_by_name,
+        report_state: targetReport.report_state
+      });
+    } else {
+      tc = cd.tech_checklist || {};
+      srvKey = o.service_classification;
+      srvSubtype = o.service_subtype;
+      completedAt = cd.tech_completed_at;
+      completedByName = cd.tech_completed_by_name;
+    }
     var techDef = (typeof CHECKLISTS_TECH !== 'undefined') ? CHECKLISTS_TECH[srvKey] : null;
     var srvDef = (typeof SERVICES_INGRESO !== 'undefined') ? SERVICES_INGRESO.find(function(x){return x.key===srvKey;}) : null;
     var srvLbl = srvDef ? srvDef.label : (srvKey || 'Servicio');
-    if (o.service_subtype) srvLbl += ' — ' + o.service_subtype;
+    if (srvSubtype) srvLbl += ' — ' + srvSubtype;
 
     // 2) Inicializar PDF
     var doc = new jsPDFCtor({unit:'mm', format:'a4'});
@@ -23275,7 +23633,7 @@ async function saveInformeExtras(woId, extras) {
 var _INFORME_EDITOR_STATE = null;
 
 // Modal principal: editor de informe
-async function openInformeEditor(woId) {
+async function openInformeEditor(woId, serviceReportId) {
   // Cerrar editor anterior si quedó abierto
   var existing = document.getElementById('m-inf-editor');
   if (existing) existing.remove();
@@ -23295,20 +23653,31 @@ async function openInformeEditor(woId) {
     var rOT = await sb.from('work_orders').select('id,ot_number,plate,service_classification,checklist_data').eq('id', woId).maybeSingle();
     var o = rOT && rOT.data ? rOT.data : {};
     var cd = o.checklist_data || {};
-    var tc = cd.tech_checklist || {};
+
+    // FRENTE 9.6: si se pasó serviceReportId, leer del report específico.
+    // El editor de extras (observaciones editadas, imágenes anexas, etc) sigue
+    // operando sobre cd.report_extras top-level por compatibilidad. Cuando se
+    // implemente el SAVE por service_report, esto se ajusta.
+    var targetReport = null;
+    if (serviceReportId && Array.isArray(cd.service_reports)) {
+      targetReport = cd.service_reports.find(function(r){ return r && r.id === serviceReportId; });
+    }
+    var tc = targetReport ? (targetReport.tech_checklist || {}) : (cd.tech_checklist || {});
+    var srvKeyForEd = targetReport ? targetReport.service_classification : (o.service_classification || null);
     var origObs = tc.tech_observations || tc.observaciones || tc.obs || '';
 
     _INFORME_EDITOR_STATE = {
       woId: woId,
+      serviceReportId: serviceReportId || null, // FRENTE 9.6
       otNumber: o.ot_number || '',
       origObs: origObs,
-      serviceKey: o.service_classification || null, // FRENTE 6 FASE B: para plantillas
+      serviceKey: srvKeyForEd, // FRENTE 6 FASE B: para plantillas
       extras: loaded.extras,
       // FASE 4.0: hallazgos en vivo + metadata del informe en desarrollo
-      liveFindings: loaded.live_findings || [],
-      reportStartedAt: loaded.report_started_at,
-      reportStartedByName: loaded.report_started_by_name,
-      reportState: loaded.report_state,
+      liveFindings: (targetReport && Array.isArray(targetReport.live_findings)) ? targetReport.live_findings : (loaded.live_findings || []),
+      reportStartedAt: targetReport ? targetReport.report_started_at : loaded.report_started_at,
+      reportStartedByName: targetReport ? targetReport.report_started_by_name : loaded.report_started_by_name,
+      reportState: targetReport ? targetReport.report_state : loaded.report_state,
       // FRENTE 7 FASE B: info de pauta v2 si existe, para boton "Editar pauta"
       hasPautaV2: !!(tc.pauta_v2 && tc.pauta_v2.zonas),
       pautaV2Pct: (tc.pauta_v2 && typeof tc.pauta_v2.completitud_pct === 'number') ? tc.pauta_v2.completitud_pct : null,
@@ -23689,21 +24058,99 @@ async function renderBossInformes(body) {
     var cd = o.checklist_data || {};
     // FASE 4.0: incluir también los informes "en desarrollo" (con report_started_at
     // pero sin tech_checklist completo todavía). Antes solo aparecían los cerrados.
+    // FRENTE 9.6: incluir además OTs con service_reports[] poblado (modelo nuevo).
     var hasChk = cd.tech_checklist && Object.keys(cd.tech_checklist).length > 0;
     var inDev  = !!cd.report_started_at;
     var hasFindings = Array.isArray(cd.live_findings) && cd.live_findings.length > 0;
-    return hasChk || inDev || hasFindings;
+    var hasNewReports = Array.isArray(cd.service_reports) && cd.service_reports.length > 0;
+    return hasChk || inDev || hasFindings || hasNewReports;
   });
 
+  // FRENTE 9.6 (2026-05-14): traer history relacionada para auto-detectar
+  // servicios que se trabajaron contra cada OT pero que no tienen entry en
+  // service_reports[] (caso Benjamin/SKXS56). Si una OT tiene history con
+  // servicio MANT_COMPLETO y la OT es de DIAGNOSTICO, queremos que el informe
+  // de MANT_COMPLETO aparezca como entrada separada en la lista.
+  var historyByOT = {};
+  try {
+    var otIds = allOTs.map(function(o){ return o.id; }).filter(Boolean);
+    if (otIds.length) {
+      var rHist = await sb.from('history')
+        .select('work_order_id, service, technician, ended_at, started_at, seconds, plate')
+        .in('work_order_id', otIds)
+        .order('ended_at', {ascending: false})
+        .limit(500);
+      if (rHist && rHist.data) {
+        rHist.data.forEach(function(h){
+          if (!h.work_order_id) return;
+          if (!historyByOT[h.work_order_id]) historyByOT[h.work_order_id] = [];
+          historyByOT[h.work_order_id].push(h);
+        });
+      }
+    }
+  } catch(_){ /* fallback silencioso: si falla, no auto-detectamos */ }
+
+  // FRENTE 9.6: expandir cada OT a N entries (uno por service_report).
+  // _informesData ahora es array de {ot, report, isLegacyOnly} en vez de
+  // array de OTs. Cada entry representa UN informe descubrible/editable.
+  var allEntries = [];
+  var otsToPersistMigration = []; // OTs que sufrieron migración legacy/auto-detect
+  allOTs.forEach(function(o){
+    var cd = o.checklist_data || {};
+    var otClass = o.service_classification || null;
+    var histRows = historyByOT[o.id] || [];
+    // Snapshot del state previo de service_reports[] para detectar mutación.
+    var prevLen = Array.isArray(cd.service_reports) ? cd.service_reports.length : 0;
+    // _getAllReportsForOT muta cd in-memory (migración legacy + auto-detect).
+    var reports = _getAllReportsForOT(cd, otClass, histRows);
+    var postLen = Array.isArray(cd.service_reports) ? cd.service_reports.length : 0;
+    if (postLen > prevLen) {
+      // Se crearon entries — persistir en background para sobrevivir refresh.
+      otsToPersistMigration.push({id: o.id, cd: cd});
+    }
+    if (reports.length > 0) {
+      // Una entry por cada report.
+      reports.forEach(function(r){
+        allEntries.push({ot: o, report: r, isMultiService: reports.length > 1});
+      });
+    } else {
+      // OT sin reports detectables pero pasó el primer filtro → fallback legacy
+      // (puede ser un informe que solo tiene report_started_at sin más data).
+      allEntries.push({ot: o, report: null, isMultiService: false});
+    }
+  });
+
+  // Persistir migraciones en background (no bloqueante). Si falla, no rompe
+  // el render — la migración se reintenta en el próximo load.
+  if (otsToPersistMigration.length) {
+    setTimeout(function(){
+      otsToPersistMigration.forEach(function(item){
+        try {
+          sb.from('work_orders').update({checklist_data: item.cd}).eq('id', item.id).then(function(res){
+            if (res && res.error) logR('INFORMES_MIGRATION_PERSIST_ERR', {wo: item.id, msg: res.error.message}, 'warn');
+            else logR('INFORMES_MIGRATION_PERSISTED', {wo: item.id, reports: item.cd.service_reports.length});
+          });
+        } catch(_){}
+      });
+    }, 0);
+  }
+
   // Filtro técnico: ver TODOS los informes donde el técnico trabajó.
-  // FRENTE 9.2 (2026-05-14): antes solo se consideraba creador (report_started_by)
-  // o completador (tech_completed_by). Cuando varios técnicos trabajaban la
-  // misma OT (lavado + mecánica + diagnóstico), solo el primero la veía.
-  // Ahora incluimos cd.report_participants[] que registra a cada técnico
-  // que abrió cronómetro contra la OT (vía _ensureReportShellAndParticipant).
+  // FRENTE 9.6: el filtro ahora se aplica a ENTRIES (no a OTs).
+  // Un técnico ve un service_report si: lo completó, lo inició, o aparece
+  // en sus participants. Fallback a campos legacy de la OT.
   if (_informesFilters.onlyMine && CU) {
-    allOTs = allOTs.filter(function(o){
-      var cd = o.checklist_data || {};
+    allEntries = allEntries.filter(function(e){
+      var cd = e.ot.checklist_data || {};
+      var r = e.report;
+      if (r) {
+        if (r.tech_completed_by === CU.id) return true;
+        if (r.report_started_by === CU.id) return true;
+        if (Array.isArray(r.report_participants)) {
+          if (r.report_participants.some(function(p){ return p && p.user_id === CU.id; })) return true;
+        }
+      }
+      // Fallback legacy (entry sin report)
       if (cd.tech_completed_by === CU.id) return true;
       if (cd.report_started_by === CU.id) return true;
       if (Array.isArray(cd.report_participants)) {
@@ -23713,7 +24160,7 @@ async function renderBossInformes(body) {
     });
   }
 
-  _informesData = allOTs;
+  _informesData = allEntries;
 
   // Cargar info auxiliar (clientes, vehículos) en bloque
   var clientIds = {};
@@ -23758,10 +24205,12 @@ async function renderBossInformes(body) {
     + '<input type="text" id="inf-search" class="inp" placeholder="Buscar patente, cliente, OT..." value="' + escapeHtml(_informesFilters.search || '') + '" style="flex:1;min-width:200px;margin:0"/>'
     + '<select id="inf-srv" class="inp" style="margin:0;max-width:220px">'
     +   '<option value="">Todos los servicios</option>';
-  // Tipos de servicio únicos en data
+  // Tipos de servicio únicos en data — ahora viene desde service_reports[]
+  // de cada entry, no del o.service_classification.
   var srvSet = {};
-  allOTs.forEach(function(o){
-    if (o.service_classification) srvSet[o.service_classification] = true;
+  allEntries.forEach(function(e){
+    var cls = (e.report && e.report.service_classification) || e.ot.service_classification;
+    if (cls) srvSet[cls] = true;
   });
   Object.keys(srvSet).sort().forEach(function(sk){
     var srv = (typeof SERVICES_INGRESO !== 'undefined') ? SERVICES_INGRESO.find(function(x){return x.key===sk;}) : null;
@@ -23776,7 +24225,7 @@ async function renderBossInformes(body) {
       + '</label>';
   }
   filterHTML += '</div>';
-  filterHTML += '<div style="font-size:11px;color:var(--wh3)">' + allOTs.length + ' informe(s) disponibles</div>';
+  filterHTML += '<div style="font-size:11px;color:var(--wh3)">' + allEntries.length + ' informe(s) disponibles</div>';
   bar.innerHTML = filterHTML;
   body.appendChild(bar);
 
@@ -23800,51 +24249,59 @@ function renderInformesList(body, clientsMap, vehiclesMap) {
   if (!listDiv) return;
   listDiv.innerHTML = '';
 
-  // Aplicar filtros
-  var rows = _informesData.slice();
+  // FRENTE 9.6: _informesData ahora es array de {ot, report, isMultiService}.
+  // Cada entry representa UN informe (un servicio dentro de la OT).
+  var entries = _informesData.slice();
   var s = (_informesFilters.search || '').trim().toLowerCase();
-  var srv = _informesFilters.service;
-  if (s || srv) {
-    rows = rows.filter(function(o){
-      if (srv && o.service_classification !== srv) return false;
+  var srvFilter = _informesFilters.service;
+  if (s || srvFilter) {
+    entries = entries.filter(function(e){
+      var cls = (e.report && e.report.service_classification) || e.ot.service_classification;
+      if (srvFilter && cls !== srvFilter) return false;
       if (s) {
-        var v = vehiclesMap[o.vehicle_id] || {};
-        var c = clientsMap[o.client_id] || {};
-        var hay = ((v.plate || o.plate || '') + ' ' + (c.name || '') + ' OT-' + (o.ot_number || '') + ' ' + (v.brand || '') + ' ' + (v.model || '')).toLowerCase();
+        var v = vehiclesMap[e.ot.vehicle_id] || {};
+        var c = clientsMap[e.ot.client_id] || {};
+        var hay = ((v.plate || e.ot.plate || '') + ' ' + (c.name || '') + ' OT-' + (e.ot.ot_number || '') + ' ' + (v.brand || '') + ' ' + (v.model || '')).toLowerCase();
         if (hay.indexOf(s) === -1) return false;
       }
       return true;
     });
   }
 
-  if (!rows.length) {
+  if (!entries.length) {
     listDiv.innerHTML = '<div class="empty">Sin informes que coincidan con los filtros</div>';
     return;
   }
 
-  rows.forEach(function(o){
+  entries.forEach(function(e){
+    var o = e.ot;
+    var r = e.report;
     var v = vehiclesMap[o.vehicle_id] || {};
     var c = clientsMap[o.client_id] || {};
     var cd = o.checklist_data || {};
-    var srv = (typeof SERVICES_INGRESO !== 'undefined') ? SERVICES_INGRESO.find(function(x){return x.key===o.service_classification;}) : null;
-    var srvLbl = srv ? srv.label : (o.service_classification || '?');
-    if (o.service_subtype) srvLbl += ' — ' + o.service_subtype;
 
+    // Classification y label del informe: viene del service_report si existe.
+    var reportClass = (r && r.service_classification) || o.service_classification;
+    var reportSubtype = (r && r.service_subtype) || o.service_subtype;
+    var srvDef = (typeof SERVICES_INGRESO !== 'undefined') ? SERVICES_INGRESO.find(function(x){return x.key===reportClass;}) : null;
+    var srvLbl = srvDef ? srvDef.label : (reportClass || '?');
+    if (reportSubtype) srvLbl += ' — ' + reportSubtype;
+    // Si la OT es multi-servicio, mostrar prefijo para distinguir.
+    var multiPrefix = e.isMultiService ? '🔹 ' : '';
+
+    // Fecha: tech_completed_at del REPORT si está, sino legacy.
     var fechaStr = '—';
-    var ts = cd.tech_completed_at || cd.double_check_completed_at || o.updated_at;
+    var ts = (r && r.tech_completed_at) || cd.tech_completed_at || cd.double_check_completed_at || o.updated_at;
     if (ts) {
-      try { fechaStr = new Date(ts).toLocaleDateString('es-CL'); } catch(e){}
+      try { fechaStr = new Date(ts).toLocaleDateString('es-CL'); } catch(_) {}
     }
 
-    // Hallazgos críticos (cuenta) para mostrar badge
-    var techDef = (typeof CHECKLISTS_TECH !== 'undefined') ? CHECKLISTS_TECH[o.service_classification] : null;
-    var concerns = informeCollectConcerns(techDef, cd.tech_checklist || {});
-    // FIX 2026-05-04: si el técnico escribió hallazgos en textareas pero los
-    // bool/select están todos OK, igual queremos que el badge no diga
-    // "Conforme" para no contradecir el contenido del informe.
-    var resumenSources = informeCollectResumenSources(techDef, cd.tech_checklist || {});
-    // Extras editados/anexados (si existen)
-    var rExtras = cd.report_extras || {};
+    // Hallazgos críticos del REPORT específico.
+    var techDef = (typeof CHECKLISTS_TECH !== 'undefined') ? CHECKLISTS_TECH[reportClass] : null;
+    var reportTc = (r && r.tech_checklist) || cd.tech_checklist || {};
+    var concerns = informeCollectConcerns(techDef, reportTc);
+    var resumenSources = informeCollectResumenSources(techDef, reportTc);
+    var rExtras = (r && r.report_extras) || cd.report_extras || {};
     var extrasCount = ((rExtras.extra_findings || []).filter(function(f){return f && String(f).trim();}).length)
       + ((rExtras.images || []).length)
       + ((rExtras.pdfs || []).length)
@@ -23852,27 +24309,45 @@ function renderInformesList(body, clientsMap, vehiclesMap) {
 
     var row = mk('div', 'card');
     row.style.cssText = 'padding:12px;margin-bottom:8px;cursor:pointer;display:flex;gap:10px;align-items:flex-start';
-    row.onclick = function(){ openInformePreview(o.id); };
+    // FRENTE 9.6: el preview/PDF/editor reciben también el reportId si existe.
+    var reportId = r ? r.id : null;
+    row.onclick = function(){ openInformePreview(o.id, reportId); };
+
     var stateBadge = '';
     var stateColor = '#888';
-    // FASE 4.0: detectar "EN DESARROLLO" (informe abierto, sin checklist técnico cerrado)
-    var isInDev = !!cd.report_started_at && !cd.tech_completed_at;
-    var liveCount = Array.isArray(cd.live_findings) ? cd.live_findings.length : 0;
+    // Estado del REPORT específico.
+    var rState = r ? r.report_state : null;
+    var isInDev = false;
+    if (r) {
+      isInDev = (rState === 'en_desarrollo' && !r.tech_completed_at);
+    } else {
+      isInDev = !!cd.report_started_at && !cd.tech_completed_at;
+    }
+    var liveCount = (r && Array.isArray(r.live_findings)) ? r.live_findings.length
+                  : (Array.isArray(cd.live_findings) ? cd.live_findings.length : 0);
     if (isInDev) {
       stateBadge = 'EN DESARROLLO';
       stateColor = 'var(--blue)';
-      // El borde izquierdo del card cambia a azul para que destaque
       row.style.borderLeft = '4px solid var(--blue)';
-    } else if (o.status === 'closed') { stateBadge = 'Finalizada'; stateColor = '#2a7a2a'; }
+    } else if (r && r.tech_completed_at) {
+      stateBadge = 'Informe completado';
+      stateColor = '#2a7a2a';
+    } else if (o.status === 'closed') { stateBadge = 'OT finalizada'; stateColor = '#2a7a2a'; }
     else if (o.status === 'pending_visado') { stateBadge = 'Pendiente visado'; stateColor = '#a07000'; }
     else if (o.status === 'pending_double_check') { stateBadge = 'Pendiente doble ctrl'; stateColor = '#a07000'; }
     else if (o.status === 'in_progress') { stateBadge = 'En curso'; stateColor = '#1f6fbf'; }
     else if (o.status === 'manual_report') { stateBadge = 'Informe manual'; stateColor = '#666'; }
     else { stateBadge = o.status || '—'; }
 
+    // PDF download params: pasar reportId si existe.
+    var pdfCallArg = reportId
+      ? "'" + o.id + "', '" + reportId + "'"
+      : "'" + o.id + "'";
+    var editCallArg = pdfCallArg; // misma firma
+
     row.innerHTML =
       '<div style="flex:1;min-width:0">'
-      + '<div style="font-size:13px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111">' + escapeHtml(srvLbl) + '</div>'
+      + '<div style="font-size:13px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111">' + multiPrefix + escapeHtml(srvLbl) + '</div>'
       + '<div style="font-size:12px;color:#444;margin-top:2px">'
       +   (v.plate || o.plate ? '<span class="plate-tag" style="margin-right:6px">' + escapeHtml(v.plate || o.plate) + '</span>' : '')
       +   escapeHtml(((v.brand || '') + ' ' + (v.model || '')).trim() || '—')
@@ -23893,8 +24368,8 @@ function renderInformesList(body, clientsMap, vehiclesMap) {
               ? '<div style="font-size:10px;background:#fff4cc;color:#7a5a00;padding:3px 8px;border-radius:10px;font-weight:700">📝 Con observaciones</div>'
               : '<div style="font-size:10px;background:#e6f4e6;color:#2a7a2a;padding:3px 8px;border-radius:10px;font-weight:700">✓ Conforme</div>'))
       + '<div style="display:flex;gap:4px">'
-      +   '<button class="btn-sm" style="border-color:#1f6fbf;color:#1f6fbf;font-size:10px;padding:3px 6px" onclick="event.stopPropagation();openInformeEditor(\'' + o.id + '\')">✏ Editar</button>'
-      +   '<button class="btn-sm" style="border-color:var(--red);color:var(--red);font-size:10px;padding:3px 6px" onclick="event.stopPropagation();generateInformePdf(\'' + o.id + '\')">⬇ PDF</button>'
+      +   '<button class="btn-sm" style="border-color:#1f6fbf;color:#1f6fbf;font-size:10px;padding:3px 6px" onclick="event.stopPropagation();openInformeEditor(' + editCallArg + ')">✏ Editar</button>'
+      +   '<button class="btn-sm" style="border-color:var(--red);color:var(--red);font-size:10px;padding:3px 6px" onclick="event.stopPropagation();generateInformePdf(' + pdfCallArg + ')">⬇ PDF</button>'
       + '</div>'
       + '</div>';
     listDiv.appendChild(row);
@@ -23902,7 +24377,7 @@ function renderInformesList(body, clientsMap, vehiclesMap) {
 }
 
 // Modal de vista previa del informe (resumen en pantalla)
-async function openInformePreview(woId) {
+async function openInformePreview(woId, serviceReportId) {
   var existing = document.getElementById('m-inf-preview');
   if (existing) existing.remove();
   var ov = document.createElement('div');
@@ -23924,11 +24399,26 @@ async function openInformePreview(woId) {
       v = (rV && rV.data) || {};
     }
     var cd = o.checklist_data || {};
-    var tc = cd.tech_checklist || {};
-    var techDef = (typeof CHECKLISTS_TECH !== 'undefined') ? CHECKLISTS_TECH[o.service_classification] : null;
-    var srvDef = (typeof SERVICES_INGRESO !== 'undefined') ? SERVICES_INGRESO.find(function(x){return x.key===o.service_classification;}) : null;
-    var srvLbl = srvDef ? srvDef.label : (o.service_classification || 'Servicio');
-    if (o.service_subtype) srvLbl += ' — ' + o.service_subtype;
+
+    // FRENTE 9.6: si se pasó serviceReportId, leer del report específico.
+    var targetReport = null;
+    if (serviceReportId && Array.isArray(cd.service_reports)) {
+      targetReport = cd.service_reports.find(function(r){ return r && r.id === serviceReportId; });
+    }
+    var tc, srvKey, srvSubtype;
+    if (targetReport) {
+      tc = targetReport.tech_checklist || {};
+      srvKey = targetReport.service_classification;
+      srvSubtype = targetReport.service_subtype;
+    } else {
+      tc = cd.tech_checklist || {};
+      srvKey = o.service_classification;
+      srvSubtype = o.service_subtype;
+    }
+    var techDef = (typeof CHECKLISTS_TECH !== 'undefined') ? CHECKLISTS_TECH[srvKey] : null;
+    var srvDef = (typeof SERVICES_INGRESO !== 'undefined') ? SERVICES_INGRESO.find(function(x){return x.key===srvKey;}) : null;
+    var srvLbl = srvDef ? srvDef.label : (srvKey || 'Servicio');
+    if (srvSubtype) srvLbl += ' — ' + srvSubtype;
     var concerns = informeCollectConcerns(techDef, tc);
     var resumenSources = informeCollectResumenSources(techDef, tc);
     var hasResumenContent = (resumenSources.length > 0 || concerns.length > 0);
@@ -24033,8 +24523,11 @@ async function openInformePreview(woId) {
     }
 
     html += '<div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">';
-    html += '<button class="btn btn-red" onclick="generateInformePdf(\'' + o.id + '\')" style="flex:1;min-width:140px">⬇ Descargar PDF</button>';
-    html += '<button class="btn btn-out" onclick="openInformeEditor(\'' + o.id + '\')" style="flex:1;min-width:140px;border-color:var(--red);color:var(--red)">✏ Editar / anexar</button>';
+    // FRENTE 9.6: pasar serviceReportId si está disponible para preservar
+    // el contexto del informe específico al descargar o editar.
+    var pdfArgs = serviceReportId ? ("'" + o.id + "', '" + serviceReportId + "'") : ("'" + o.id + "'");
+    html += '<button class="btn btn-red" onclick="generateInformePdf(' + pdfArgs + ')" style="flex:1;min-width:140px">⬇ Descargar PDF</button>';
+    html += '<button class="btn btn-out" onclick="openInformeEditor(' + pdfArgs + ')" style="flex:1;min-width:140px;border-color:var(--red);color:var(--red)">✏ Editar / anexar</button>';
     html += '<button class="btn btn-out" onclick="closeModal(\'m-inf-preview\');document.getElementById(\'m-inf-preview\').remove();" style="min-width:90px">Cerrar</button>';
     html += '</div>';
 
