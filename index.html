@@ -3404,6 +3404,37 @@ function hasPautaV2(serviceKey) {
 }
 window.hasPautaV2 = hasPautaV2;
 
+// HOTFIX 2026-05-14: resolver service key desde el label del servicio cuando
+// active_sessions.service_classification viene null (caso: OT creada por flujo
+// legacy que no setea service_classification, o sesion iniciada antes de que
+// se crease la OT). El label en active_sessions.service es la fuente de verdad
+// alternativa porque siempre se setea al iniciar el cronometro.
+function resolveServiceKeyFromLabel(label) {
+  if (!label) return null;
+  var norm = String(label).toLowerCase().trim();
+  if (typeof SERVICES_INGRESO === 'undefined' || !Array.isArray(SERVICES_INGRESO)) return null;
+  for (var i = 0; i < SERVICES_INGRESO.length; i++) {
+    var item = SERVICES_INGRESO[i];
+    if (item && item.label && String(item.label).toLowerCase().trim() === norm) {
+      return item.key;
+    }
+  }
+  return null;
+}
+window.resolveServiceKeyFromLabel = resolveServiceKeyFromLabel;
+
+// HOTFIX 2026-05-14: helper unificado para obtener la service key de una sesion
+// activa. Prefiere service_classification (hidratada desde work_orders); si
+// esta vacia, intenta resolver desde el label (sess.service). Esto blinda el
+// render del boton "Pauta de inspeccion" contra OTs con service_classification
+// NULL en BD y contra sesiones sin work_order_id.
+function getSessionServiceKey(sess) {
+  if (!sess) return null;
+  if (sess.service_classification) return sess.service_classification;
+  return resolveServiceKeyFromLabel(sess.service);
+}
+window.getSessionServiceKey = getSessionServiceKey;
+
 // Cuenta total de items de una pauta (suma todos los items de todas las zonas).
 function pautaCountItems(serviceKey) {
   var def = CHECKLISTS_TECH_PAUTAS_V2[serviceKey];
@@ -6630,8 +6661,10 @@ function renderTimerCard(body, sess) {
   // tiene pauta v2 disponible. service_classification se hidrata en fetchLive()
   // desde el JOIN con work_orders. El indicador de % avance se actualiza en vivo
   // desde el cache active_sessions.pauta_v2_pct.
-  if (sess.work_order_id && sess.service_classification && typeof hasPautaV2 === 'function' && hasPautaV2(sess.service_classification)) {
-    var srvKeyPauta = sess.service_classification;
+  // HOTFIX 2026-05-14: usar getSessionServiceKey con fallback al label.
+  var srvKeyPautaTC = getSessionServiceKey(sess);
+  if (srvKeyPautaTC && typeof hasPautaV2 === 'function' && hasPautaV2(srvKeyPautaTC)) {
+    var srvKeyPauta = srvKeyPautaTC;
     // Leer progreso desde cache: si existe pauta_v2_pct en la sesion, usarlo.
     var pautaPct = (typeof sess.pauta_v2_pct === 'number') ? sess.pauta_v2_pct : 0;
     var pautaTotal = pautaCountItems(srvKeyPauta);
@@ -6648,7 +6681,7 @@ function renderTimerCard(body, sess) {
       +   '<span style="background:' + pautaColor + ';color:#fff;font-size:10px;font-weight:800;padding:2px 7px;border-radius:10px;font-family:var(--mono)">' + (pautaTotal ? Math.round(pautaPct * pautaTotal / 100) + '/' + pautaTotal : '—') + '</span>'
       + '</span>';
     pautaBtn.onclick = function() {
-      openPautaV2DuringService(sess.work_order_id, sess.session_key);
+      openPautaV2DuringService(sess.work_order_id || '', sess.session_key);
     };
     body.appendChild(pautaBtn);
   }
@@ -7812,13 +7845,18 @@ function buildMisServCard(s, status) {
   // pauta v2 disponible. Visible en running/paused (no en checklist_pending donde
   // el flujo de cierre toma otro camino). service_classification se hidrata en
   // fetchLive() desde el JOIN con work_orders.
-  if (s.work_order_id && s.service_classification && typeof hasPautaV2 === 'function'
-      && hasPautaV2(s.service_classification) && (isRunning || isPaused)) {
+  // HOTFIX 2026-05-14: usar getSessionServiceKey con fallback al label porque
+  // service_classification puede venir NULL si la OT se creo por flujo legacy.
+  var srvKeyMis = getSessionServiceKey(s);
+  if (srvKeyMis && typeof hasPautaV2 === 'function'
+      && hasPautaV2(srvKeyMis) && (isRunning || isPaused)) {
     var pctMis = (typeof s.pauta_v2_pct === 'number') ? s.pauta_v2_pct : 0;
-    var totalMis = pautaCountItems(s.service_classification);
+    var totalMis = pautaCountItems(srvKeyMis);
     var colorMis = pctMis >= 95 ? 'var(--green)' : pctMis >= 60 ? 'var(--gold)' : pctMis > 0 ? 'var(--gold3)' : '#999';
+    // Si no hay work_order_id, el onclick resuelve por patente al hacer click.
+    var woIdAttr = s.work_order_id ? escapeHtml(s.work_order_id) : '';
     h += '<button class="btn" style="margin-bottom:8px;width:100%;font-size:12px;padding:10px;background:#fff;border:2px solid ' + colorMis + ';color:#111;font-weight:700;display:flex;align-items:center;justify-content:space-between;gap:8px" '
-      + 'onclick="openPautaV2DuringService(\'' + escapeHtml(s.work_order_id) + '\',\'' + s.session_key + '\')">'
+      + 'onclick="openPautaV2DuringService(\'' + woIdAttr + '\',\'' + s.session_key + '\')">'
       + '<span style="display:flex;align-items:center;gap:6px"><span>📋</span><span>Pauta de inspección</span></span>'
       + '<span style="display:flex;align-items:center;gap:6px"><span style="font-size:10px;color:var(--wh3);font-weight:600">' + pctMis + '%</span>'
       + '<span style="background:' + colorMis + ';color:#fff;font-size:10px;font-weight:800;padding:2px 6px;border-radius:9px;font-family:var(--mono)">' + (totalMis ? Math.round(pctMis * totalMis / 100) + '/' + totalMis : '—') + '</span></span>'
@@ -14839,14 +14877,50 @@ window.openPautaV2Modal = openPautaV2Modal;
 //   - Cierre del modal con boton "Cerrar y seguir" en vez de "Guardar pauta"
 //   - Se invoca desde renderTimerCard (lamina del cronometro)
 async function openPautaV2DuringService(woId, sessionKey) {
-  if (!sb || !woId) { showGlobalError('Datos insuficientes para abrir pauta', 3000); return; }
+  if (!sb) { showGlobalError('Sin conexión a BD', 3000); return; }
   try {
+    // HOTFIX 2026-05-14: si no llega woId, intentar resolverlo desde la sesion
+    // activa via patente. Esto cubre el caso donde la sesion no quedo vinculada
+    // a una OT al iniciar el cronometro pero la OT existe ahora.
+    if (!woId && sessionKey && Array.isArray(liveData)) {
+      var sessFb = liveData.find(function(x){ return x.session_key === sessionKey; });
+      if (sessFb) {
+        if (sessFb.work_order_id) {
+          woId = sessFb.work_order_id;
+        } else if (sessFb.plate && typeof findOpenOTByPlate === 'function') {
+          try {
+            var foundFb = await findOpenOTByPlate(sessFb.plate);
+            if (foundFb && foundFb.id) {
+              woId = foundFb.id;
+              // Best-effort: vincular la OT a la sesion para futuros renders.
+              try { await sb.from('active_sessions').update({work_order_id: woId}).eq('session_key', sessionKey); } catch(_){}
+            }
+          } catch(_){}
+        }
+      }
+    }
+    if (!woId) {
+      showGlobalError('No se encontró OT vinculada. Avisa a jefatura para crear la OT antes de continuar.', 5000);
+      return;
+    }
     // Cargar OT actual (siempre datos frescos para reflejar autosave previo)
     var r = await sb.from('work_orders').select('id, ot_number, service_classification, plate, checklist_data, vehicle_id').eq('id', woId).single();
     if (r && r.error) { showGlobalError('Error al cargar OT: ' + r.error.message, 4000); return; }
     var o = r.data;
     if (!o) { showGlobalError('OT no encontrada', 3000); return; }
     var srv = o.service_classification;
+    // HOTFIX 2026-05-14: si la OT no tiene service_classification (caso legacy),
+    // resolverlo desde el label de la sesion activa y hacer backfill en BD.
+    if (!srv && sessionKey && Array.isArray(liveData)) {
+      var sessForLabel = liveData.find(function(x){ return x.session_key === sessionKey; });
+      if (sessForLabel && sessForLabel.service && typeof resolveServiceKeyFromLabel === 'function') {
+        srv = resolveServiceKeyFromLabel(sessForLabel.service);
+        if (srv) {
+          try { await sb.from('work_orders').update({service_classification: srv}).eq('id', woId); } catch(_){}
+          logR('PAUTA_V2_BACKFILL_SRV', {ot: o.ot_number, srv: srv}, 'warn');
+        }
+      }
+    }
     var def = CHECKLISTS_TECH_PAUTAS_V2[srv];
     if (!def) { showGlobalError('Este servicio no tiene pauta v2', 3500); return; }
     var existing = ((o.checklist_data || {}).tech_checklist || {}).pauta_v2;
