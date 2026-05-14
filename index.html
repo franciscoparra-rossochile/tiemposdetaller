@@ -24022,6 +24022,58 @@ async function saveInformeEditorAndGenerate() {
   }
 }
 
+// FRENTE 9.6 (2026-05-14): helper de diagnóstico para inspeccionar el
+// estado de service_reports[] + history de una OT específica.
+// Uso desde consola del browser: window.debugInformeOT(68) o
+// window.debugInformeOT('SKXS56').
+window.debugInformeOT = async function(otNumberOrPlate) {
+  if (!sb) { console.warn('Sin conexión a Supabase'); return null; }
+  try {
+    var query = sb.from('work_orders_with_plate').select('*');
+    if (typeof otNumberOrPlate === 'number' || /^\d+$/.test(String(otNumberOrPlate))) {
+      query = query.eq('ot_number', String(otNumberOrPlate));
+    } else {
+      var pNorm = (typeof normalizePlate === 'function') ? normalizePlate(otNumberOrPlate) : String(otNumberOrPlate).toUpperCase().replace(/[^A-Z0-9]/g,'');
+      query = query.eq('plate', pNorm);
+    }
+    var r = await query.limit(5);
+    if (!r.data || !r.data.length) { console.warn('Sin OTs que coincidan'); return null; }
+    for (var i = 0; i < r.data.length; i++) {
+      var o = r.data[i];
+      var cd = o.checklist_data || {};
+      console.group('🔹 OT-' + o.ot_number + ' (' + o.plate + ') · ' + o.service_classification + ' · ' + o.status);
+      console.log('Legacy tech_checklist keys:', cd.tech_checklist ? Object.keys(cd.tech_checklist).length : 0);
+      console.log('Legacy report_started_at:', cd.report_started_at || '(none)');
+      console.log('Legacy tech_completed_at:', cd.tech_completed_at || '(none)');
+      console.log('Legacy live_findings:', (cd.live_findings || []).length);
+      console.log('Legacy report_participants:', (cd.report_participants || []).length);
+      console.log('service_reports[] count:', (cd.service_reports || []).length);
+      if (cd.service_reports) {
+        cd.service_reports.forEach(function(sr, idx){
+          console.log('  ['+idx+']', sr.service_classification, '·', sr.report_state,
+            sr.tech_completed_at ? '·done' : '·open',
+            'participants=' + (sr.report_participants||[]).length,
+            sr._legacy_imported ? '(legacy)' : '',
+            sr._auto_detected_from_history ? '(auto)' : '');
+        });
+      }
+      // Cargar history vinculada
+      var rH = await sb.from('history').select('work_order_id, service, technician, ended_at, seconds, plate')
+        .or('work_order_id.eq.' + o.id + ',plate.eq.' + o.plate)
+        .order('ended_at', {ascending: false}).limit(20);
+      console.log('history rows:', (rH.data || []).length);
+      (rH.data || []).forEach(function(h){
+        console.log('  ·', h.technician, '·', h.service, '· wo=' + (h.work_order_id || 'null'), '· plate=' + h.plate);
+      });
+      console.groupEnd();
+    }
+    return r.data;
+  } catch(e) {
+    console.error('Error en debugInformeOT:', e);
+    return null;
+  }
+};
+
 // ═══════════════════════════════════════════════════════════════
 // PESTAÑA "INFORMES TÉCNICOS" — listado con filtros + vista previa
 // ═══════════════════════════════════════════════════════════════
@@ -24068,27 +24120,44 @@ async function renderBossInformes(body) {
 
   // FRENTE 9.6 (2026-05-14): traer history relacionada para auto-detectar
   // servicios que se trabajaron contra cada OT pero que no tienen entry en
-  // service_reports[] (caso Benjamin/SKXS56). Si una OT tiene history con
-  // servicio MANT_COMPLETO y la OT es de DIAGNOSTICO, queremos que el informe
-  // de MANT_COMPLETO aparezca como entrada separada en la lista.
+  // service_reports[] (caso Benjamin/SKXS56). Sin esto, el informe de
+  // MANT_COMPLETO de Benjamin no aparece como entrada separada.
+  //
+  // Estrategia defensiva (rev. 2026-05-14):
+  //   1. Query a history SIN `started_at` (columna nueva, puede no estar
+  //      migrada en todos los entornos → causa 400).
+  //   2. Traer las últimas 1000 sin filtro `.in()` (URLs cortos, sin
+  //      problemas de longitud).
+  //   3. Agrupar por work_order_id Y por plate normalizado. Las sesiones
+  //      cuyo woId quedó null (legacy) se recuperan por plate match.
+  //   4. Try/catch agresivo — si la query falla, no rompemos el render.
   var historyByOT = {};
+  var historyByPlate = {};
   try {
-    var otIds = allOTs.map(function(o){ return o.id; }).filter(Boolean);
-    if (otIds.length) {
-      var rHist = await sb.from('history')
-        .select('work_order_id, service, technician, ended_at, started_at, seconds, plate')
-        .in('work_order_id', otIds)
-        .order('ended_at', {ascending: false})
-        .limit(500);
-      if (rHist && rHist.data) {
-        rHist.data.forEach(function(h){
-          if (!h.work_order_id) return;
+    var rHist = await sb.from('history')
+      .select('work_order_id, service, technician, ended_at, seconds, plate')
+      .order('ended_at', {ascending: false})
+      .limit(1000);
+    if (rHist && rHist.error) {
+      logR('INFORMES_HISTORY_QUERY_ERR', {msg: rHist.error.message, code: rHist.error.code}, 'warn');
+    } else if (rHist && rHist.data) {
+      rHist.data.forEach(function(h){
+        if (h.work_order_id) {
           if (!historyByOT[h.work_order_id]) historyByOT[h.work_order_id] = [];
           historyByOT[h.work_order_id].push(h);
-        });
-      }
+        }
+        if (h.plate) {
+          var pNorm = (typeof normalizePlate === 'function') ? normalizePlate(h.plate) : (h.plate.toUpperCase().replace(/[^A-Z0-9]/g,''));
+          if (pNorm) {
+            if (!historyByPlate[pNorm]) historyByPlate[pNorm] = [];
+            historyByPlate[pNorm].push(h);
+          }
+        }
+      });
     }
-  } catch(_){ /* fallback silencioso: si falla, no auto-detectamos */ }
+  } catch(eHist){
+    logR('INFORMES_HISTORY_FETCH_EXCEPTION', {msg: eHist.message}, 'warn');
+  }
 
   // FRENTE 9.6: expandir cada OT a N entries (uno por service_report).
   // _informesData ahora es array de {ot, report, isLegacyOnly} en vez de
@@ -24098,7 +24167,22 @@ async function renderBossInformes(body) {
   allOTs.forEach(function(o){
     var cd = o.checklist_data || {};
     var otClass = o.service_classification || null;
-    var histRows = historyByOT[o.id] || [];
+    // Combinar history por work_order_id + por plate (defensa contra
+    // sesiones huérfanas con work_order_id=null en history).
+    var histRows = (historyByOT[o.id] || []).slice();
+    // o.plate viene directo de work_orders_with_plate (VIEW), no necesita JOIN.
+    if (o.plate) {
+      var pNorm = (typeof normalizePlate === 'function') ? normalizePlate(o.plate) : o.plate.toUpperCase().replace(/[^A-Z0-9]/g,'');
+      var byPlate = historyByPlate[pNorm] || [];
+      byPlate.forEach(function(h){
+        // Solo agregar sesiones que NO tengan work_order_id (huérfanas).
+        // Si tienen woId, ya fueron consideradas por historyByOT o pertenecen
+        // a otra OT del mismo vehículo (no queremos mezclar).
+        if (!h.work_order_id && !histRows.some(function(x){ return x === h; })) {
+          histRows.push(h);
+        }
+      });
+    }
     // Snapshot del state previo de service_reports[] para detectar mutación.
     var prevLen = Array.isArray(cd.service_reports) ? cd.service_reports.length : 0;
     // _getAllReportsForOT muta cd in-memory (migración legacy + auto-detect).
@@ -24106,31 +24190,47 @@ async function renderBossInformes(body) {
     var postLen = Array.isArray(cd.service_reports) ? cd.service_reports.length : 0;
     if (postLen > prevLen) {
       // Se crearon entries — persistir en background para sobrevivir refresh.
-      otsToPersistMigration.push({id: o.id, cd: cd});
+      otsToPersistMigration.push({id: o.id, cd: cd, newCount: postLen - prevLen});
     }
     if (reports.length > 0) {
-      // Una entry por cada report.
       reports.forEach(function(r){
         allEntries.push({ot: o, report: r, isMultiService: reports.length > 1});
       });
     } else {
-      // OT sin reports detectables pero pasó el primer filtro → fallback legacy
-      // (puede ser un informe que solo tiene report_started_at sin más data).
       allEntries.push({ot: o, report: null, isMultiService: false});
     }
   });
 
   // Persistir migraciones en background (no bloqueante). Si falla, no rompe
-  // el render — la migración se reintenta en el próximo load.
+  // el render — la migración se reintenta en el próximo load (idempotente).
+  // FRENTE 9.6 rev: logging detallado del error para diagnosticar la causa
+  // raíz cuando ocurra. Antes el .then() sin .catch dejaba errores invisibles.
   if (otsToPersistMigration.length) {
+    logR('INFORMES_MIGRATION_PENDING', {count: otsToPersistMigration.length});
     setTimeout(function(){
       otsToPersistMigration.forEach(function(item){
         try {
-          sb.from('work_orders').update({checklist_data: item.cd}).eq('id', item.id).then(function(res){
-            if (res && res.error) logR('INFORMES_MIGRATION_PERSIST_ERR', {wo: item.id, msg: res.error.message}, 'warn');
-            else logR('INFORMES_MIGRATION_PERSISTED', {wo: item.id, reports: item.cd.service_reports.length});
-          });
-        } catch(_){}
+          sb.from('work_orders').update({checklist_data: item.cd}).eq('id', item.id)
+            .then(function(res){
+              if (res && res.error) {
+                logR('INFORMES_MIGRATION_PERSIST_ERR', {
+                  wo: item.id,
+                  msg: res.error.message,
+                  code: res.error.code,
+                  hint: res.error.hint,
+                  details: res.error.details,
+                  newReports: item.newCount
+                }, 'err');
+              } else {
+                logR('INFORMES_MIGRATION_PERSISTED', {wo: item.id, total: item.cd.service_reports.length, added: item.newCount});
+              }
+            })
+            .catch(function(err){
+              logR('INFORMES_MIGRATION_PERSIST_REJECTED', {wo: item.id, msg: err && err.message ? err.message : String(err)}, 'err');
+            });
+        } catch(eP){
+          logR('INFORMES_MIGRATION_PERSIST_THROW', {wo: item.id, msg: eP.message}, 'err');
+        }
       });
     }, 0);
   }
