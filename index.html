@@ -10346,9 +10346,34 @@ async function renderBossPlan(body) {
   });
   window._planCache = cache;
 
-  // 6) Lista de técnicos activos en el rango (los que tienen al menos 1 evento)
-  // Más "__none__" si hay servicios sin asignar.
+  // 6) Lista de técnicos a mostrar como filas de la grilla.
+  //
+  // FRENTE 9.1 (2026-05-14): ANTES la grilla solo mostraba técnicos que ya
+  // tenían al menos 1 evento en el rango. Si solo 4 técnicos tenían
+  // servicios agendados esta semana, los otros 4 (Cristóbal, Jack, Manuel,
+  // Moisés...) eran INVISIBLES — pese a estar libres y disponibles para
+  // recibir trabajo. Esto degradaba el Smart Planner de "herramienta de
+  // balanceo activo" a "visor pasivo de lo ya agendado".
+  //
+  // AHORA: tomamos como base TODOS los técnicos asignables del sistema
+  // (getAssignableTechs, source-of-truth canónica). Si tienen 0% de carga
+  // se muestran igual — esa es la información que el COO necesita para
+  // decir "Manuel está libre toda la semana, dale 2 servicios".
+  //
+  // Compatibilidad: si un evento histórico tenía asignado a alguien que
+  // hoy ya no es asignable (cambió de rol/se eliminó), también lo
+  // mostramos para no romper la representación del trabajo agendado.
   var techIdsInRange = {};
+  // 6a) Sembrar con todos los técnicos asignables (aunque tengan 0 eventos)
+  try {
+    var assignables = await getAssignableTechs();
+    (assignables || []).forEach(function(u) {
+      techIdsInRange[u.id] = u.name;
+    });
+  } catch(_){}
+  // 6b) Agregar técnicos huérfanos: los que aparecen en eventos pero no
+  // están en la lista canónica (ex-empleados, roles cambiados). Plus el
+  // sentinel "__none__" para eventos sin asignar.
   events.forEach(function(e){
     var tid = e.technician_id || '__none__';
     if (!techIdsInRange[tid]) {
