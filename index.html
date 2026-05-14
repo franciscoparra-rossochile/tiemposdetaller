@@ -273,6 +273,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     <div class="tab" data-tab="b-catastro" onclick="bossTab('b-catastro')" id="tab-catastro" style="display:none">Catastro Vehículos</div>
     <div class="tab" data-tab="b-entregados" onclick="bossTab('b-entregados')" id="tab-entregados" style="display:none">Entregados</div>
     <div class="tab active" data-tab="b-online" onclick="bossTab('b-online')" id="tab-online">En curso<span class="ndot" id="boss-online-dot" title="Hay muchos servicios pausados"></span></div>
+    <div class="tab" data-tab="b-stock-ot" onclick="bossTab('b-stock-ot')" id="tab-stock-ot" style="display:none" title="OTs sin asignar">Stock OTs<span class="ndot" id="boss-stock-ot-dot" title="OTs sin asignar con +4h"></span></div>
     <div class="tab" data-tab="b-calendario" onclick="bossTab('b-calendario')" id="tab-calendario">Calendario</div>
     <div class="tab" data-tab="b-plan" onclick="bossTab('b-plan')" id="tab-plan">Planificacion</div>
     <div class="tab" data-tab="b-hist" onclick="bossTab('b-hist')" id="tab-hist">Historial</div>
@@ -5680,6 +5681,33 @@ async function fetchLive() {
     }
     return local;
   });
+  // FRENTE 7 FASE B FIX (2026-05-13): hidratar service_classification y ot_number
+  // desde work_orders. active_sessions NO trae estos campos en su esquema, lo cual
+  // rompia el render del boton "Pauta de inspeccion" en la lamina (no podia
+  // detectar si el servicio tenia pauta v2). Ahora se hace un fetch unico de los
+  // work_orders referenciados y se merge en liveData.
+  try {
+    var woIdsForJoin = Array.from(new Set(liveData.map(function(s){ return s.work_order_id; }).filter(Boolean)));
+    if (woIdsForJoin.length) {
+      var rw = await sb.from('work_orders')
+        .select('id, ot_number, service_classification, status')
+        .in('id', woIdsForJoin);
+      if (rw && !rw.error && Array.isArray(rw.data)) {
+        var woMap = {};
+        rw.data.forEach(function(w){ woMap[w.id] = w; });
+        liveData.forEach(function(s){
+          var w = woMap[s.work_order_id];
+          if (w) {
+            s.service_classification = w.service_classification;
+            s.ot_number = w.ot_number;
+            s.ot_status = w.status;
+          }
+        });
+      }
+    }
+  } catch(eJoin) {
+    logR('FETCH_LIVE_JOIN_WO_WARN', {msg: eJoin.message}, 'warn');
+  }
   // FASE 2.6: refrescar cache de totales por OT (best-effort, async sin bloquear)
   try {
     var woIds = liveData.map(function(s){ return s.work_order_id; }).filter(Boolean);
@@ -5696,6 +5724,13 @@ async function fetchLive() {
   // acumulan pausados, el dot rojo aparece en la pestaña 'En curso' como
   // recordatorio visual sin necesidad de cambiar de pantalla.
   try { if (typeof refreshPausedAlert === 'function') refreshPausedAlert(); } catch(_){}
+  // FRENTE 8 (2026-05-14): actualizar dot del tab Stock OTs. Cache 60s
+  // interno, no satura BD. Solo se ejecuta para jefatura/admin.
+  try {
+    if (CU && (CU.role === 'admin' || CU.role === 'jefatura') && typeof refreshStockOTOverdueCount === 'function') {
+      refreshStockOTOverdueCount();
+    }
+  } catch(_){}
   refreshLiveUI();
 }
 
@@ -5763,6 +5798,7 @@ function bossTab(t) {
   body.innerHTML = '';
   logR('BOSS_TAB', {tab: t});
   if (t === 'b-online') renderBossOnline();
+  else if (t === 'b-stock-ot') renderBossStockOT(body);
   else if (t === 'b-alertas') { document.getElementById('boss-ndot').classList.remove('show'); document.getElementById('boss-badge').style.display = 'none'; renderBossAlertas(body); }
   else if (t === 'b-calendario') renderBossCal(body);
   else if (t === 'b-plan') renderBossPlan(body);
@@ -5809,6 +5845,12 @@ function refreshBossTabsVisibility() {
   // cierre operativo y de seguridad (mayo 2026).
   var elCierreLocal = document.getElementById('tab-cierre-local');
   if (elCierreLocal) elCierreLocal.style.display = (CU.role === 'admin' || CU.role === 'jefatura') ? '' : 'none';
+  // FRENTE 8 (2026-05-14): Stock OTs sin asignar. Buzón visible solo para
+  // admin + jefatura. Contrapeso operacional al filtro restrictivo de Mis OTs:
+  // los técnicos ya no ven OTs sin asignar, así que jefatura DEBE tener un
+  // buzón explícito para que ninguna OT quede invisible para todos.
+  var elStockOT = document.getElementById('tab-stock-ot');
+  if (elStockOT) elStockOT.style.display = (CU.role === 'admin' || CU.role === 'jefatura') ? '' : 'none';
   // FASE 2.4.C-fix: pestaña Visado SOLO para visadores explícitos (no para admins por inheritance).
   var isVisador = !!(CU.permissions && CU.permissions.can_visar === true);
   var elBossVisado = document.getElementById('tab-boss-visado');
@@ -6374,43 +6416,30 @@ function renderTimerCard(body, sess) {
   }
 
   // FRENTE 7 FASE B (2026-05-13): boton "Pauta de inspeccion" cuando el servicio
-  // tiene pauta v2 disponible. Permite al tecnico ir completando la pauta DURANTE
-  // el servicio (no solo al finalizar). El indicador de % avance se actualiza
-  // en vivo desde el cache de la sesion.
-  if (sess.work_order_id && typeof hasPautaV2 === 'function') {
-    var srvKeyPauta = null;
-    // Buscar service_classification desde liveData (que viene de active_sessions joined con OT).
-    // Si no esta en cache, intentamos por sess.service_classification, sess.ot_service_classification,
-    // o como fallback dispararemos un fetch ligero. Pero lo mas comun es que ya este en el join.
-    srvKeyPauta = sess.service_classification || sess.ot_service_classification || sess.ot_service_key || null;
-    // Si no podemos resolver el service_classification desde la sesion, igual mostramos el boton
-    // si liveData lo trae bajo otro nombre. Como fallback ultimo, buscamos en _activeOT.
-    if (!srvKeyPauta && _activeOT && _activeOT.ot && _activeOT.ot.id === sess.work_order_id) {
-      srvKeyPauta = _activeOT.ot.service_classification;
-    }
-    if (srvKeyPauta && hasPautaV2(srvKeyPauta)) {
-      // Leer progreso desde cache: si existe pauta_v2 en el snapshot de la sesion (active_sessions
-      // puede tener un campo pauta_v2_pct sincronizado por savePautaV2Partial), usarlo.
-      // De lo contrario mostrar 0%.
-      var pautaPct = (typeof sess.pauta_v2_pct === 'number') ? sess.pauta_v2_pct : 0;
-      var pautaTotal = pautaCountItems(srvKeyPauta);
-      var pautaColor = pautaPct >= 95 ? 'var(--green)' : pautaPct >= 60 ? 'var(--gold)' : pautaPct > 0 ? 'var(--gold3)' : '#999';
-      var pautaBtn = mk('button','btn');
-      pautaBtn.style.cssText = 'margin-bottom:8px;font-size:13px;padding:12px;background:#fff;border:2px solid ' + pautaColor + ';color:#111;font-weight:700;display:flex;align-items:center;justify-content:space-between;gap:10px';
-      pautaBtn.innerHTML =
-          '<span style="display:flex;align-items:center;gap:8px">'
-        +   '<span style="font-size:16px">📋</span>'
-        +   '<span>Pauta de inspección</span>'
-        + '</span>'
-        + '<span style="display:flex;align-items:center;gap:6px">'
-        +   '<span style="font-size:11px;color:var(--wh3);font-weight:600">' + pautaPct + '%</span>'
-        +   '<span style="background:' + pautaColor + ';color:#fff;font-size:10px;font-weight:800;padding:2px 7px;border-radius:10px;font-family:var(--mono)">' + (pautaTotal ? Math.round(pautaPct * pautaTotal / 100) + '/' + pautaTotal : '—') + '</span>'
-        + '</span>';
-      pautaBtn.onclick = function() {
-        openPautaV2DuringService(sess.work_order_id, sess.session_key);
-      };
-      body.appendChild(pautaBtn);
-    }
+  // tiene pauta v2 disponible. service_classification se hidrata en fetchLive()
+  // desde el JOIN con work_orders. El indicador de % avance se actualiza en vivo
+  // desde el cache active_sessions.pauta_v2_pct.
+  if (sess.work_order_id && sess.service_classification && typeof hasPautaV2 === 'function' && hasPautaV2(sess.service_classification)) {
+    var srvKeyPauta = sess.service_classification;
+    // Leer progreso desde cache: si existe pauta_v2_pct en la sesion, usarlo.
+    var pautaPct = (typeof sess.pauta_v2_pct === 'number') ? sess.pauta_v2_pct : 0;
+    var pautaTotal = pautaCountItems(srvKeyPauta);
+    var pautaColor = pautaPct >= 95 ? 'var(--green)' : pautaPct >= 60 ? 'var(--gold)' : pautaPct > 0 ? 'var(--gold3)' : '#999';
+    var pautaBtn = mk('button','btn');
+    pautaBtn.style.cssText = 'margin-bottom:8px;font-size:13px;padding:12px;background:#fff;border:2px solid ' + pautaColor + ';color:#111;font-weight:700;display:flex;align-items:center;justify-content:space-between;gap:10px';
+    pautaBtn.innerHTML =
+        '<span style="display:flex;align-items:center;gap:8px">'
+      +   '<span style="font-size:16px">📋</span>'
+      +   '<span>Pauta de inspección</span>'
+      + '</span>'
+      + '<span style="display:flex;align-items:center;gap:6px">'
+      +   '<span style="font-size:11px;color:var(--wh3);font-weight:600">' + pautaPct + '%</span>'
+      +   '<span style="background:' + pautaColor + ';color:#fff;font-size:10px;font-weight:800;padding:2px 7px;border-radius:10px;font-family:var(--mono)">' + (pautaTotal ? Math.round(pautaPct * pautaTotal / 100) + '/' + pautaTotal : '—') + '</span>'
+      + '</span>';
+    pautaBtn.onclick = function() {
+      openPautaV2DuringService(sess.work_order_id, sess.session_key);
+    };
+    body.appendChild(pautaBtn);
   }
 
   // FASE 4.0: botón rápido "+ Hallazgo" — solo si la sesión está vinculada a una OT
@@ -7568,6 +7597,23 @@ function buildMisServCard(s, status) {
   // Desglose por día (solo si la sesión cruzó al menos un día)
   h += renderDailyBreakdownHTML(s);
 
+  // FRENTE 7 FASE B (2026-05-13): boton Pauta de inspeccion para servicios con
+  // pauta v2 disponible. Visible en running/paused (no en checklist_pending donde
+  // el flujo de cierre toma otro camino). service_classification se hidrata en
+  // fetchLive() desde el JOIN con work_orders.
+  if (s.work_order_id && s.service_classification && typeof hasPautaV2 === 'function'
+      && hasPautaV2(s.service_classification) && (isRunning || isPaused)) {
+    var pctMis = (typeof s.pauta_v2_pct === 'number') ? s.pauta_v2_pct : 0;
+    var totalMis = pautaCountItems(s.service_classification);
+    var colorMis = pctMis >= 95 ? 'var(--green)' : pctMis >= 60 ? 'var(--gold)' : pctMis > 0 ? 'var(--gold3)' : '#999';
+    h += '<button class="btn" style="margin-bottom:8px;width:100%;font-size:12px;padding:10px;background:#fff;border:2px solid ' + colorMis + ';color:#111;font-weight:700;display:flex;align-items:center;justify-content:space-between;gap:8px" '
+      + 'onclick="openPautaV2DuringService(\'' + escapeHtml(s.work_order_id) + '\',\'' + s.session_key + '\')">'
+      + '<span style="display:flex;align-items:center;gap:6px"><span>📋</span><span>Pauta de inspección</span></span>'
+      + '<span style="display:flex;align-items:center;gap:6px"><span style="font-size:10px;color:var(--wh3);font-weight:600">' + pctMis + '%</span>'
+      + '<span style="background:' + colorMis + ';color:#fff;font-size:10px;font-weight:800;padding:2px 6px;border-radius:9px;font-family:var(--mono)">' + (totalMis ? Math.round(pctMis * totalMis / 100) + '/' + totalMis : '—') + '</span></span>'
+      + '</button>';
+  }
+
   // Action buttons
   h += '<div style="display:flex;gap:6px;flex-wrap:wrap">';
 
@@ -7918,6 +7964,343 @@ async function refreshVisadoOverdueCount(opts) {
   }
 }
 window.refreshVisadoOverdueCount = refreshVisadoOverdueCount;
+
+// ═══════════════════════════════════════════════════════════════════
+// FRENTE 8 (2026-05-14): STOCK OTs SIN ASIGNAR
+// ═══════════════════════════════════════════════════════════════════
+// Buzón de OTs huérfanas (assigned_user_id IS NULL) para jefatura/admin.
+// Contrapeso al filtro restrictivo de Mis OTs (FRENTE 6, 2026-05-13):
+// los técnicos ya solo ven sus OTs asignadas, así que sin esta vista
+// las OTs sin asignar quedaban INVISIBLES para todos hasta que el
+// cliente reclamaba. Esta vista cierra ese agujero de gobernanza.
+//
+// UX: cards con asignación inline (1 click), filtros por servicio y
+// antigüedad, dot rojo en el tab cuando hay OTs >4h sin asignar.
+// ═══════════════════════════════════════════════════════════════════
+
+// Cache local de la última lista cargada (para re-render con filtros sin requery)
+var _stockOTCache = [];
+var _stockOTTechsCache = []; // técnicos asignables ({id, name, username, role, can_tech})
+var _stockOTFilter = {service: 'all', age: 'all'};
+var _stockOTOverdueCount = 0;
+var _stockOTOverdueLastFetch = 0;
+var _stockOTOverdueAgeThresholdH = 4; // OT > 4h sin asignar → dot rojo en tab
+
+// Refresca el count de OTs vencidas (sin asignar y > umbral). Cache 60s.
+// Se llama sin bloquear desde refreshBossOnline / fetchLive para mantener el dot.
+async function refreshStockOTOverdueCount(opts) {
+  opts = opts || {};
+  var maxAgeMs = opts.force ? 0 : 60000;
+  if (Date.now() - _stockOTOverdueLastFetch < maxAgeMs) return _stockOTOverdueCount;
+  _stockOTOverdueLastFetch = Date.now();
+  try {
+    if (!sb) return 0;
+    var r = await sb.from('work_orders')
+      .select('id, created_at')
+      .is('assigned_user_id', null)
+      .in('status', ['open', 'assigned', 'in_progress'])
+      .limit(300);
+    if (r && r.error) {
+      logR('STOCK_OT_OVERDUE_FETCH_ERR', {msg: r.error.message}, 'warn');
+      return _stockOTOverdueCount;
+    }
+    var nowMs = Date.now();
+    var thresholdMs = _stockOTOverdueAgeThresholdH * 3600 * 1000;
+    var overdue = 0;
+    (r && r.data || []).forEach(function(o) {
+      if (!o.created_at) return;
+      var ageMs = nowMs - new Date(o.created_at).getTime();
+      if (ageMs > thresholdMs) overdue++;
+    });
+    _stockOTOverdueCount = overdue;
+    // Actualizar dot en el tab
+    var dot = document.getElementById('boss-stock-ot-dot');
+    if (dot) {
+      if (overdue > 0) dot.classList.add('show');
+      else dot.classList.remove('show');
+    }
+    logR('STOCK_OT_OVERDUE_REFRESH', {overdue: overdue});
+    return overdue;
+  } catch(e) {
+    logR('STOCK_OT_OVERDUE_THREW', {msg: e.message}, 'warn');
+    return _stockOTOverdueCount;
+  }
+}
+window.refreshStockOTOverdueCount = refreshStockOTOverdueCount;
+
+// Render principal del módulo.
+async function renderBossStockOT(body) {
+  if (!body) body = document.getElementById('boss-body');
+  if (!body) return;
+  body.innerHTML = '<div class="card-accent">'
+    + '<div style="font-size:13px;font-weight:700;color:#111;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">Stock de OTs sin asignar</div>'
+    + '<div style="font-size:11px;color:var(--wh3);margin-bottom:10px;line-height:1.4">Órdenes de trabajo abiertas sin técnico designado. Asígnalas para que aparezcan en la vista "Mis OTs" del técnico correspondiente.</div>'
+    + '<div id="stock-ot-filters" style="margin-bottom:10px"></div>'
+    + '<div id="stock-ot-meta" style="font-size:11px;color:var(--wh3);margin-bottom:8px;font-family:var(--mono)">Cargando...</div>'
+    + '<div id="stock-ot-list"></div>'
+    + '</div>';
+  await loadStockOTs();
+}
+window.renderBossStockOT = renderBossStockOT;
+
+// Carga datos: OTs sin asignar + técnicos disponibles (paralelo)
+async function loadStockOTs() {
+  var meta = document.getElementById('stock-ot-meta');
+  var list = document.getElementById('stock-ot-list');
+  if (!meta || !list || !sb) return;
+  try {
+    // Paralelo: OTs sin asignar + lista de técnicos
+    var rOT = sb.from('work_orders')
+      .select('*')
+      .is('assigned_user_id', null)
+      .in('status', ['open', 'assigned', 'in_progress'])
+      .order('created_at', {ascending: true})
+      .limit(200);
+    var rTechs = sb.from('users')
+      .select('id, name, username, role, can_tech')
+      .in('role', ['tech', 'jefatura', 'admin'])
+      .order('name');
+
+    var results = await Promise.all([rOT, rTechs]);
+    var resOT = results[0], resTechs = results[1];
+
+    if (resOT.error) { meta.textContent = 'Error cargando OTs: ' + resOT.error.message; return; }
+    if (resTechs.error) { logR('STOCK_OT_TECHS_ERR', {msg: resTechs.error.message}, 'warn'); }
+
+    var ots = resOT.data || [];
+    // Filtrar técnicos: solo los que pueden ejecutar (role=tech O can_tech=true)
+    _stockOTTechsCache = (resTechs.data || []).filter(function(u) {
+      return u.role === 'tech' || u.can_tech === true;
+    });
+
+    if (ots.length === 0) {
+      meta.textContent = '✓ Sin OTs pendientes de asignar';
+      list.innerHTML = '<div class="empty" style="padding:24px;text-align:center;color:var(--wh4);line-height:1.5">Todas las OTs activas tienen técnico asignado.<br/><span style="font-size:10px;color:var(--wh4)">Las nuevas OTs ingresadas aparecerán aquí automáticamente.</span></div>';
+      _stockOTCache = [];
+      return;
+    }
+
+    // Hidratar vehículos y clientes en batch
+    var vehIds = Array.from(new Set(ots.map(function(o){return o.vehicle_id;}).filter(Boolean)));
+    var cliIds = Array.from(new Set(ots.map(function(o){return o.client_id;}).filter(Boolean)));
+    var vehs = {}, clis = {};
+    if (vehIds.length) {
+      var rv = await sb.from('client_vehicles').select('*').in('id', vehIds);
+      (rv.data || []).forEach(function(v){ vehs[v.id] = v; });
+    }
+    if (cliIds.length) {
+      var rc = await sb.from('clients').select('id, name, rut, phone').in('id', cliIds);
+      (rc.data || []).forEach(function(c){ clis[c.id] = c; });
+    }
+    _stockOTCache = ots.map(function(o){
+      return {ot: o, vehicle: vehs[o.vehicle_id] || null, client: clis[o.client_id] || null};
+    });
+    renderStockOTFilters();
+    renderStockOTList();
+  } catch(e) {
+    meta.textContent = 'Error: ' + e.message;
+    logR('STOCK_OT_LOAD_THREW', {msg: e.message}, 'err');
+  }
+}
+window.loadStockOTs = loadStockOTs;
+
+// Construye y renderiza los filtros (servicio + antigüedad) basados en el cache actual
+function renderStockOTFilters() {
+  var box = document.getElementById('stock-ot-filters');
+  if (!box) return;
+
+  // Set de servicios presentes en el cache para evitar mostrar chips inútiles
+  var presentServices = {};
+  _stockOTCache.forEach(function(r) {
+    if (r.ot.service_classification) presentServices[r.ot.service_classification] = true;
+  });
+  var presentList = Object.keys(presentServices);
+
+  function svcLabel(key) {
+    var s = SERVICES_INGRESO.find(function(x){return x.key === key;});
+    return s ? s.label : key;
+  }
+
+  // Chip de servicio
+  var svcChipsHTML = '<button type="button" class="sel-btn' + (_stockOTFilter.service === 'all' ? ' on' : '') + '" '
+    + 'onclick="setStockOTFilter(\'service\', \'all\')" style="font-size:11px;padding:4px 10px;margin:2px">Todos</button>';
+  presentList.sort().forEach(function(key) {
+    svcChipsHTML += '<button type="button" class="sel-btn' + (_stockOTFilter.service === key ? ' on' : '') + '" '
+      + 'onclick="setStockOTFilter(\'service\', \'' + key + '\')" style="font-size:11px;padding:4px 10px;margin:2px">'
+      + escapeHtml(svcLabel(key)) + '</button>';
+  });
+
+  // Chip de antigüedad
+  var ageChipsHTML = '';
+  [['all','Todas'],['hoy','Hoy'],['gt4h','+4h'],['gt24h','+24h']].forEach(function(a) {
+    ageChipsHTML += '<button type="button" class="sel-btn' + (_stockOTFilter.age === a[0] ? ' on' : '') + '" '
+      + 'onclick="setStockOTFilter(\'age\', \'' + a[0] + '\')" style="font-size:11px;padding:4px 10px;margin:2px">'
+      + a[1] + '</button>';
+  });
+
+  box.innerHTML = '<div style="font-size:10px;color:var(--wh3);text-transform:uppercase;letter-spacing:.04em;font-weight:700;margin-bottom:4px">Servicio</div>'
+    + '<div style="display:flex;flex-wrap:wrap;gap:2px;margin-bottom:8px">' + svcChipsHTML + '</div>'
+    + '<div style="font-size:10px;color:var(--wh3);text-transform:uppercase;letter-spacing:.04em;font-weight:700;margin-bottom:4px">Antigüedad</div>'
+    + '<div style="display:flex;flex-wrap:wrap;gap:2px">' + ageChipsHTML + '</div>';
+}
+
+function setStockOTFilter(dim, value) {
+  if (dim === 'service') _stockOTFilter.service = value;
+  else if (dim === 'age') _stockOTFilter.age = value;
+  renderStockOTFilters();
+  renderStockOTList();
+}
+window.setStockOTFilter = setStockOTFilter;
+
+// Renderiza la lista filtrada
+function renderStockOTList() {
+  var meta = document.getElementById('stock-ot-meta');
+  var list = document.getElementById('stock-ot-list');
+  if (!meta || !list) return;
+
+  var nowMs = Date.now();
+  var rows = _stockOTCache.filter(function(r) {
+    var o = r.ot;
+    // Filtro servicio
+    if (_stockOTFilter.service !== 'all' && o.service_classification !== _stockOTFilter.service) return false;
+    // Filtro antigüedad
+    if (_stockOTFilter.age !== 'all' && o.created_at) {
+      var ageH = (nowMs - new Date(o.created_at).getTime()) / 3600000;
+      if (_stockOTFilter.age === 'hoy' && ageH > 24) return false;
+      if (_stockOTFilter.age === 'gt4h' && ageH < 4) return false;
+      if (_stockOTFilter.age === 'gt24h' && ageH < 24) return false;
+    }
+    return true;
+  });
+
+  // Stats para meta
+  var totalOTs = _stockOTCache.length;
+  var overdue4h = _stockOTCache.filter(function(r){
+    if (!r.ot.created_at) return false;
+    return (nowMs - new Date(r.ot.created_at).getTime()) > 4 * 3600000;
+  }).length;
+  var metaTxt = totalOTs + ' OT' + (totalOTs === 1 ? '' : 's') + ' sin asignar';
+  if (overdue4h > 0) metaTxt += ' · ' + overdue4h + ' con +4h pendiente' + (overdue4h === 1 ? '' : 's');
+  if (rows.length !== totalOTs) metaTxt += ' · ' + rows.length + ' visible' + (rows.length === 1 ? '' : 's') + ' tras filtros';
+  meta.textContent = metaTxt;
+
+  if (rows.length === 0) {
+    list.innerHTML = '<div class="empty" style="padding:20px;text-align:center;color:var(--wh4);font-size:11px">Sin resultados con los filtros actuales.</div>';
+    return;
+  }
+
+  list.innerHTML = rows.map(stockOTRowHTML).join('');
+}
+
+function stockOTRowHTML(r) {
+  var o = r.ot, v = r.vehicle, c = r.client;
+  var pv = v ? validatePlate(v.plate || '') : {valid: false, formatted: ''};
+  var plate = pv.valid ? pv.formatted : (v && v.plate || 'sin patente');
+  var srv = SERVICES_INGRESO.find(function(x){return x.key === o.service_classification;});
+  var srvLabel = srv ? srv.label : (o.service_classification || '?');
+
+  // Antigüedad y color de urgencia
+  var nowMs = Date.now();
+  var ageH = o.created_at ? (nowMs - new Date(o.created_at).getTime()) / 3600000 : 0;
+  var ageLbl, ageColor;
+  if (ageH < 1) { ageLbl = Math.max(1, Math.round(ageH * 60)) + ' min'; ageColor = 'var(--wh3)'; }
+  else if (ageH < 4) { ageLbl = Math.round(ageH * 10) / 10 + ' h'; ageColor = 'var(--wh3)'; }
+  else if (ageH < 24) { ageLbl = Math.round(ageH) + ' h'; ageColor = 'var(--gold)'; }
+  else { ageLbl = Math.round(ageH / 24) + ' día' + (Math.round(ageH/24) === 1 ? '' : 's'); ageColor = 'var(--red)'; }
+
+  // Borde izquierdo según urgencia
+  var leftBorder = ageH > 24 ? 'var(--red)' : (ageH > 4 ? 'var(--gold)' : 'var(--blue)');
+
+  // Dropdown inline de técnicos
+  var techOpts = '<option value="">— Asignar técnico —</option>'
+    + _stockOTTechsCache.map(function(u) {
+        var roleLbl = u.role === 'tech' ? '' : (u.role === 'admin' ? ' (admin)' : ' (jefatura)');
+        return '<option value="' + escapeHtml(u.id) + '">' + escapeHtml(u.name || u.username) + roleLbl + '</option>';
+      }).join('');
+
+  return '<div style="background:#fff;border:1px solid var(--border);border-left:3px solid ' + leftBorder + ';border-radius:3px;padding:10px;margin-bottom:6px">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:4px">'
+    +   '<div style="font-size:13px;font-weight:700;font-family:\'Rajdhani\',sans-serif">OT-' + escapeHtml(String(o.ot_number || '?')) + ' · ' + escapeHtml(srvLabel) + '</div>'
+    +   '<div style="font-size:10px;font-weight:700;font-family:var(--mono);color:' + ageColor + ';white-space:nowrap">⏱ ' + ageLbl + '</div>'
+    + '</div>'
+    + (o.service_subtype ? '<div style="font-size:11px;color:var(--wh2);margin-bottom:2px">' + escapeHtml(o.service_subtype) + '</div>' : '')
+    + '<div style="font-size:11px;color:var(--wh3);margin-bottom:4px">' + (v ? escapeHtml(v.brand || '') + ' ' + escapeHtml(v.model || '') + ' · ' + escapeHtml(plate) : 'vehículo desconocido') + '</div>'
+    + (c ? '<div style="font-size:10px;color:var(--wh4);font-family:var(--mono);margin-bottom:6px">' + escapeHtml(c.name) + ' · ' + escapeHtml(c.phone || '') + '</div>' : '')
+    + '<div style="display:flex;gap:6px;align-items:center;margin-top:6px">'
+    +   '<select id="stock-ot-tech-' + escapeHtml(o.id) + '" '
+    +     'style="flex:1;min-height:34px;padding:4px 8px;border:1px solid var(--border);border-radius:3px;background:#fff;font-size:12px;font-family:inherit">'
+    +     techOpts
+    +   '</select>'
+    +   '<button class="btn btn-red" style="font-size:11px;padding:6px 12px;min-height:34px" '
+    +     'onclick="assignStockOTInline(\'' + escapeHtml(o.id) + '\')">Asignar</button>'
+    + '</div>'
+    + '</div>';
+}
+
+// Asigna una OT al técnico seleccionado en el dropdown inline.
+// Optimistic UI: quita la card del listado al instante; si falla, recarga.
+async function assignStockOTInline(otId) {
+  if (!CU) { showGlobalError('Sesión no iniciada', 4000); return; }
+  if (CU.role !== 'admin' && CU.role !== 'jefatura') {
+    showGlobalError('Solo jefatura o admin puede asignar OTs', 4000);
+    return;
+  }
+  var sel = document.getElementById('stock-ot-tech-' + otId);
+  if (!sel) return;
+  var userId = sel.value;
+  if (!userId) {
+    showGlobalError('Selecciona un técnico antes de asignar', 3000);
+    return;
+  }
+  var tech = _stockOTTechsCache.find(function(u){return u.id === userId;});
+  var techName = tech ? (tech.name || tech.username) : 'técnico';
+  var rowEntry = _stockOTCache.find(function(r){return r.ot.id === otId;});
+  var otNumber = rowEntry ? rowEntry.ot.ot_number : '?';
+
+  // Confirmación (1 click es Apple, pero asignar es un cambio operacional real)
+  if (!confirm('Asignar OT-' + otNumber + ' a ' + techName + '?')) return;
+
+  try {
+    var r = await sb.from('work_orders').update({
+      assigned_user_id: userId,
+      // Si la OT está en open, subirla a assigned para reflejar que ya tiene dueño
+      status: (rowEntry && rowEntry.ot.status === 'open') ? 'assigned' : (rowEntry ? rowEntry.ot.status : 'assigned'),
+      updated_at: new Date().toISOString(),
+      updated_by: CU.id
+    }).eq('id', otId);
+
+    if (r && r.error) {
+      showGlobalError('Error al asignar: ' + r.error.message, 5000);
+      logR('STOCK_OT_ASSIGN_ERR', {ot: otNumber, msg: r.error.message}, 'err');
+      return;
+    }
+
+    logR('STOCK_OT_ASSIGN_OK', {ot: otNumber, tech: techName, tech_id: userId, by: CU.username});
+
+    // Notificar al técnico asignado (best-effort, no bloquea si falla)
+    try {
+      await sb.from('notifications').insert({
+        type: 'ot_assigned',
+        title: 'Nueva OT asignada',
+        sub: 'OT-' + otNumber + ' · ' + (rowEntry && rowEntry.ot.service_classification ? (SERVICES_INGRESO.find(function(x){return x.key === rowEntry.ot.service_classification;}) || {}).label || '' : ''),
+        target_user_id: userId,
+        work_order_id: otId
+      });
+    } catch(_) {}
+
+    showGlobalError('✓ OT-' + otNumber + ' asignada a ' + techName, 4000);
+
+    // Quitar del cache local y re-render (optimistic, sin requery)
+    _stockOTCache = _stockOTCache.filter(function(x){return x.ot.id !== otId;});
+    renderStockOTList();
+    // Forzar refresh del overdue count + dot
+    refreshStockOTOverdueCount({force: true});
+  } catch(e) {
+    showGlobalError('Error inesperado: ' + e.message, 5000);
+    logR('STOCK_OT_ASSIGN_THREW', {msg: e.message}, 'err');
+  }
+}
+window.assignStockOTInline = assignStockOTInline;
 
 function renderBossOnline() {
   var body = document.getElementById('boss-body');
@@ -13952,7 +14335,7 @@ async function renderTechMisOTs(body) {
   if (!CU) { body.innerHTML = ''; return; }
   body.innerHTML = '<div class="card-accent">'
     + '<div style="font-size:13px;font-weight:700;color:#111;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">Mis Órdenes de Trabajo</div>'
-    + '<div style="font-size:11px;color:var(--wh3);margin-bottom:10px;line-height:1.4">OTs asignadas a ti y OTs abiertas sin técnico que puedes tomar. Toca una para ver los detalles, llenar el checklist técnico y registrar el doble control de cierre.</div>'
+    + '<div style="font-size:11px;color:var(--wh3);margin-bottom:10px;line-height:1.4">OTs asignadas a ti. Toca una para ver los detalles, llenar el checklist técnico y registrar el doble control de cierre.</div>'
     + '<div id="myot-meta" style="font-size:11px;color:var(--wh3);margin-bottom:8px;font-family:var(--mono)">Cargando...</div>'
     + '<div id="myot-list"></div>'
     + '</div>';
@@ -13964,18 +14347,21 @@ async function loadMyOTs() {
   var list = document.getElementById('myot-list');
   if (!meta || !list || !sb || !CU) return;
   try {
-    // Trae OTs asignadas a mí O sin asignar, que NO estén cerradas/canceladas
+    // POLITICA 2026-05-13: el tecnico SOLO ve OTs asignadas a el. Las OTs sin asignar
+    // las gestiona jefatura/admin desde otra vista (Smart Planner) y se asignan
+    // antes de quedar visibles al tecnico. Esto evita que dos tecnicos abran la
+    // misma OT en simultaneo y que datos crucen entre tecnicos sin intencion.
     var rOT = await sb.from('work_orders')
       .select('*')
-      .or('assigned_user_id.eq.' + CU.id + ',assigned_user_id.is.null')
+      .eq('assigned_user_id', CU.id)
       .in('status', ['open','assigned','in_progress','pending_double_check','pending_visado'])
       .order('created_at', {ascending: false})
       .limit(200);
     if (rOT.error) { meta.textContent = 'Error: ' + rOT.error.message; return; }
     var ots = rOT.data || [];
     if (ots.length === 0) {
-      meta.textContent = '0 OTs activas';
-      list.innerHTML = '<div class="empty" style="padding:24px;text-align:center;color:var(--wh4);line-height:1.5">No tienes OTs asignadas ni hay OTs abiertas sin técnico.</div>';
+      meta.textContent = '0 OTs asignadas';
+      list.innerHTML = '<div class="empty" style="padding:24px;text-align:center;color:var(--wh4);line-height:1.5">No tienes OTs asignadas. Tu jefe o administrador debe asignarte las próximas órdenes de trabajo.</div>';
       return;
     }
     // Cargar vehículos y clientes
@@ -14004,9 +14390,11 @@ function renderMyOTsList() {
   var list = document.getElementById('myot-list');
   if (!meta || !list) return;
   var rows = _myOTsCache;
+  // POLITICA 2026-05-13: ya solo llegan OTs asignadas. La seccion "sin asignar"
+  // del legacy queda en codigo por compat pero estara siempre vacia.
   var assignedToMe = rows.filter(function(r){return r.ot.assigned_user_id === CU.id;});
   var unassigned   = rows.filter(function(r){return !r.ot.assigned_user_id;});
-  meta.textContent = assignedToMe.length + ' asignadas a ti · ' + unassigned.length + ' sin asignar';
+  meta.textContent = assignedToMe.length + ' OT' + (assignedToMe.length === 1 ? '' : 's') + ' asignada' + (assignedToMe.length === 1 ? '' : 's') + ' a ti';
 
   function statusBadge(s) {
     var color = s === 'closed' ? 'var(--green)' :
