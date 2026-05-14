@@ -3668,6 +3668,85 @@ async function refreshAvatarsCache() {
   } catch(e) { logR('AVATARS_CACHE_ERR', {msg: e.message}, 'warn'); }
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// FRENTE 9 (2026-05-14): SOURCE OF TRUTH PARA TÉCNICOS ASIGNABLES
+// ═══════════════════════════════════════════════════════════════════
+// Problema histórico: cada módulo (Smart Planner, Stock OTs, Reportes,
+// Asignar manual) tenía su propio criterio para decidir qué usuarios
+// pueden recibir trabajo. Ej: loadEvTechs (Smart Planner) tenía un
+// hardcode con usernames específicos ('oscar.bueno', 'nicolas.cisternas')
+// que dejaba fuera a Moisés, Manuel, Cristóbal, Jack, Benjamín, José.
+//
+// Definición canónica: "técnico asignable" = usuario con role='tech'
+// O con can_tech=true (jefatura/admin que también ejecutan trabajo).
+// Es el mismo criterio que ya usa el Dashboard (línea ~18793) para
+// el KPI tech_capable.
+//
+// Cache 5 min en memoria. Se invalida automáticamente desde
+// saveUser/deleteUser (ver invalidateAssignableTechsCache).
+// ═══════════════════════════════════════════════════════════════════
+var _assignableTechsCache = null;
+var _assignableTechsCacheAt = 0;
+var _ASSIGNABLE_TECHS_TTL_MS = 5 * 60 * 1000; // 5 min
+
+function invalidateAssignableTechsCache() {
+  _assignableTechsCache = null;
+  _assignableTechsCacheAt = 0;
+  logR('ASSIGNABLE_TECHS_CACHE_INVALIDATED');
+}
+window.invalidateAssignableTechsCache = invalidateAssignableTechsCache;
+
+// Devuelve la lista canónica de técnicos asignables ordenada alfabéticamente.
+// opts.force: bypassa el cache (fuerza fetch)
+// opts.includeId: si se pasa, garantiza que ese user_id esté en la lista
+//   (útil para edición — mantiene visible un técnico ya asignado aunque
+//   su perfil haya cambiado a no-asignable).
+// Devuelve: array de {id, name, username, role, can_tech} o [] en error.
+async function getAssignableTechs(opts) {
+  opts = opts || {};
+  var now = Date.now();
+  var fresh = _assignableTechsCache && (now - _assignableTechsCacheAt) < _ASSIGNABLE_TECHS_TTL_MS;
+
+  if (!fresh || opts.force) {
+    try {
+      var r = await sb.from('users')
+        .select('id, name, username, role, can_tech')
+        .in('role', ['tech', 'jefatura', 'admin'])
+        .order('name');
+      if (r && r.error) {
+        logR('ASSIGNABLE_TECHS_FETCH_ERR', {msg: r.error.message}, 'warn');
+        // Si hay caché viejo, devolverlo (degradación graceful) antes que array vacío
+        if (_assignableTechsCache) return _filterAssignableTechs(_assignableTechsCache, opts.includeId);
+        return [];
+      }
+      var all = (r && r.data) || [];
+      _assignableTechsCache = all;
+      _assignableTechsCacheAt = now;
+      logR('ASSIGNABLE_TECHS_CACHED', {total_users: all.length});
+    } catch(e) {
+      logR('ASSIGNABLE_TECHS_THREW', {msg: e.message}, 'warn');
+      if (_assignableTechsCache) return _filterAssignableTechs(_assignableTechsCache, opts.includeId);
+      return [];
+    }
+  }
+
+  return _filterAssignableTechs(_assignableTechsCache || [], opts.includeId);
+}
+window.getAssignableTechs = getAssignableTechs;
+
+// Filtro canónico: role='tech' O can_tech=true. Si includeId está seteado,
+// preserva ese usuario aunque no cumpla el criterio (para no romper edición
+// de eventos legacy con técnicos que cambiaron de rol).
+function _filterAssignableTechs(allUsers, includeId) {
+  return allUsers.filter(function(u) {
+    if (u.role === 'tech') return true;
+    if (u.can_tech === true) return true;
+    if (includeId && u.id === includeId) return true;
+    return false;
+  });
+}
+
+
 // Helper: buscar info de avatar por user_id (para scheduled_services y similares)
 function avatarHTMLById(name, userId, size, extraClass) {
   var info = userId ? AVATARS_BY_ID[userId] : null;
@@ -8049,29 +8128,24 @@ async function loadStockOTs() {
   var list = document.getElementById('stock-ot-list');
   if (!meta || !list || !sb) return;
   try {
-    // Paralelo: OTs sin asignar + lista de técnicos
+    // Paralelo: OTs sin asignar + lista canónica de técnicos asignables.
+    // FRENTE 9 (2026-05-14): los técnicos vienen de getAssignableTechs()
+    // (cache 5 min) para evitar query redundante y mantener un solo
+    // criterio en todo el sistema.
     var rOT = sb.from('work_orders')
       .select('*')
       .is('assigned_user_id', null)
       .in('status', ['open', 'assigned', 'in_progress'])
       .order('created_at', {ascending: true})
       .limit(200);
-    var rTechs = sb.from('users')
-      .select('id, name, username, role, can_tech')
-      .in('role', ['tech', 'jefatura', 'admin'])
-      .order('name');
 
-    var results = await Promise.all([rOT, rTechs]);
-    var resOT = results[0], resTechs = results[1];
+    var results = await Promise.all([rOT, getAssignableTechs()]);
+    var resOT = results[0];
+    _stockOTTechsCache = results[1] || [];
 
     if (resOT.error) { meta.textContent = 'Error cargando OTs: ' + resOT.error.message; return; }
-    if (resTechs.error) { logR('STOCK_OT_TECHS_ERR', {msg: resTechs.error.message}, 'warn'); }
 
     var ots = resOT.data || [];
-    // Filtrar técnicos: solo los que pueden ejecutar (role=tech O can_tech=true)
-    _stockOTTechsCache = (resTechs.data || []).filter(function(u) {
-      return u.role === 'tech' || u.can_tech === true;
-    });
 
     if (ots.length === 0) {
       meta.textContent = '✓ Sin OTs pendientes de asignar';
@@ -12595,6 +12669,10 @@ async function saveUser() {
   if (error) { err.textContent = error.code==='23505' ? 'El usuario ya existe: ' + username : 'Error: ' + error.message; err.style.display='block'; return; }
   // Refrescar cache de avatares para que los cambios aparezcan en En Curso, Historial, etc.
   await refreshAvatarsCache();
+  // FRENTE 9 (2026-05-14): invalidar caché de técnicos asignables —
+  // si el admin cambió el role o el can_tech de un usuario, los dropdowns
+  // de asignación deben reflejarlo en la próxima apertura.
+  invalidateAssignableTechsCache();
   closeModal('m-create-user');
   // Si el modal de Configuración está abierto en pestaña Usuarios, refrescar su lista
   if (document.getElementById('m-config').style.display !== 'none' && _curConfigTab === 'usuarios') {
@@ -12619,6 +12697,8 @@ async function _doDeleteUser() {
     return;
   }
   await refreshAvatarsCache();
+  // FRENTE 9 (2026-05-14): invalidar caché de técnicos asignables.
+  invalidateAssignableTechsCache();
   closeModal('m-create-user');
   if (document.getElementById('m-config').style.display !== 'none' && _curConfigTab === 'usuarios') {
     renderConfigUsuarios(document.getElementById('m-cfg-body'));
@@ -19851,17 +19931,19 @@ function onEventServiceChange() {
 }
 
 async function loadEvTechs(selectedId) {
-  var {data} = await sb.from('users').select('id,name,role,username').order('name');
+  // FRENTE 9 (2026-05-14): usar source-of-truth canónica.
+  // ANTES: filtro hardcoded con usernames específicos ('oscar.bueno',
+  // 'nicolas.cisternas') que dejaba fuera a cualquier jefatura/admin con
+  // can_tech=true que no fuera esos dos exactos. Esto generaba un bug
+  // operacional: al ingresar nuevos técnicos como jefatura híbrida
+  // (Moisés, Manuel, Cristóbal, Jack), no aparecían en el dropdown de
+  // asignación pese a tener can_tech=true en BD.
+  // AHORA: getAssignableTechs() centraliza el criterio: role='tech' O
+  // can_tech=true. selectedId se preserva siempre (para no romper edición
+  // de eventos antiguos).
+  var allowed = await getAssignableTechs({includeId: selectedId});
   var sel = document.getElementById('m-ev-tech');
   sel.innerHTML = '<option value="">Sin asignar</option>';
-  // FASE 2.4.C-fix: dropdown solo muestra técnicos + Oscar Bueno + Nicolás Cisternas.
-  // (Otros usuarios no aparecen aunque sean jefatura/admin.) Si el evento ya tenía
-  // asignado a otra persona, igual la dejamos visible para no romper la edición.
-  var allowed = (data || []).filter(function(u) {
-    return u.role === 'tech'
-        || (u.username && (u.username === 'oscar.bueno' || u.username === 'nicolas.cisternas'))
-        || (selectedId && u.id === selectedId); // mantener seleccionado aunque no matchee
-  });
   allowed.forEach(function(u) {
     var opt = document.createElement('option');
     opt.value = u.id; opt.textContent = u.name + ' (' + u.role + ')';
