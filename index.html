@@ -813,6 +813,23 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
   </div>
 </div>
 
+<!-- FRENTE 7 (2026-05-13): MODAL PAUTA ROSSO-AUTODATA v2 -->
+<!-- Reemplaza al m-tech-checklist para servicios con pauta v2 disponible.
+     Render dinamico via renderPautaV2Modal(). Estructura por zonas
+     colapsables, items con respuestas predefinidas, campos numericos
+     condicionales y validacion de completitud suave. -->
+<div class="overlay" id="m-pauta-v2" style="display:none">
+  <div class="modal" style="max-height:94vh;overflow-y:auto;max-width:520px;padding:14px">
+    <div id="m-pauta-v2-header"></div>
+    <div id="m-pauta-v2-body" style="margin-top:10px"></div>
+    <div id="m-pauta-v2-err" style="display:none;color:var(--red);font-size:12px;margin:10px 0 8px;font-weight:600;padding:8px;background:var(--red4);border-radius:4px"></div>
+    <div style="display:flex;gap:8px;margin-top:14px">
+      <button class="btn btn-red" id="m-pauta-v2-save" onclick="savePautaV2()" style="flex:1">Guardar pauta</button>
+      <button class="btn btn-out" onclick="closeModal('m-pauta-v2')" style="flex:1">Cancelar</button>
+    </div>
+  </div>
+</div>
+
 <!-- FASE 2.4.A: MODAL DOBLE CONTROL -->
 <div class="overlay" id="m-double-check" style="display:none">
   <div class="modal" style="max-height:92vh;overflow-y:auto;max-width:440px">
@@ -2816,6 +2833,645 @@ const CHECKLISTS_TECH = {
     ]
   }
 };
+
+// ═══════════════════════════════════════════════════════════════
+// FRENTE 6 FASE B (2026-05-13): PLANTILLAS DE OBSERVACIONES
+// ═══════════════════════════════════════════════════════════════
+// Plantillas predefinidas que el tecnico puede insertar con un toque
+// para acelerar la escritura de observaciones. Aparecen como "chips"
+// arriba del textarea. Cada chip tiene un label corto y un texto que
+// se inserta (append) al hacer click. NO sobrescribe lo que ya escribio.
+//
+// Estructura: { SERVICIO_KEY: { campo: [ {label, text}, ... ] }, _common: { campo: [...] } }
+// Las plantillas del servicio especifico se muestran PRIMERO; luego las _common.
+// El tecnico ve "Plantillas rapidas: [chip1] [chip2] [chip3]..." y al tocar
+// una, el texto se inserta en el textarea (con \n si ya hay contenido).
+
+const OBSERVATION_TEMPLATES = {
+  // ─── Servicios de mantenimiento (cambio aceite, express, completo) ───
+  CAMBIO_ACEITE: {
+    tech_observations: [
+      {label:'✓ Motor OK', text:'Motor en buenas condiciones generales. Sin fugas de aceite visibles. Sin ruidos anormales en marcha.'},
+      {label:'Próximo cambio 5.000km', text:'Próximo cambio de aceite recomendado en 5.000 km adicionales.'},
+      {label:'Próximo cambio 10.000km', text:'Próximo cambio de aceite recomendado en 10.000 km adicionales.'},
+      {label:'Filtro aire sucio', text:'Filtro de aire con suciedad considerable. Se recomienda reemplazo en próxima visita.'},
+      {label:'Niveles OK', text:'Niveles de fluidos verificados y correctos al cierre del servicio.'},
+      {label:'Fuga leve detectada', text:'Se detectó fuga leve de aceite en [ubicación]. Se sugiere monitoreo y revisión en próxima visita.'}
+    ]
+  },
+  MANT_EXPRESS: {
+    tech_observations: [
+      {label:'✓ Servicio sin novedad', text:'Mantenimiento express completado sin hallazgos relevantes. Vehículo en buenas condiciones generales.'},
+      {label:'Filtros cambiados OK', text:'Filtros de aceite, aire y polen reemplazados según especificación. Códigos registrados en checklist.'},
+      {label:'Escáner sin códigos', text:'Lectura de escáner sin códigos de falla activos. ECU sin pendientes.'},
+      {label:'Recomendar revisión', text:'Se recomienda revisión de [componente] en próximo servicio por desgaste preventivo.'},
+      {label:'Cliente informado', text:'Cliente notificado del trabajo realizado y de las recomendaciones para próxima visita.'}
+    ]
+  },
+  MANT_COMPLETO: {
+    tech_observations: [
+      {label:'✓ Mantenimiento completo OK', text:'Mantenimiento completo realizado conforme a protocolo. Sin observaciones críticas. Vehículo entregado en condiciones óptimas.'},
+      {label:'Frenos: pastillas OK', text:'Pastillas delanteras y traseras con material suficiente. Discos en buen estado.'},
+      {label:'Frenos: cambiar pronto', text:'Pastillas con desgaste avanzado. Se recomienda reemplazo en próxima visita (estimado [X] km).'},
+      {label:'Suspensión OK', text:'Componentes de suspensión y dirección sin holgura ni desgaste visible. Sin observaciones.'},
+      {label:'Suspensión con hallazgo', text:'Detectado desgaste en [componente] del tren delantero/trasero. Recomendación de reemplazo a evaluar con cliente.'},
+      {label:'Neumáticos: revisar pronto', text:'Neumáticos con desgaste irregular o cercano al límite legal. Se sugiere rotación o reemplazo próximo.'}
+    ]
+  },
+
+  // ─── Servicios DPF (especialidad de Rosso) ───
+  DPF_PACK_ESENCIAL: {
+    tech_observations: [
+      {label:'✓ DPF regenerado', text:'Regeneración de DPF completada exitosamente. Reducción de hollín dentro de parámetros normales. Sin códigos al cierre.'},
+      {label:'Recomendar pack avanzado', text:'DPF respondió parcialmente al tratamiento esencial. Se recomienda Pack Avanzado en próxima visita para limpieza más profunda.'},
+      {label:'Causa raíz a revisar', text:'Atención: el DPF se obstruye por una causa raíz (probable EGR, inyectores, o conducción urbana intensa). Se sugiere diagnóstico complementario.'},
+      {label:'Conducción recomendada', text:'Se sugiere al cliente realizar trayectos largos a velocidad de carretera periódicamente para favorecer regeneraciones pasivas del DPF.'}
+    ]
+  },
+  DPF_PACK_AVANZADO: {
+    tech_observations: [
+      {label:'✓ Limpieza avanzada OK', text:'Pack Avanzado completado. DPF respondió favorablemente al tratamiento químico + regeneración forzada. Sin códigos activos.'},
+      {label:'Códigos pre/post', text:'Códigos pre-servicio: [...]. Códigos post-servicio: ninguno activo. Diferencial de presión dentro de rango normal.'},
+      {label:'Recomendar pack premium', text:'DPF con saturación elevada. Se recomienda Pack Premium o extracción para próxima visita si reaparecen síntomas.'},
+      {label:'Cliente informado', text:'Cliente informado sobre hábitos de conducción que favorecen la vida útil del DPF y sobre frecuencia recomendada de servicio preventivo.'}
+    ]
+  },
+  DPF_PACK_PREMIUM: {
+    tech_observations: [
+      {label:'✓ Premium OK', text:'Pack Premium completado satisfactoriamente. DPF con respuesta óptima. Diferencial de presión normalizado. Garantía de servicio activada.'},
+      {label:'Garantía servicio activa', text:'Servicio cubierto por garantía Rosso por [N] meses/km. Cualquier reincidencia debe reportarse para revisión sin costo.'},
+      {label:'DPF saturado: extraer', text:'DPF no respondió al tratamiento completo. Se recomienda extracción para recuperación profunda en banco.'}
+    ]
+  },
+  DPF_EXTRAIDO: {
+    tech_observations: [
+      {label:'✓ DPF recuperado en banco', text:'DPF extraído, sometido a tratamiento intensivo en banco y reinstalado. Resultado óptimo. Sin códigos al cierre.'},
+      {label:'Sellos reemplazados', text:'Se reemplazaron sellos y juntas durante la reinstalación para garantizar estanqueidad.'},
+      {label:'DPF irrecuperable', text:'DPF presenta daño físico interno (membrana/sustrato dañado). No es recuperable. Se requiere reemplazo de la pieza.'}
+    ]
+  },
+
+  // ─── Diagnóstico y reprogramación ───
+  DIAGNOSTICO: {
+    tech_observations: [
+      {label:'✓ Falla confirmada', text:'Falla reportada por cliente confirmada en taller. Diagnóstico apunta a [componente/sistema]. Se sugiere cotización de reparación.'},
+      {label:'Falla intermitente', text:'Falla intermitente que no se reproduce en taller. Se sugiere al cliente reportar inmediatamente al volver a presentarse para captura de datos en vivo.'},
+      {label:'Sin falla replicable', text:'No se logró replicar la falla reportada. Lectura de ECU sin códigos activos. Se entrega vehículo con recomendación de monitoreo.'},
+      {label:'Requiere repuesto', text:'Diagnóstico determina necesidad del siguiente repuesto: [especificar]. Pendiente cotización y autorización del cliente.'},
+      {label:'Diagnóstico avanzado req.', text:'Se requiere diagnóstico avanzado adicional (osciloscopio / banco / desarmado parcial) para confirmar causa raíz.'}
+    ]
+  },
+  REPROG_ECU: {
+    tech_observations: [
+      {label:'✓ Reprogramación OK', text:'Reprogramación de ECU completada exitosamente. Vehículo responde correctamente. Sin códigos activos.'},
+      {label:'Backup guardado', text:'Backup de mapa original guardado en archivo. Cliente notificado para restauración futura si se requiere.'},
+      {label:'Ganancia confirmada', text:'Mejora de desempeño confirmada en prueba de ruta: respuesta de acelerador, torque medio y consumo dentro de lo esperado.'}
+    ]
+  },
+
+  // ─── Frenos ───
+  FRENOS: {
+    tech_observations: [
+      {label:'✓ Frenos OK', text:'Sistema de frenos revisado completamente. Pastillas, discos y líquido en condiciones operativas. Sin observaciones críticas.'},
+      {label:'Pastillas reemplazadas', text:'Pastillas delanteras/traseras reemplazadas. Discos rectificados/conservados según estado. Líquido de frenos en buen estado.'},
+      {label:'Discos al límite', text:'Discos con espesor cercano al mínimo del fabricante. Próxima visita evaluar reemplazo.'},
+      {label:'Líquido frenos vencido', text:'Líquido de frenos con humedad elevada (>3%). Se recomienda sangrado y reemplazo en próximo servicio.'},
+      {label:'Prueba ruta OK', text:'Prueba de ruta posterior al servicio sin vibraciones, ruidos ni desviaciones. Respuesta del pedal correcta.'}
+    ]
+  },
+
+  // ─── Reparaciones generales ───
+  REPAR_GENERALES: {
+    tech_observations: [
+      {label:'✓ Reparación OK', text:'Reparación completada satisfactoriamente conforme a presupuesto autorizado. Vehículo entregado en condiciones operativas.'},
+      {label:'Prueba ruta OK', text:'Prueba de ruta posterior a la reparación sin observaciones. Falla original resuelta.'},
+      {label:'Hallazgo adicional', text:'Durante la reparación se detectó un hallazgo adicional en [componente]. Se notificó al cliente y se documentó para futura intervención.'},
+      {label:'Cliente notificado', text:'Cliente notificado del trabajo realizado, repuestos utilizados y recomendaciones para mantener la durabilidad de la reparación.'}
+    ]
+  },
+
+  // ─── Garantía ───
+  GARANTIA: {
+    tech_observations: [
+      {label:'✓ Cubierto por garantía', text:'Trabajo realizado bajo cobertura de garantía Rosso. Sin costo para el cliente. Documentado para historial.'},
+      {label:'Hallazgo replicado', text:'Falla replicable confirmada durante la revisión. Se procedió con la corrección sin costo bajo garantía.'},
+      {label:'Sin falla replicable', text:'Falla reportada no replicable en taller. Se realizó revisión preventiva. Cliente informado para reportar de inmediato si reaparece.'},
+      {label:'Fuera de cobertura', text:'Hallazgo identificado NO se encuentra dentro de la cobertura de garantía original. Se entrega informe y se sugiere cotización aparte.'}
+    ]
+  },
+
+  // ─── PLANTILLAS COMUNES (se muestran al final, aplican a todos los servicios) ───
+  _common: {
+    tech_observations: [
+      {label:'Sin observaciones', text:'Sin observaciones particulares. Servicio completado conforme a protocolo.'},
+      {label:'Vehículo entregado OK', text:'Vehículo entregado al cliente en condiciones óptimas, sin observaciones pendientes.'}
+    ],
+    dc_observations: [
+      {label:'✓ Sin hallazgos', text:'Doble control realizado. Sin hallazgos. Trabajo conforme.'},
+      {label:'Listo para entrega', text:'Vehículo listo para entrega al cliente. Sin pendientes operacionales.'},
+      {label:'Limpieza OK', text:'Zona de trabajo y vehículo limpios. Sin restos de aceite, grasa ni herramientas.'}
+    ],
+    dc_na_reason: [
+      {label:'Sin aceite involucrado', text:'Servicio sin cambio de aceite. Los ítems relacionados al filtro y etiqueta no aplican.'},
+      {label:'Logística/sin intervención', text:'Servicio de logística sin intervención mecánica. Los ítems de torque y etiqueta no aplican.'}
+    ],
+    vs_observations: [
+      {label:'✓ Aprobado sin observaciones', text:'Trabajo revisado. Cumple estándares Rosso. Aprobado sin observaciones.'},
+      {label:'Aprobado con notas', text:'Aprobado. Notas para el técnico: [especificar mejora a aplicar en futuros servicios].'}
+    ],
+    edited_observations: [
+      {label:'Resumen estándar cliente', text:'Servicio realizado conforme a protocolo Rosso. Vehículo entregado en condiciones óptimas. Cualquier consulta posterior al servicio, contactar al taller.'},
+      {label:'Recomendación general', text:'Se recomienda mantener el plan de mantenimiento preventivo según kilometraje del fabricante para conservar el desempeño del vehículo.'}
+    ]
+  }
+};
+
+// Retorna el array combinado de plantillas para un campo, en orden:
+// primero las del servicio especifico (si existe), luego las _common.
+function getObsTemplates(fieldKey, serviceKey) {
+  var out = [];
+  if (serviceKey && OBSERVATION_TEMPLATES[serviceKey] && OBSERVATION_TEMPLATES[serviceKey][fieldKey]) {
+    out = out.concat(OBSERVATION_TEMPLATES[serviceKey][fieldKey]);
+  }
+  if (OBSERVATION_TEMPLATES._common && OBSERVATION_TEMPLATES._common[fieldKey]) {
+    out = out.concat(OBSERVATION_TEMPLATES._common[fieldKey]);
+  }
+  return out;
+}
+window.getObsTemplates = getObsTemplates;
+
+// Retorna el HTML de la barra de plantillas para inyectar arriba de un textarea.
+// targetSelector es un selector CSS unico que apunta al <textarea> destino
+// (ej: '[data-chk-key="tech_observations"]').
+function renderObsTemplatesHTML(fieldKey, serviceKey, targetSelector) {
+  var tpls = getObsTemplates(fieldKey, serviceKey);
+  if (!tpls.length) return '';
+  // Encode targetSelector para que sobreviva como atributo HTML
+  var sel = String(targetSelector || '').replace(/"/g, '&quot;');
+  var chips = tpls.map(function(t, i) {
+    // El texto pasa por btoa para evitar problemas con apostrofes/comillas/saltos
+    // en inline-onclick. applyObsTemplate hace atob() para recuperarlo.
+    var encoded;
+    try { encoded = btoa(unescape(encodeURIComponent(t.text || ''))); }
+    catch(_) { encoded = ''; }
+    return '<button type="button" class="obs-tpl-chip" '
+      + 'data-tpl-text="' + encoded + '" '
+      + 'onclick="applyObsTemplate(\'' + sel + '\', this.getAttribute(\'data-tpl-text\'))" '
+      + 'style="display:inline-block;background:#f5f0e1;border:1px solid var(--gold);border-radius:12px;'
+      + 'padding:3px 10px;margin:2px 3px 2px 0;font-size:11px;color:var(--gold3);cursor:pointer;'
+      + 'font-family:inherit;font-weight:600;line-height:1.3" '
+      + 'onmouseover="this.style.background=\'var(--gold)\';this.style.color=\'#fff\'" '
+      + 'onmouseout="this.style.background=\'#f5f0e1\';this.style.color=\'var(--gold3)\'">'
+      + escapeHtml(t.label || ('Plantilla ' + (i+1)))
+      + '</button>';
+  }).join('');
+  return '<div style="margin:4px 0 6px;display:flex;flex-wrap:wrap;align-items:center;gap:2px">'
+    + '<span style="font-size:10px;color:var(--wh3);text-transform:uppercase;letter-spacing:.04em;font-weight:700;margin-right:6px">⚡ Plantillas:</span>'
+    + chips
+    + '</div>';
+}
+window.renderObsTemplatesHTML = renderObsTemplatesHTML;
+
+// Inserta el texto de una plantilla en el textarea destino. Si el textarea ya
+// tiene contenido, agrega un salto de linea entre el texto previo y el nuevo
+// (en vez de sobrescribir, que destruiria trabajo del tecnico).
+function applyObsTemplate(targetSelector, encodedText) {
+  try {
+    var text = '';
+    try { text = decodeURIComponent(escape(atob(encodedText || ''))); }
+    catch(_) { text = encodedText || ''; }
+    if (!text) return;
+    var el = document.querySelector(targetSelector);
+    if (!el) {
+      logR('OBS_TPL_TARGET_MISSING', {sel: targetSelector}, 'warn');
+      return;
+    }
+    var cur = (el.value || '').trim();
+    el.value = cur ? (cur + '\n' + text) : text;
+    // Disparar eventos para que cualquier listener (autosave, validacion) se entere
+    try { el.dispatchEvent(new Event('input', {bubbles:true})); } catch(_) {}
+    try { el.dispatchEvent(new Event('change', {bubbles:true})); } catch(_) {}
+    // Focus al final para que el tecnico vea lo insertado y pueda seguir escribiendo
+    el.focus();
+    try { el.selectionStart = el.selectionEnd = el.value.length; } catch(_) {}
+  } catch(e) {
+    logR('OBS_TPL_APPLY_ERR', {msg: e.message}, 'err');
+  }
+}
+window.applyObsTemplate = applyObsTemplate;
+
+// ═══════════════════════════════════════════════════════════════
+// FRENTE 7 (2026-05-13): PAUTAS DE INSPECCION ROSSO-AUTODATA v2
+// ═══════════════════════════════════════════════════════════════
+// Reemplazo del checklist tecnico tradicional para los 3 servicios
+// principales (CAMBIO_ACEITE, MANT_EXPRESS, MANT_COMPLETO). Estructura
+// inspirada en pautas Autodata: items agrupados por zonas fisicas del
+// vehiculo, cada item con respuestas predefinidas y, cuando aplica,
+// campos numericos (mm, Nm, presion, litros, viscosidad, marca).
+//
+// Tipos de item:
+//  state_basic            -> 2-3 opciones simples (OK, etc.)
+//  state_with_comment     -> 3 opciones + textarea condicional
+//  state_with_numeric     -> 3 opciones + input numerico (mm, etc.)
+//  replace_or_inspect     -> Reemplazado / Inspeccionar
+//  fill_level             -> Bajo (relleno) / Correcto / Alto
+//  oil_motor              -> Contaminacion + litros + viscosidad + marca
+//  scanner_dtc            -> Sin DTC / Con DTC borrados / Falla critica + comentario
+//  apriete_ruedas         -> Apriete confirmado + Nm
+//
+// Estructura guardada en checklist_data.tech_checklist.pauta_v2 (ver
+// savePautaV2). Los servicios fuera de esta constante siguen usando el
+// flujo legacy con CHECKLISTS_TECH + plantillas chip.
+// ═══════════════════════════════════════════════════════════════
+
+const CHECKLISTS_TECH_PAUTAS_V2 = {
+  CAMBIO_ACEITE: {
+    label: 'Cambio de Aceite',
+    tiempo_objetivo_min: 60,
+    intervalo_recomendado: '5.000 km',
+    zonas: [
+      {
+        id: 'suelo',
+        title: 'Vehículo en el suelo',
+        items: [
+          {key:'plumillas', label:'Plumillas', type:'state_basic',
+            opts:[{v:'ok',l:'OK'},{v:'desgaste_medio',l:'Desgaste medio'},{v:'desgaste_alto',l:'Desgaste alto'}]}
+        ]
+      },
+      {
+        id: 'elevado_total',
+        title: 'Vehículo totalmente elevado',
+        items: [
+          {key:'aceite_motor', label:'Aceite de motor', type:'oil_motor',
+            opts:[{v:'contam_metalica',l:'Contaminación metálica'},{v:'contam_normal',l:'Contaminación normal'}]},
+          {key:'filtro_aceite', label:'Filtro de aceite del motor', type:'replace_or_inspect',
+            opts:[{v:'reemplazado',l:'Reemplazado'},{v:'inspeccionar',l:'Inspeccionar sistema'}]},
+          {key:'tuberias_bajos', label:'Tuberías y mangueras de los bajos', type:'state_with_comment',
+            opts:[{v:'buen_estado',l:'Buen estado'},{v:'danos_leves',l:'Daños leves',req_comment:true},{v:'danos_graves',l:'Daños graves',req_comment:true}]},
+          {key:'fugas_aceite_motor', label:'Fugas de aceite de motor', type:'state_with_comment',
+            opts:[{v:'sin_fugas',l:'Sin fugas'},{v:'fuga_leve',l:'Fuga leve',req_comment:true},{v:'fuga_critica',l:'Fuga crítica',req_comment:true}]},
+          {key:'fugas_caja', label:'Fugas de aceite de caja de cambios', type:'state_with_comment',
+            opts:[{v:'sin_fugas',l:'Sin fugas'},{v:'fuga_leve',l:'Fuga leve',req_comment:true},{v:'fuga_critica',l:'Fuga crítica',req_comment:true}]}
+        ]
+      },
+      {
+        id: 'medio_alzado',
+        title: 'Vehículo medio alzado',
+        items: [
+          {key:'neumaticos', label:'Neumáticos', type:'state_with_comment',
+            opts:[{v:'buen_estado',l:'Buen estado'},{v:'desgaste_normal',l:'Desgaste normal'},{v:'desgaste_critico',l:'Desgaste crítico',req_comment:true}]}
+        ]
+      },
+      {
+        id: 'compartimento_motor',
+        title: 'Operaciones en el compartimento motor',
+        items: [
+          {key:'lavaparabrisas', label:'Líquido lavaparabrisas', type:'fill_level',
+            opts:[{v:'bajo_rellenado',l:'Bajo (rellenado)'},{v:'correcto',l:'Correcto'},{v:'alto',l:'Alto'}]},
+          {key:'tuberias_motor', label:'Tuberías y mangueras', type:'state_with_comment',
+            opts:[{v:'buen_estado',l:'Buen estado'},{v:'danos_leves',l:'Daños leves',req_comment:true},{v:'danos_graves',l:'Daños graves',req_comment:true}]}
+        ]
+      },
+      {
+        id: 'elementos_finales',
+        title: 'Comprobación elementos finales',
+        items: [
+          {key:'scanner_dtc', label:'Escáner – lectura y borrado de códigos', type:'scanner_dtc',
+            opts:[{v:'sin_dtc',l:'Sin DTC'},{v:'con_dtc_borrados',l:'Con DTC borrados',req_comment:true},{v:'falla_critica',l:'Falla crítica',req_comment:true}]},
+          {key:'reinicio_intervalo', label:'Reinicio de intervalo de mantenimiento', type:'state_basic',
+            opts:[{v:'realizado',l:'Realizado'},{v:'no_aplica',l:'No aplica'}]}
+        ]
+      },
+      {
+        id: 'prueba_ruta',
+        title: 'Prueba de ruta',
+        items: [
+          {key:'eficiencia_frenado', label:'Comprobación de eficiencia de frenado', type:'state_with_comment',
+            opts:[{v:'buena',l:'Buena'},{v:'normal',l:'Normal'},{v:'mala',l:'Mala',req_comment:true}]},
+          {key:'funcionamiento', label:'Comprobación de funcionamiento', type:'state_with_comment',
+            opts:[{v:'sin_problemas',l:'Sin problemas'},{v:'detalles_leves',l:'Detalles leves',req_comment:true},{v:'compromete_integridad',l:'Compromete integridad',req_comment:true}]},
+          {key:'ruidos', label:'Comprobación de ruidos', type:'state_with_comment',
+            opts:[{v:'sin_ruidos',l:'Sin ruidos'},{v:'ruidos_evidentes',l:'Ruidos evidentes',req_comment:true}]}
+        ]
+      }
+    ]
+  },
+
+  MANT_EXPRESS: {
+    label: 'Mantenimiento Express',
+    tiempo_objetivo_min: 60,
+    intervalo_recomendado: '10.000 km',
+    zonas: [
+      {
+        id: 'suelo',
+        title: 'Vehículo en el suelo',
+        items: [
+          {key:'plumillas', label:'Plumillas', type:'state_basic',
+            opts:[{v:'ok',l:'OK'},{v:'desgaste_medio',l:'Desgaste medio'},{v:'desgaste_alto',l:'Desgaste alto'}]},
+          {key:'filtro_cabina', label:'Filtro de cabina', type:'replace_or_inspect',
+            opts:[{v:'reemplazado',l:'Reemplazado'},{v:'inspeccionar',l:'Inspeccionar sistema'}]}
+        ]
+      },
+      {
+        id: 'elevado_total',
+        title: 'Vehículo totalmente elevado',
+        items: [
+          {key:'aceite_motor', label:'Aceite de motor', type:'oil_motor',
+            opts:[{v:'contam_metalica',l:'Contaminación metálica'},{v:'contam_normal',l:'Contaminación normal'}]},
+          {key:'filtro_aceite', label:'Filtro de aceite del motor', type:'replace_or_inspect',
+            opts:[{v:'reemplazado',l:'Reemplazado'},{v:'inspeccionar',l:'Inspeccionar sistema'}]},
+          {key:'tuberias_bajos', label:'Tuberías y mangueras de los bajos', type:'state_with_comment',
+            opts:[{v:'buen_estado',l:'Buen estado'},{v:'danos_leves',l:'Daños leves',req_comment:true},{v:'danos_graves',l:'Daños graves',req_comment:true}]},
+          {key:'fugas_aceite_motor', label:'Fugas de aceite de motor', type:'state_with_comment',
+            opts:[{v:'sin_fugas',l:'Sin fugas'},{v:'fuga_leve',l:'Fuga leve',req_comment:true},{v:'fuga_critica',l:'Fuga crítica',req_comment:true}]},
+          {key:'fugas_caja', label:'Fugas de aceite de caja de cambios', type:'state_with_comment',
+            opts:[{v:'sin_fugas',l:'Sin fugas'},{v:'fuga_leve',l:'Fuga leve',req_comment:true},{v:'fuga_critica',l:'Fuga crítica',req_comment:true}]}
+        ]
+      },
+      {
+        id: 'medio_alzado',
+        title: 'Vehículo medio alzado',
+        items: [
+          {key:'neumaticos', label:'Neumáticos', type:'state_with_comment',
+            opts:[{v:'buen_estado',l:'Buen estado'},{v:'desgaste_normal',l:'Desgaste normal'},{v:'desgaste_critico',l:'Desgaste crítico',req_comment:true}]},
+          {key:'frenos_del', label:'Frenos delanteros (revisión visual)', type:'state_with_comment',
+            opts:[{v:'buen_estado',l:'Buen estado'},{v:'desgaste_normal',l:'Desgaste normal'},{v:'desgaste_critico',l:'Desgaste crítico',req_comment:true}]},
+          {key:'frenos_tras', label:'Frenos traseros (revisión visual)', type:'state_with_comment',
+            opts:[{v:'buen_estado',l:'Buen estado'},{v:'desgaste_normal',l:'Desgaste normal'},{v:'desgaste_critico',l:'Desgaste crítico',req_comment:true}]},
+          {key:'presion_neumaticos', label:'Presión de los neumáticos', type:'state_with_numeric',
+            opts:[{v:'calibrados',l:'Calibrados'},{v:'no_calibrados',l:'No calibrados'}],
+            numeric:{key:'psi', label:'Presión (PSI)', step:0.1, placeholder:'Ej: 32.0'}}
+        ]
+      },
+      {
+        id: 'compartimento_motor',
+        title: 'Operaciones en el compartimento motor',
+        items: [
+          {key:'lavaparabrisas', label:'Líquido lavaparabrisas', type:'fill_level',
+            opts:[{v:'bajo_rellenado',l:'Bajo (rellenado)'},{v:'correcto',l:'Correcto'},{v:'alto',l:'Alto'}]},
+          {key:'tuberias_motor', label:'Tuberías y mangueras', type:'state_with_comment',
+            opts:[{v:'buen_estado',l:'Buen estado'},{v:'danos_leves',l:'Daños leves',req_comment:true},{v:'danos_graves',l:'Daños graves',req_comment:true}]},
+          {key:'refrigerante', label:'Anticongelante/refrigerante de motor', type:'fill_level',
+            opts:[{v:'bajo_rellenado',l:'Bajo (rellenado)'},{v:'correcto',l:'Correcto'},{v:'alto',l:'Alto'}]},
+          {key:'tapon_refrigeracion', label:'Tapón de presión del sistema de refrigeración', type:'state_with_comment',
+            opts:[{v:'buen_estado',l:'Buen estado'},{v:'danos_leves',l:'Daños leves',req_comment:true},{v:'danos_graves',l:'Daños graves',req_comment:true},{v:'reinstalado_ok',l:'Reinstalado tras relleno'}]},
+          {key:'filtro_aire', label:'Filtro de aire', type:'replace_or_inspect',
+            opts:[{v:'reemplazado',l:'Reemplazado'},{v:'inspeccionar',l:'Inspeccionar sistema'}]}
+        ]
+      },
+      {
+        id: 'elementos_finales',
+        title: 'Comprobación elementos finales',
+        items: [
+          {key:'scanner_dtc', label:'Escáner – lectura y borrado de códigos', type:'scanner_dtc',
+            opts:[{v:'sin_dtc',l:'Sin DTC'},{v:'con_dtc_borrados',l:'Con DTC borrados',req_comment:true},{v:'falla_critica',l:'Falla crítica',req_comment:true}]},
+          {key:'reinicio_intervalo', label:'Reinicio de intervalo de mantenimiento', type:'state_basic',
+            opts:[{v:'realizado',l:'Realizado'},{v:'no_aplica',l:'No aplica'}]}
+        ]
+      },
+      {
+        id: 'prueba_ruta',
+        title: 'Prueba de ruta',
+        items: [
+          {key:'eficiencia_frenado', label:'Comprobación de eficiencia de frenado', type:'state_with_comment',
+            opts:[{v:'buena',l:'Buena'},{v:'normal',l:'Normal'},{v:'mala',l:'Mala',req_comment:true}]},
+          {key:'funcionamiento', label:'Comprobación de funcionamiento', type:'state_with_comment',
+            opts:[{v:'sin_problemas',l:'Sin problemas'},{v:'detalles_leves',l:'Detalles leves',req_comment:true},{v:'compromete_integridad',l:'Compromete integridad',req_comment:true}]},
+          {key:'ruidos', label:'Comprobación de ruidos', type:'state_with_comment',
+            opts:[{v:'sin_ruidos',l:'Sin ruidos'},{v:'ruidos_evidentes',l:'Ruidos evidentes',req_comment:true}]}
+        ]
+      }
+    ]
+  },
+
+  MANT_COMPLETO: {
+    label: 'Mantenimiento Completo',
+    tiempo_objetivo_min: 120,
+    intervalo_recomendado: 'Cada 12 meses',
+    zonas: [
+      {
+        id: 'suelo',
+        title: 'Vehículo en el suelo',
+        items: [
+          {key:'freno_estac', label:'Recorrido del freno de estacionamiento', type:'state_basic',
+            opts:[{v:'ok',l:'OK'},{v:'inspeccionar',l:'Inspeccionar',req_comment:true},{v:'ajustado',l:'Ajustado'}]},
+          {key:'cinturones', label:'Cinturones de seguridad', type:'state_basic',
+            opts:[{v:'ok',l:'OK'},{v:'inspeccionar',l:'Inspeccionar',req_comment:true}]},
+          {key:'instrumentos', label:'Instrumentos / testigos', type:'state_basic',
+            opts:[{v:'ok',l:'OK'},{v:'inspeccionar',l:'Inspeccionar',req_comment:true}]},
+          {key:'interruptores', label:'Interruptores / mandos', type:'state_basic',
+            opts:[{v:'ok',l:'OK'},{v:'inspeccionar',l:'Inspeccionar',req_comment:true}]},
+          {key:'bocina', label:'Bocina', type:'state_basic',
+            opts:[{v:'ok',l:'OK'},{v:'inspeccionar',l:'Inspeccionar',req_comment:true}]},
+          {key:'luces_interiores', label:'Luces interiores', type:'state_with_comment',
+            opts:[{v:'ok',l:'OK'},{v:'luces_quemadas',l:'Luces quemadas',req_comment:true},{v:'inspeccionar',l:'Inspeccionar',req_comment:true}]},
+          {key:'plumillas', label:'Plumillas', type:'state_basic',
+            opts:[{v:'ok',l:'OK'},{v:'desgaste_medio',l:'Desgaste medio'},{v:'desgaste_alto',l:'Desgaste alto'}]},
+          {key:'intermitentes', label:'Intermitentes de dirección / luces de emergencia', type:'state_with_comment',
+            opts:[{v:'ok',l:'OK'},{v:'luces_quemadas',l:'Luces quemadas',req_comment:true},{v:'inspeccionar',l:'Inspeccionar',req_comment:true}]},
+          {key:'iluminacion_ext', label:'Sistema de iluminación exterior', type:'state_with_comment',
+            opts:[{v:'ok',l:'OK'},{v:'luces_quemadas',l:'Luces quemadas',req_comment:true},{v:'inspeccionar',l:'Inspeccionar',req_comment:true}]},
+          {key:'nivelacion_luces', label:'Nivelación de luces delanteras', type:'state_basic',
+            opts:[{v:'nivelacion_ok',l:'Nivelación OK'},{v:'nivelacion_fallida',l:'Nivelación fallida'},{v:'no_necesita',l:'No necesita'}]},
+          {key:'filtro_cabina', label:'Filtro de cabina', type:'replace_or_inspect',
+            opts:[{v:'reemplazado',l:'Reemplazado'},{v:'inspeccionar',l:'Inspeccionar sistema'}]}
+        ]
+      },
+      {
+        id: 'elevado_total',
+        title: 'Vehículo totalmente elevado',
+        items: [
+          {key:'aceite_motor', label:'Aceite de motor', type:'oil_motor',
+            opts:[{v:'contam_metalica',l:'Contaminación metálica'},{v:'contam_normal',l:'Contaminación normal'}]},
+          {key:'filtro_aceite', label:'Filtro de aceite del motor', type:'replace_or_inspect',
+            opts:[{v:'reemplazado',l:'Reemplazado'},{v:'inspeccionar',l:'Inspeccionar sistema'}]},
+          {key:'tuberias_bajos', label:'Tuberías y mangueras de los bajos', type:'state_with_comment',
+            opts:[{v:'buen_estado',l:'Buen estado'},{v:'danos_leves',l:'Daños leves',req_comment:true},{v:'danos_graves',l:'Daños graves',req_comment:true}]},
+          {key:'fugas_aceite_motor', label:'Fugas de aceite de motor', type:'state_with_comment',
+            opts:[{v:'sin_fugas',l:'Sin fugas'},{v:'fuga_leve',l:'Fuga leve',req_comment:true},{v:'fuga_critica',l:'Fuga crítica',req_comment:true}]},
+          {key:'fugas_caja', label:'Fugas de aceite de caja de cambios', type:'state_with_comment',
+            opts:[{v:'sin_fugas',l:'Sin fugas'},{v:'fuga_leve',l:'Fuga leve',req_comment:true},{v:'fuga_critica',l:'Fuga crítica',req_comment:true}]},
+          {key:'juntas_direccion', label:'Juntas de dirección', type:'state_with_comment',
+            opts:[{v:'buen_estado',l:'Buen estado'},{v:'danos_leves',l:'Daños leves',req_comment:true},{v:'danos_graves',l:'Daños graves',req_comment:true}]},
+          {key:'cremallera_direccion', label:'Cremallera de dirección', type:'state_with_comment',
+            opts:[{v:'buen_estado',l:'Buen estado'},{v:'danos_mal_func',l:'Daños o mal funcionamiento',req_comment:true}]},
+          {key:'acoplamientos_columna', label:'Acoplamientos de columna de dirección', type:'state_with_comment',
+            opts:[{v:'buen_estado',l:'Buen estado'},{v:'danos_leves',l:'Daños leves',req_comment:true},{v:'danos_graves',l:'Daños graves',req_comment:true}]},
+          {key:'fuelles_suspension', label:'Fuelles / retenes / juntas de la suspensión', type:'state_with_comment',
+            opts:[{v:'buen_estado',l:'Buen estado'},{v:'danos_leves',l:'Daños leves',req_comment:true},{v:'danos_graves',l:'Daños graves',req_comment:true}]},
+          {key:'fuelles_transmision', label:'Fuelles / retenes / juntas del árbol de transmisión', type:'state_with_comment',
+            opts:[{v:'buen_estado',l:'Buen estado'},{v:'danos_leves',l:'Daños leves',req_comment:true},{v:'danos_graves',l:'Daños graves',req_comment:true}]},
+          {key:'amortiguadores_del', label:'Amortiguadores delanteros', type:'state_with_comment',
+            opts:[{v:'buen_estado',l:'Buen estado'},{v:'danos_leves',l:'Daños leves',req_comment:true},{v:'danos_graves',l:'Daños graves',req_comment:true}]},
+          {key:'amortiguadores_tras', label:'Amortiguadores traseros', type:'state_with_comment',
+            opts:[{v:'buen_estado',l:'Buen estado'},{v:'danos_leves',l:'Daños leves',req_comment:true},{v:'danos_graves',l:'Daños graves',req_comment:true}]},
+          {key:'escape_soportes', label:'Sistema de escape / soportes', type:'state_with_comment',
+            opts:[{v:'buen_estado',l:'Buen estado'},{v:'danos_leves',l:'Daños leves',req_comment:true},{v:'danos_graves',l:'Daños graves',req_comment:true}]},
+          {key:'fugas_combustible', label:'Fugas del sistema de combustible', type:'state_with_comment',
+            opts:[{v:'sin_fugas',l:'Sin fugas'},{v:'fuga_leve',l:'Fuga leve',req_comment:true},{v:'fuga_critica',l:'Fuga crítica',req_comment:true}]},
+          {key:'estado_bajos', label:'Estado de los bajos', type:'state_with_comment',
+            opts:[{v:'buen_estado',l:'Buen estado'},{v:'danos_leves',l:'Daños leves',req_comment:true},{v:'danos_graves',l:'Daños graves',req_comment:true}]}
+        ]
+      },
+      {
+        id: 'medio_alzado',
+        title: 'Vehículo medio alzado',
+        items: [
+          {key:'neum_del_lh', label:'Neumático delantero izquierdo (LH)', type:'state_with_comment',
+            opts:[{v:'buen_estado',l:'Buen estado'},{v:'desgaste_normal',l:'Desgaste normal'},{v:'desgaste_critico',l:'Desgaste crítico',req_comment:true}]},
+          {key:'neum_del_rh', label:'Neumático delantero derecho (RH)', type:'state_with_comment',
+            opts:[{v:'buen_estado',l:'Buen estado'},{v:'desgaste_normal',l:'Desgaste normal'},{v:'desgaste_critico',l:'Desgaste crítico',req_comment:true}]},
+          {key:'neum_tras_lh', label:'Neumático trasero izquierdo (LH)', type:'state_with_comment',
+            opts:[{v:'buen_estado',l:'Buen estado'},{v:'desgaste_normal',l:'Desgaste normal'},{v:'desgaste_critico',l:'Desgaste crítico',req_comment:true}]},
+          {key:'neum_tras_rh', label:'Neumático trasero derecho (RH)', type:'state_with_comment',
+            opts:[{v:'buen_estado',l:'Buen estado'},{v:'desgaste_normal',l:'Desgaste normal'},{v:'desgaste_critico',l:'Desgaste crítico',req_comment:true}]},
+          {key:'pastillas_del', label:'Pastillas de freno delanteras', type:'state_with_numeric',
+            opts:[{v:'buen_estado',l:'Buen estado'},{v:'desgaste_normal',l:'Desgaste normal'},{v:'desgaste_critico',l:'Desgaste crítico',req_comment:true}],
+            numeric:{key:'mm', label:'Espesor (mm)', step:0.1, placeholder:'Ej: 6.5'}},
+          {key:'discos_del', label:'Discos de freno delanteros', type:'state_with_numeric',
+            opts:[{v:'buen_estado',l:'Buen estado'},{v:'desgaste_normal',l:'Desgaste normal'},{v:'desgaste_critico',l:'Desgaste crítico',req_comment:true}],
+            numeric:{key:'mm', label:'Espesor (mm)', step:0.1, placeholder:'Ej: 26.0'}},
+          {key:'pastillas_tras', label:'Pastillas o balatas de freno traseras', type:'state_with_numeric',
+            opts:[{v:'buen_estado',l:'Buen estado'},{v:'desgaste_normal',l:'Desgaste normal'},{v:'desgaste_critico',l:'Desgaste crítico',req_comment:true}],
+            numeric:{key:'mm', label:'Espesor (mm)', step:0.1, placeholder:'Ej: 5.0'}},
+          {key:'discos_tras', label:'Discos o tambor de freno trasero', type:'state_with_numeric',
+            opts:[{v:'buen_estado',l:'Buen estado'},{v:'desgaste_normal',l:'Desgaste normal'},{v:'desgaste_critico',l:'Desgaste crítico',req_comment:true}],
+            numeric:{key:'mm', label:'Espesor (mm)', step:0.1, placeholder:'Ej: 9.0'}},
+          {key:'sistema_hidraulico_frenos', label:'Sistema hidráulico de frenos', type:'state_with_comment',
+            opts:[{v:'buen_estado',l:'Buen estado'},{v:'desgaste_normal',l:'Desgaste normal'},{v:'desgaste_critico',l:'Desgaste crítico',req_comment:true}]},
+          {key:'liquido_frenos', label:'Líquido de frenos', type:'state_with_comment',
+            opts:[{v:'buen_estado',l:'Buen estado'},{v:'estado_normal',l:'Estado normal'},{v:'mal_estado',l:'Mal estado',req_comment:true}]},
+          {key:'presion_neumaticos', label:'Presión de los neumáticos', type:'state_with_numeric',
+            opts:[{v:'calibrados',l:'Calibrados'},{v:'no_calibrados',l:'No calibrados'}],
+            numeric:{key:'psi', label:'Presión (PSI)', step:0.1, placeholder:'Ej: 32.0'}}
+        ]
+      },
+      {
+        id: 'compartimento_motor',
+        title: 'Operaciones en el compartimento motor',
+        items: [
+          {key:'lavaparabrisas', label:'Líquido lavaparabrisas', type:'fill_level',
+            opts:[{v:'bajo_rellenado',l:'Bajo (rellenado)'},{v:'correcto',l:'Correcto'},{v:'alto',l:'Alto'}]},
+          {key:'tuberias_motor', label:'Tuberías y mangueras', type:'state_with_comment',
+            opts:[{v:'buen_estado',l:'Buen estado'},{v:'danos_leves',l:'Daños leves',req_comment:true},{v:'danos_graves',l:'Daños graves',req_comment:true}]},
+          {key:'refrigerante', label:'Anticongelante/refrigerante de motor', type:'fill_level',
+            opts:[{v:'bajo_rellenado',l:'Bajo (rellenado)'},{v:'correcto',l:'Correcto'},{v:'alto',l:'Alto'}]},
+          {key:'tapon_refrigeracion', label:'Tapón de presión del sistema de refrigeración', type:'state_with_comment',
+            opts:[{v:'buen_estado',l:'Buen estado'},{v:'danos_leves',l:'Daños leves',req_comment:true},{v:'danos_graves',l:'Daños graves',req_comment:true},{v:'reinstalado_ok',l:'Reinstalado tras relleno'}]},
+          {key:'radiador', label:'Radiador', type:'state_with_comment',
+            opts:[{v:'buen_estado',l:'Buen estado'},{v:'danos_leves',l:'Daños leves',req_comment:true},{v:'danos_graves',l:'Daños graves',req_comment:true}]},
+          {key:'filtro_aire', label:'Filtro de aire', type:'replace_or_inspect',
+            opts:[{v:'reemplazado',l:'Reemplazado'},{v:'inspeccionar',l:'Inspeccionar sistema'}]},
+          {key:'correa_aux', label:'Correa de arrastre auxiliar', type:'state_with_comment',
+            opts:[{v:'buen_estado',l:'Buen estado'},{v:'danos_leves',l:'Daños leves',req_comment:true},{v:'danos_graves',l:'Daños graves',req_comment:true}]}
+        ]
+      },
+      {
+        id: 'elementos_finales',
+        title: 'Comprobación elementos finales',
+        items: [
+          {key:'scanner_dtc', label:'Escáner – lectura y borrado de códigos', type:'scanner_dtc',
+            opts:[{v:'sin_dtc',l:'Sin DTC'},{v:'con_dtc_borrados',l:'Con DTC borrados',req_comment:true},{v:'falla_critica',l:'Falla crítica',req_comment:true}]},
+          {key:'reinicio_intervalo', label:'Reinicio de intervalo de mantenimiento', type:'state_basic',
+            opts:[{v:'realizado',l:'Realizado'},{v:'no_aplica',l:'No aplica'}]},
+          {key:'lubricacion_bisagras', label:'Lubricación de bisagras', type:'state_basic',
+            opts:[{v:'lubricadas',l:'Lubricadas'}]},
+          {key:'apriete_ruedas', label:'Apriete de ruedas', type:'apriete_ruedas',
+            opts:[{v:'confirmado',l:'Confirmado y marcado'}],
+            numeric:{key:'nm', label:'Apriete (Nm)', step:1, placeholder:'Ej: 180'}}
+        ]
+      },
+      {
+        id: 'prueba_ruta',
+        title: 'Prueba de ruta',
+        items: [
+          {key:'eficiencia_frenado', label:'Comprobación de eficiencia de frenado', type:'state_with_comment',
+            opts:[{v:'buena',l:'Buena'},{v:'normal',l:'Normal'},{v:'mala',l:'Mala',req_comment:true}]},
+          {key:'funcionamiento', label:'Comprobación de funcionamiento', type:'state_with_comment',
+            opts:[{v:'sin_problemas',l:'Sin problemas'},{v:'detalles_leves',l:'Detalles leves',req_comment:true},{v:'compromete_integridad',l:'Compromete integridad',req_comment:true}]},
+          {key:'ruidos', label:'Comprobación de ruidos', type:'state_with_comment',
+            opts:[{v:'sin_ruidos',l:'Sin ruidos'},{v:'ruidos_evidentes',l:'Ruidos evidentes',req_comment:true}]}
+        ]
+      }
+    ]
+  }
+};
+
+// Detecta si el servicio tiene pauta v2 disponible.
+function hasPautaV2(serviceKey) {
+  return !!(serviceKey && CHECKLISTS_TECH_PAUTAS_V2[serviceKey]);
+}
+window.hasPautaV2 = hasPautaV2;
+
+// Cuenta total de items de una pauta (suma todos los items de todas las zonas).
+function pautaCountItems(serviceKey) {
+  var def = CHECKLISTS_TECH_PAUTAS_V2[serviceKey];
+  if (!def) return 0;
+  return def.zonas.reduce(function(acc, z){ return acc + (z.items ? z.items.length : 0); }, 0);
+}
+window.pautaCountItems = pautaCountItems;
+
+// Cuenta items completados de la pauta. Un item esta completado si tiene
+// .estado (campo principal) seleccionado. Para tipos especiales (oil_motor,
+// state_with_numeric, etc.) tambien valida los campos numericos requeridos.
+function pautaCountCompleted(pautaData, serviceKey) {
+  if (!pautaData || !pautaData.zonas) return 0;
+  var def = CHECKLISTS_TECH_PAUTAS_V2[serviceKey];
+  if (!def) return 0;
+  var done = 0;
+  def.zonas.forEach(function(z){
+    var zoneData = pautaData.zonas[z.id] || {};
+    (z.items || []).forEach(function(it){
+      var data = zoneData[it.key];
+      if (!data || !data.estado) return; // sin estado seleccionado
+      // Validar campos adicionales segun tipo
+      if (it.type === 'oil_motor') {
+        if (!data.litros || !data.viscosidad || !data.marca) return;
+      } else if (it.type === 'state_with_numeric' || it.type === 'apriete_ruedas') {
+        if (it.numeric && data[it.numeric.key] == null) return;
+      }
+      // Comentario obligatorio si la opcion lo marca
+      var opt = (it.opts || []).find(function(o){ return o.v === data.estado; });
+      if (opt && opt.req_comment && !(data.comentario && data.comentario.trim())) return;
+      done++;
+    });
+  });
+  return done;
+}
+window.pautaCountCompleted = pautaCountCompleted;
+
+// Porcentaje de completitud 0-100.
+function pautaCompletitudPct(pautaData, serviceKey) {
+  var total = pautaCountItems(serviceKey);
+  if (!total) return 0;
+  return Math.round(pautaCountCompleted(pautaData, serviceKey) / total * 100);
+}
+window.pautaCompletitudPct = pautaCompletitudPct;
+
+// Helper: lista de items incompletos (zona + label) para mostrar al tecnico.
+function pautaIncompleteItems(pautaData, serviceKey) {
+  var def = CHECKLISTS_TECH_PAUTAS_V2[serviceKey];
+  if (!def) return [];
+  var out = [];
+  pautaData = pautaData || {zonas:{}};
+  def.zonas.forEach(function(z){
+    var zoneData = (pautaData.zonas || {})[z.id] || {};
+    (z.items || []).forEach(function(it){
+      var data = zoneData[it.key];
+      var incomplete = false;
+      if (!data || !data.estado) { incomplete = true; }
+      else if (it.type === 'oil_motor' && (!data.litros || !data.viscosidad || !data.marca)) { incomplete = true; }
+      else if ((it.type === 'state_with_numeric' || it.type === 'apriete_ruedas') && it.numeric && data[it.numeric.key] == null) { incomplete = true; }
+      else {
+        var opt = (it.opts || []).find(function(o){ return o.v === data.estado; });
+        if (opt && opt.req_comment && !(data.comentario && data.comentario.trim())) incomplete = true;
+      }
+      if (incomplete) out.push({zona: z.title, item: it.label, key: it.key, zoneId: z.id});
+    });
+  });
+  return out;
+}
+window.pautaIncompleteItems = pautaIncompleteItems;
 
 // ═══════════════════════════════════════════════════════════════
 // FASE 2.2.B: VALIDACION PATENTE CHILENA
@@ -5717,6 +6373,46 @@ function renderTimerCard(body, sess) {
     body.appendChild(pl);
   }
 
+  // FRENTE 7 FASE B (2026-05-13): boton "Pauta de inspeccion" cuando el servicio
+  // tiene pauta v2 disponible. Permite al tecnico ir completando la pauta DURANTE
+  // el servicio (no solo al finalizar). El indicador de % avance se actualiza
+  // en vivo desde el cache de la sesion.
+  if (sess.work_order_id && typeof hasPautaV2 === 'function') {
+    var srvKeyPauta = null;
+    // Buscar service_classification desde liveData (que viene de active_sessions joined con OT).
+    // Si no esta en cache, intentamos por sess.service_classification, sess.ot_service_classification,
+    // o como fallback dispararemos un fetch ligero. Pero lo mas comun es que ya este en el join.
+    srvKeyPauta = sess.service_classification || sess.ot_service_classification || sess.ot_service_key || null;
+    // Si no podemos resolver el service_classification desde la sesion, igual mostramos el boton
+    // si liveData lo trae bajo otro nombre. Como fallback ultimo, buscamos en _activeOT.
+    if (!srvKeyPauta && _activeOT && _activeOT.ot && _activeOT.ot.id === sess.work_order_id) {
+      srvKeyPauta = _activeOT.ot.service_classification;
+    }
+    if (srvKeyPauta && hasPautaV2(srvKeyPauta)) {
+      // Leer progreso desde cache: si existe pauta_v2 en el snapshot de la sesion (active_sessions
+      // puede tener un campo pauta_v2_pct sincronizado por savePautaV2Partial), usarlo.
+      // De lo contrario mostrar 0%.
+      var pautaPct = (typeof sess.pauta_v2_pct === 'number') ? sess.pauta_v2_pct : 0;
+      var pautaTotal = pautaCountItems(srvKeyPauta);
+      var pautaColor = pautaPct >= 95 ? 'var(--green)' : pautaPct >= 60 ? 'var(--gold)' : pautaPct > 0 ? 'var(--gold3)' : '#999';
+      var pautaBtn = mk('button','btn');
+      pautaBtn.style.cssText = 'margin-bottom:8px;font-size:13px;padding:12px;background:#fff;border:2px solid ' + pautaColor + ';color:#111;font-weight:700;display:flex;align-items:center;justify-content:space-between;gap:10px';
+      pautaBtn.innerHTML =
+          '<span style="display:flex;align-items:center;gap:8px">'
+        +   '<span style="font-size:16px">📋</span>'
+        +   '<span>Pauta de inspección</span>'
+        + '</span>'
+        + '<span style="display:flex;align-items:center;gap:6px">'
+        +   '<span style="font-size:11px;color:var(--wh3);font-weight:600">' + pautaPct + '%</span>'
+        +   '<span style="background:' + pautaColor + ';color:#fff;font-size:10px;font-weight:800;padding:2px 7px;border-radius:10px;font-family:var(--mono)">' + (pautaTotal ? Math.round(pautaPct * pautaTotal / 100) + '/' + pautaTotal : '—') + '</span>'
+        + '</span>';
+      pautaBtn.onclick = function() {
+        openPautaV2DuringService(sess.work_order_id, sess.session_key);
+      };
+      body.appendChild(pautaBtn);
+    }
+  }
+
   // FASE 4.0: botón rápido "+ Hallazgo" — solo si la sesión está vinculada a una OT
   // (sin OT no hay informe que actualizar). Visible tanto en running como en paused.
   if (sess.work_order_id) {
@@ -6085,16 +6781,48 @@ function openChecklist(sessionKey) {
     doFinish(null, checklistForKey);
     return;
   }
-  radioState = {};
-  document.querySelectorAll('#m-checklist .radio-btn').forEach(function(b) { b.classList.remove('on'); });
-  ['ck-litros','ck-aceite','ck-rt','ck-rr','ck-anom','ck-doble','ck-visado','ck-obs'].forEach(function(id) {
-    var el = document.getElementById(id); if (el) el.value = '';
-  });
-  document.getElementById('ck-err').style.display = 'none';
-  // Update title with service name
-  var titleEl = document.getElementById('ck-service-name');
-  if (titleEl) titleEl.textContent = srvName ? srvName.slice(0,40) : 'Checklist';
-  openModal('m-checklist');
+  // FRENTE 7 (2026-05-13): si el servicio tiene pauta v2, abrir el modal nuevo.
+  // Necesitamos resolver el work_order_id desde la sesion para cargar _myOTsCache.
+  if (sess && sess.work_order_id) {
+    // Buscar service_classification por work_order_id
+    (async function(){
+      try {
+        var r = await sb.from('work_orders').select('id, service_classification, ot_number, plate, checklist_data, status, client_id, vehicle_id').eq('id', sess.work_order_id).single();
+        if (r && r.data && hasPautaV2(r.data.service_classification)) {
+          // Inyectar la OT en _myOTsCache (si no esta) para que openPautaV2Modal la encuentre.
+          if (!Array.isArray(_myOTsCache)) _myOTsCache = [];
+          var existingIdx = _myOTsCache.findIndex(function(x){return x.ot && x.ot.id === r.data.id;});
+          var row = {ot: r.data, vehicle: null};
+          if (existingIdx >= 0) _myOTsCache[existingIdx] = row;
+          else _myOTsCache.push(row);
+          // Stop timer y pasar a checklist_pending antes de abrir pauta (UX igual al flujo legacy)
+          if (T.sessionKey === checklistForKey) { T.running = false; }
+          openPautaV2Modal(r.data.id);
+          return;
+        }
+        // Sin pauta v2 -> flujo legacy
+        _openChecklistLegacy();
+      } catch(e) {
+        logR('OPEN_CHECKLIST_PAUTA_BIF_ERR', {msg: e.message}, 'warn');
+        _openChecklistLegacy();
+      }
+    })();
+    return;
+  }
+  _openChecklistLegacy();
+
+  function _openChecklistLegacy() {
+    radioState = {};
+    document.querySelectorAll('#m-checklist .radio-btn').forEach(function(b) { b.classList.remove('on'); });
+    ['ck-litros','ck-aceite','ck-rt','ck-rr','ck-anom','ck-doble','ck-visado','ck-obs'].forEach(function(id) {
+      var el = document.getElementById(id); if (el) el.value = '';
+    });
+    document.getElementById('ck-err').style.display = 'none';
+    // Update title with service name
+    var titleEl = document.getElementById('ck-service-name');
+    if (titleEl) titleEl.textContent = srvName ? srvName.slice(0,40) : 'Checklist';
+    openModal('m-checklist');
+  }
 }
 
 async function deferChecklist(sessionKey) {
@@ -7497,6 +8225,25 @@ function buildSessCard(s, isTech) {
     if (totalCached > 0 && totalCached > sec) {
       h += '<div style="font-size:10px;color:var(--blue);margin-top:3px;font-family:var(--mono)">⏱ Total OT: ' + fmtT(totalCached) + '</div>';
     }
+  }
+  // FRENTE 7 FASE B (2026-05-13): badge de % pauta v2 en vivo para jefatura.
+  // Lee pauta_v2_pct sincronizado por savePautaV2Partial. Color escalado segun
+  // ritmo: si % avance pauta < % tiempo transcurrido, dorado/rojo (atraso).
+  if (typeof s.pauta_v2_pct === 'number' && s.pauta_v2_pct >= 0) {
+    var pPct = s.pauta_v2_pct;
+    // Calcular % tiempo transcurrido vs goal para detectar atraso
+    var tPct = (s.goal_minutes && sec) ? Math.min(100, Math.round(sec / (s.goal_minutes * 60) * 100)) : 0;
+    // Si lleva al menos 20% del tiempo y la pauta va atrasada por mas de 15 puntos -> rojo
+    // Si va levemente atrasado (5-15) -> dorado. Si va al dia o adelantado -> verde.
+    var delta = pPct - tPct; // positivo = adelantado
+    var bgPauta, brdPauta, txtPauta;
+    if (tPct >= 20 && delta < -15) { bgPauta = '#ffefef'; brdPauta = 'var(--red)'; txtPauta = 'var(--red)'; }
+    else if (delta < -5) { bgPauta = 'var(--gold2)'; brdPauta = 'var(--gold)'; txtPauta = 'var(--gold3)'; }
+    else { bgPauta = '#e8f5e8'; brdPauta = 'var(--green)'; txtPauta = '#1a6e1a'; }
+    h += '<div style="background:' + bgPauta + ';border:1.5px solid ' + brdPauta + ';border-radius:4px;padding:3px 8px;margin-top:4px;font-size:10px;color:' + txtPauta + ';font-weight:800;display:inline-flex;align-items:center;gap:6px">'
+      + '📋 PAUTA ' + pPct + '%'
+      + (tPct > 0 ? ' <span style="opacity:.7;font-weight:600">· tiempo ' + tPct + '%</span>' : '')
+      + '</div>';
   }
   if (sessActiveSup) {
     // Badge dorado especifico con cronometro vivo del apoyo (clase js-support-timer
@@ -13413,8 +14160,767 @@ async function openMyOTDetail(otId) {
 }
 
 // ─── Modal CHECKLIST TÉCNICO (dinámico según tipo de servicio) ───
-function openTechChecklist(otId) {
+// ═══════════════════════════════════════════════════════════════
+// FRENTE 7 (2026-05-13): RENDER Y PERSISTENCIA DE PAUTA v2
+// ═══════════════════════════════════════════════════════════════
+// _activePautaV2 = estado en memoria del modal abierto. Persiste mientras
+// el modal esta visible para permitir guardado parcial y re-apertura.
+var _activePautaV2 = null;
+
+// Abre el modal de pauta v2 para una OT. Carga datos previos si existen.
+function openPautaV2Modal(otId) {
   var row = _myOTsCache.find(function(r){return r.ot.id === otId;});
+  if (!row) { showGlobalError('OT no encontrada', 3000); return; }
+  var o = row.ot;
+  var srv = o.service_classification;
+  var def = CHECKLISTS_TECH_PAUTAS_V2[srv];
+  if (!def) {
+    // Servicio no tiene pauta v2 -> fallback a checklist legacy.
+    return openTechChecklist(otId);
+  }
+  _activeOT = row;
+  // Cargar datos previos (re-edicion) o inicializar vacio.
+  var existing = ((o.checklist_data || {}).tech_checklist || {}).pauta_v2;
+  _activePautaV2 = {
+    woId: o.id,
+    otNumber: o.ot_number,
+    service: srv,
+    plate: o.plate || (row.vehicle && row.vehicle.plate) || '',
+    vehicle: row.vehicle || null,
+    tiempo_objetivo_min: def.tiempo_objetivo_min,
+    iniciado_at: (existing && existing.iniciado_at) || new Date().toISOString(),
+    zonas: (existing && existing.zonas) ? JSON.parse(JSON.stringify(existing.zonas)) : {},
+    observaciones_libres: (existing && existing.observaciones_libres) || '',
+    audit_log: (existing && Array.isArray(existing.audit_log)) ? existing.audit_log.slice() : [],
+    // FRENTE 7 FASE B: contexto de cierre. 'finalize' cierra cronometro y avanza status.
+    // 'live' = abierto durante servicio, autosave en cada cambio, no avanza status.
+    context: 'finalize'
+  };
+  // Asegurar estructura por zona
+  def.zonas.forEach(function(z){
+    if (!_activePautaV2.zonas[z.id]) _activePautaV2.zonas[z.id] = {};
+  });
+  renderPautaV2Modal();
+  closeModal('m-my-ot');
+  openModal('m-pauta-v2');
+  logR('PAUTA_V2_OPEN', {ot: o.ot_number, srv: srv, items: pautaCountItems(srv), prev: !!existing, context: 'finalize'});
+}
+window.openPautaV2Modal = openPautaV2Modal;
+
+// FRENTE 7 FASE B (2026-05-13): abre la pauta DURANTE el servicio (no al finalizar).
+// Diferencias clave vs openPautaV2Modal:
+//   - No cierra el modal padre (m-my-ot puede no estar abierto)
+//   - context='live' -> autosave en cada cambio, no avanza status al cerrar
+//   - Cierre del modal con boton "Cerrar y seguir" en vez de "Guardar pauta"
+//   - Se invoca desde renderTimerCard (lamina del cronometro)
+async function openPautaV2DuringService(woId, sessionKey) {
+  if (!sb || !woId) { showGlobalError('Datos insuficientes para abrir pauta', 3000); return; }
+  try {
+    // Cargar OT actual (siempre datos frescos para reflejar autosave previo)
+    var r = await sb.from('work_orders').select('id, ot_number, service_classification, plate, checklist_data, vehicle_id').eq('id', woId).single();
+    if (r && r.error) { showGlobalError('Error al cargar OT: ' + r.error.message, 4000); return; }
+    var o = r.data;
+    if (!o) { showGlobalError('OT no encontrada', 3000); return; }
+    var srv = o.service_classification;
+    var def = CHECKLISTS_TECH_PAUTAS_V2[srv];
+    if (!def) { showGlobalError('Este servicio no tiene pauta v2', 3500); return; }
+    var existing = ((o.checklist_data || {}).tech_checklist || {}).pauta_v2;
+    // Vehiculo (opcional, para header)
+    var vData = null;
+    if (o.vehicle_id) {
+      try {
+        var rv = await sb.from('client_vehicles').select('plate,brand,model').eq('id', o.vehicle_id).single();
+        vData = (rv && rv.data) || null;
+      } catch(_){}
+    }
+    _activePautaV2 = {
+      woId: o.id,
+      otNumber: o.ot_number,
+      service: srv,
+      plate: o.plate || (vData && vData.plate) || '',
+      vehicle: vData,
+      tiempo_objetivo_min: def.tiempo_objetivo_min,
+      iniciado_at: (existing && existing.iniciado_at) || new Date().toISOString(),
+      zonas: (existing && existing.zonas) ? JSON.parse(JSON.stringify(existing.zonas)) : {},
+      observaciones_libres: (existing && existing.observaciones_libres) || '',
+      audit_log: (existing && Array.isArray(existing.audit_log)) ? existing.audit_log.slice() : [],
+      sessionKey: sessionKey || null,
+      context: 'live',
+      lastAutosaveAt: null
+    };
+    def.zonas.forEach(function(z){
+      if (!_activePautaV2.zonas[z.id]) _activePautaV2.zonas[z.id] = {};
+    });
+    renderPautaV2Modal();
+    openModal('m-pauta-v2');
+    logR('PAUTA_V2_OPEN_LIVE', {ot: o.ot_number, srv: srv, items: pautaCountItems(srv), prev: !!existing});
+  } catch(e) {
+    logR('PAUTA_V2_OPEN_LIVE_ERR', {msg: e.message}, 'err');
+    showGlobalError('Error al abrir pauta: ' + e.message, 4000);
+  }
+}
+window.openPautaV2DuringService = openPautaV2DuringService;
+
+// FRENTE 7 FASE B: autosave de pauta v2 sin cambiar status ni cerrar modal.
+// Debounced para no saturar BD si el tecnico hace muchos cambios rapidos.
+// Solo escribe checklist_data.tech_checklist.pauta_v2 (estado parcial) y
+// sincroniza pauta_v2_pct en active_sessions para que jefatura vea avance.
+var _pautaV2AutosaveTimer = null;
+function schedulePautaV2Autosave() {
+  if (!_activePautaV2) return;
+  if (_pautaV2AutosaveTimer) clearTimeout(_pautaV2AutosaveTimer);
+  // Debounce: 500ms tras el ultimo cambio para juntar rafagas (ej. tipear comentario).
+  _pautaV2AutosaveTimer = setTimeout(function(){
+    _pautaV2AutosaveTimer = null;
+    savePautaV2Partial();
+  }, 500);
+}
+window.schedulePautaV2Autosave = schedulePautaV2Autosave;
+
+async function savePautaV2Partial() {
+  var st = _activePautaV2;
+  if (!st) return;
+  var total = pautaCountItems(st.service);
+  var done = pautaCountCompleted(st, st.service);
+  var pct = total ? Math.round(done / total * 100) : 0;
+
+  try {
+    var rcur = await sb.from('work_orders').select('checklist_data').eq('id', st.woId).single();
+    if (rcur && rcur.error) {
+      logR('PAUTA_V2_AUTOSAVE_FETCH_ERR', {msg: rcur.error.message}, 'warn');
+      return;
+    }
+    var cd = (rcur && rcur.data && rcur.data.checklist_data) || {};
+    if (!cd.tech_checklist) cd.tech_checklist = {};
+    var prev = cd.tech_checklist.pauta_v2 || {};
+    // Merge: conservar audit_log y campos meta previos si existen, no pisar tech_completed_at.
+    cd.tech_checklist.pauta_v2 = {
+      service: st.service,
+      tiempo_objetivo_min: st.tiempo_objetivo_min,
+      iniciado_at: st.iniciado_at,
+      finalizado_at: prev.finalizado_at || null, // solo se setea al cierre formal
+      tecnico_username: st.tecnico_username || prev.tecnico_username || (CU && CU.username),
+      tecnico_name: st.tecnico_name || prev.tecnico_name || (CU && CU.name),
+      completitud_pct: pct,
+      zonas: st.zonas,
+      observaciones_libres: st.observaciones_libres || '',
+      audit_log: st.audit_log || [],
+      last_partial_save_at: new Date().toISOString()
+    };
+    // NO setear tech_completed_at en autosave - eso es solo al cierre formal.
+    var rup = await sb.from('work_orders').update({
+      checklist_data: cd,
+      updated_at: new Date().toISOString(),
+      updated_by: CU ? CU.id : null
+    }).eq('id', st.woId);
+    if (rup && rup.error) {
+      logR('PAUTA_V2_AUTOSAVE_ERR', {msg: rup.error.message}, 'warn');
+      return;
+    }
+    // Sincronizar pauta_v2_pct en active_sessions para que jefatura vea avance vivo.
+    if (st.sessionKey) {
+      try {
+        await sb.from('active_sessions').update({
+          pauta_v2_pct: pct,
+          updated_at: new Date().toISOString()
+        }).eq('session_key', st.sessionKey);
+      } catch(eSync) {
+        // Tolerar: si la columna no existe aun en BD, no es bloqueante.
+        logR('PAUTA_V2_PCT_SYNC_WARN', {msg: eSync.message}, 'warn');
+      }
+    }
+    st.lastAutosaveAt = new Date().toISOString();
+    // Actualizar indicador visual en el header del modal
+    var indEl = document.getElementById('pauta-v2-autosave-indicator');
+    if (indEl) {
+      indEl.textContent = '✓ Guardado ' + new Date().toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+      indEl.style.color = 'var(--green)';
+    }
+    logR('PAUTA_V2_AUTOSAVE_OK', {ot: st.otNumber, pct: pct, ctx: st.context});
+  } catch(e) {
+    logR('PAUTA_V2_AUTOSAVE_THREW', {msg: e.message}, 'err');
+  }
+}
+window.savePautaV2Partial = savePautaV2Partial;
+
+// FRENTE 7 FASE B: cierra el modal en modo live (durante servicio). Hace flush
+// final del autosave pendiente antes de cerrar para no perder cambios recientes.
+// NO avanza el status de la OT - el servicio sigue en curso.
+async function closePautaV2Live() {
+  if (_pautaV2AutosaveTimer) {
+    clearTimeout(_pautaV2AutosaveTimer);
+    _pautaV2AutosaveTimer = null;
+  }
+  if (_activePautaV2) {
+    await savePautaV2Partial();
+    var pct = pautaCompletitudPct(_activePautaV2, _activePautaV2.service);
+    var total = pautaCountItems(_activePautaV2.service);
+    var done = pautaCountCompleted(_activePautaV2, _activePautaV2.service);
+    showGlobalError('✓ Pauta guardada (' + done + '/' + total + ' · ' + pct + '%). Tu servicio sigue en curso.', 4000);
+  }
+  closeModal('m-pauta-v2');
+  _activePautaV2 = null;
+  if (typeof fetchLive === 'function') await fetchLive();
+}
+window.closePautaV2Live = closePautaV2Live;
+
+// FRENTE 7 FASE B: cierra modal en modo admin (jefatura editando pauta ya cerrada).
+// Guarda los cambios con audit_log completo. NO cambia tech_completed_at ni status.
+async function closePautaV2Admin() {
+  if (_pautaV2AutosaveTimer) {
+    clearTimeout(_pautaV2AutosaveTimer);
+    _pautaV2AutosaveTimer = null;
+  }
+  if (!_activePautaV2) { closeModal('m-pauta-v2'); return; }
+  await savePautaV2Partial();
+  var edits = (_activePautaV2.audit_log || []).filter(function(e){
+    return e.at && new Date(e.at).getTime() >= (_activePautaV2._adminSessionStartedAt || 0);
+  }).length;
+  showGlobalError('✓ Cambios guardados' + (edits ? ' (' + edits + ' edicion' + (edits === 1 ? '' : 'es') + ' registradas)' : '') + '.', 4500);
+  logR('PAUTA_V2_ADMIN_SAVE', {ot: _activePautaV2.otNumber, edits: edits});
+  closeModal('m-pauta-v2');
+  _activePautaV2 = null;
+}
+window.closePautaV2Admin = closePautaV2Admin;
+
+// FRENTE 7 FASE B: abre la pauta v2 en modo ADMIN (jefatura/super_admin editando
+// una pauta ya guardada). Cada cambio registra entrada en audit_log con identidad
+// y timestamp. Solo accesible para roles con permiso de edicion (admin, super_admin,
+// o jefatura con can_tech). No avanza ni retrocede el status de la OT.
+async function openPautaV2AdminEditor(woId) {
+  if (!CU || !CU.id) { showGlobalError('Sesión no iniciada', 3500); return; }
+  // Permiso: admin, super_admin, o jefatura. Tecnicos comunes NO entran aqui.
+  var allowed = (CU.role === 'admin' || CU.role === 'super_admin' || CU.role === 'jefatura');
+  if (!allowed) {
+    showGlobalError('Solo administradores y jefatura pueden editar pautas finalizadas.', 4500);
+    return;
+  }
+  if (!sb || !woId) { showGlobalError('Datos insuficientes', 3000); return; }
+  try {
+    var r = await sb.from('work_orders').select('id, ot_number, service_classification, plate, checklist_data, vehicle_id').eq('id', woId).single();
+    if (r && r.error) { showGlobalError('Error al cargar OT: ' + r.error.message, 4000); return; }
+    var o = r.data;
+    if (!o) { showGlobalError('OT no encontrada', 3000); return; }
+    var srv = o.service_classification;
+    var def = CHECKLISTS_TECH_PAUTAS_V2[srv];
+    if (!def) { showGlobalError('Este servicio no tiene pauta v2', 3500); return; }
+    var existing = ((o.checklist_data || {}).tech_checklist || {}).pauta_v2;
+    if (!existing) { showGlobalError('Esta OT no tiene pauta v2 registrada', 3500); return; }
+    var vData = null;
+    if (o.vehicle_id) {
+      try {
+        var rv = await sb.from('client_vehicles').select('plate,brand,model').eq('id', o.vehicle_id).single();
+        vData = (rv && rv.data) || null;
+      } catch(_){}
+    }
+    _activePautaV2 = {
+      woId: o.id,
+      otNumber: o.ot_number,
+      service: srv,
+      plate: o.plate || (vData && vData.plate) || '',
+      vehicle: vData,
+      tiempo_objetivo_min: def.tiempo_objetivo_min,
+      iniciado_at: existing.iniciado_at || new Date().toISOString(),
+      zonas: JSON.parse(JSON.stringify(existing.zonas || {})),
+      observaciones_libres: existing.observaciones_libres || '',
+      audit_log: Array.isArray(existing.audit_log) ? existing.audit_log.slice() : [],
+      tecnico_username: existing.tecnico_username,
+      tecnico_name: existing.tecnico_name,
+      context: 'admin',
+      _adminSessionStartedAt: Date.now() // para contar ediciones de ESTA sesion admin
+    };
+    def.zonas.forEach(function(z){
+      if (!_activePautaV2.zonas[z.id]) _activePautaV2.zonas[z.id] = {};
+    });
+    renderPautaV2Modal();
+    // Si el editor de informes esta abierto, lo dejamos asi para volver a el al cerrar.
+    openModal('m-pauta-v2');
+    logR('PAUTA_V2_ADMIN_OPEN', {ot: o.ot_number, by: CU.username, prev_audit: _activePautaV2.audit_log.length});
+  } catch(e) {
+    logR('PAUTA_V2_ADMIN_OPEN_ERR', {msg: e.message}, 'err');
+    showGlobalError('Error al abrir pauta en modo admin: ' + e.message, 4000);
+  }
+}
+window.openPautaV2AdminEditor = openPautaV2AdminEditor;
+
+// Renderiza el modal completo de pauta v2.
+function renderPautaV2Modal() {
+  var st = _activePautaV2;
+  if (!st) return;
+  var def = CHECKLISTS_TECH_PAUTAS_V2[st.service];
+  if (!def) return;
+
+  // Header con info de OT, completitud y barra de progreso
+  var total = pautaCountItems(st.service);
+  var done = pautaCountCompleted(st, st.service);
+  var pct = total ? Math.round(done / total * 100) : 0;
+  var pctColor = pct >= 95 ? 'var(--green)' : pct >= 60 ? 'var(--gold)' : 'var(--red)';
+  // FRENTE 7 FASE B: titulo cambia segun contexto.
+  var ctxLabel = '';
+  var ctxColor = '';
+  if (st.context === 'live') {
+    ctxLabel = '🔴 EN VIVO — autosave activo';
+    ctxColor = 'var(--red)';
+  } else if (st.context === 'admin') {
+    ctxLabel = '⚙ MODO ADMIN — edición con auditoría';
+    ctxColor = 'var(--gold3)';
+  }
+  var headerHtml =
+      '<div class="modal-t">' + escapeHtml(def.label) + '</div>'
+    + '<div class="modal-s">OT-' + escapeHtml(String(st.otNumber || '?')) + ' · '
+    +   escapeHtml(st.plate || '?') + ' · '
+    +   '⏱ Objetivo: ' + def.tiempo_objetivo_min + ' min'
+    + '</div>'
+    + (ctxLabel ? '<div style="font-size:10px;color:' + ctxColor + ';font-weight:700;margin-top:2px;letter-spacing:.04em">' + ctxLabel + '</div>' : '')
+    + '<div style="background:#f5f5f5;border-radius:4px;padding:8px 10px;margin:8px 0;display:flex;align-items:center;gap:10px">'
+    +   '<div style="flex:1">'
+    +     '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">'
+    +       '<div style="font-size:10px;color:var(--wh3);text-transform:uppercase;letter-spacing:.04em;font-weight:700">Progreso</div>'
+    +       (st.context === 'live' || st.context === 'admin' ? '<div id="pauta-v2-autosave-indicator" style="font-size:9px;color:var(--wh4);font-weight:600">Sin cambios</div>' : '')
+    +     '</div>'
+    +     '<div style="background:#e0e0e0;height:8px;border-radius:4px;overflow:hidden">'
+    +       '<div id="pauta-v2-progress-bar" style="background:' + pctColor + ';height:100%;width:' + pct + '%;transition:width .3s"></div>'
+    +     '</div>'
+    +   '</div>'
+    +   '<div id="pauta-v2-progress-text" style="font-size:18px;font-weight:700;color:' + pctColor + ';font-family:var(--mono);min-width:65px;text-align:right">'
+    +     done + '/' + total
+    +   '</div>'
+    + '</div>';
+  document.getElementById('m-pauta-v2-header').innerHTML = headerHtml;
+
+  // Cuerpo: zonas como acordeones (todas cerradas por defecto, como pidio el usuario)
+  var bodyHtml = '';
+  def.zonas.forEach(function(z, zIdx){
+    var zoneDone = 0, zoneTotal = z.items ? z.items.length : 0;
+    var zoneData = st.zonas[z.id] || {};
+    z.items.forEach(function(it){
+      var d = zoneData[it.key];
+      if (d && d.estado) {
+        // Verificar completitud completa
+        var fullOk = true;
+        if (it.type === 'oil_motor' && (!d.litros || !d.viscosidad || !d.marca)) fullOk = false;
+        else if ((it.type === 'state_with_numeric' || it.type === 'apriete_ruedas') && it.numeric && d[it.numeric.key] == null) fullOk = false;
+        else {
+          var opt = (it.opts || []).find(function(o){ return o.v === d.estado; });
+          if (opt && opt.req_comment && !(d.comentario && d.comentario.trim())) fullOk = false;
+        }
+        if (fullOk) zoneDone++;
+      }
+    });
+    var zonePct = zoneTotal ? Math.round(zoneDone / zoneTotal * 100) : 0;
+    var zoneColor = zonePct === 100 ? 'var(--green)' : zonePct >= 50 ? 'var(--gold)' : zonePct > 0 ? 'var(--gold)' : '#bbb';
+    var zoneCheck = zonePct === 100 ? '✓' : zonePct > 0 ? '◐' : '○';
+    bodyHtml +=
+        '<div class="pauta-v2-zone" data-zone-id="' + z.id + '" style="border:1px solid var(--border);border-left:4px solid ' + zoneColor + ';border-radius:4px;margin-bottom:8px;overflow:hidden">'
+      +   '<div class="pauta-v2-zone-header" onclick="togglePautaV2Zone(\'' + z.id + '\')" '
+      +        'style="background:#fafafa;padding:11px 12px;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:8px;user-select:none">'
+      +     '<div style="display:flex;align-items:center;gap:8px;flex:1">'
+      +       '<span style="font-size:16px;color:' + zoneColor + ';font-weight:700;min-width:18px">' + zoneCheck + '</span>'
+      +       '<span style="font-size:13px;font-weight:700;color:#111;font-family:var(--head);text-transform:uppercase;letter-spacing:.03em">' + escapeHtml(z.title) + '</span>'
+      +     '</div>'
+      +     '<div style="display:flex;align-items:center;gap:6px">'
+      +       '<span style="font-size:11px;color:var(--wh3);font-weight:600;font-family:var(--mono)">' + zoneDone + '/' + zoneTotal + '</span>'
+      +       '<span class="pauta-v2-zone-arrow" data-zone-arrow="' + z.id + '" style="font-size:14px;color:var(--wh3);transition:transform .2s">▶</span>'
+      +     '</div>'
+      +   '</div>'
+      +   '<div class="pauta-v2-zone-body" data-zone-body="' + z.id + '" style="display:none;padding:8px 12px 12px;background:#fff">';
+    // Items de la zona
+    z.items.forEach(function(it){
+      bodyHtml += renderPautaV2Item(z.id, it, zoneData[it.key] || {});
+    });
+    bodyHtml += '</div></div>';
+  });
+
+  // Campo de observaciones libres al final (opcional)
+  bodyHtml +=
+      '<div style="margin-top:14px;border-top:2px solid var(--red);padding-top:10px">'
+    +   '<div class="lbl" style="margin-bottom:4px">Notas / comentarios del técnico <span style="font-size:10px;color:var(--wh4);font-weight:400">(opcional)</span></div>'
+    +   renderObsTemplatesHTML('tech_observations', st.service, '#m-pauta-v2-body [data-pauta-v2-obs]')
+    +   '<textarea class="inp" data-pauta-v2-obs rows="3" placeholder="Resumen general, recomendaciones al cliente, próximas visitas..." onchange="updatePautaV2Field(\'observaciones_libres\', this.value)">' + escapeHtml(st.observaciones_libres || '') + '</textarea>'
+    + '</div>';
+
+  document.getElementById('m-pauta-v2-body').innerHTML = bodyHtml;
+  document.getElementById('m-pauta-v2-err').style.display = 'none';
+
+  // FRENTE 7 FASE B: ajustar botones inferiores segun contexto.
+  var saveBtn = document.getElementById('m-pauta-v2-save');
+  if (saveBtn) {
+    if (st.context === 'live') {
+      saveBtn.innerHTML = '✓ Cerrar y seguir';
+      saveBtn.className = 'btn btn-blue';
+      saveBtn.onclick = function() { closePautaV2Live(); };
+    } else if (st.context === 'admin') {
+      saveBtn.innerHTML = '💾 Guardar cambios';
+      saveBtn.className = 'btn btn-blue';
+      saveBtn.onclick = function() { closePautaV2Admin(); };
+    } else {
+      // 'finalize' (default): cierre formal con avance de status
+      saveBtn.innerHTML = 'Finalizar y enviar a doble control';
+      saveBtn.className = 'btn btn-red';
+      saveBtn.onclick = function() { savePautaV2(); };
+    }
+  }
+}
+window.renderPautaV2Modal = renderPautaV2Modal;
+
+// Render de un item individual segun su tipo. data es el objeto guardado
+// (puede estar vacio). Devuelve HTML string.
+function renderPautaV2Item(zoneId, it, data) {
+  data = data || {};
+  var key = it.key;
+  var selected = data.estado || '';
+  // FRENTE 7 FASE B: en modo admin, mostrar badge si este item fue editado en BD.
+  var st = _activePautaV2;
+  var editedBadge = '';
+  if (st && st.context === 'admin' && Array.isArray(st.audit_log)) {
+    var hasEdits = st.audit_log.some(function(e){ return e.zone_id === zoneId && e.item_key === key; });
+    if (hasEdits) {
+      var lastEdit = null;
+      st.audit_log.forEach(function(e){
+        if (e.zone_id === zoneId && e.item_key === key) {
+          if (!lastEdit || (e.at && e.at > lastEdit.at)) lastEdit = e;
+        }
+      });
+      var byName = lastEdit && lastEdit.by_name ? lastEdit.by_name : '?';
+      editedBadge = '<span style="display:inline-block;background:#fff4d6;border:1px solid var(--gold);color:var(--gold3);font-size:9px;font-weight:700;padding:1px 6px;border-radius:8px;margin-left:6px" title="Última edición: ' + escapeHtml(byName) + '">✏️ editado</span>';
+    }
+  }
+  var html =
+      '<div class="pauta-v2-item" data-pauta-v2-item="' + zoneId + '__' + key + '" style="padding:10px 0;border-bottom:1px solid #f0f0f0">'
+    +   '<div style="font-size:13px;font-weight:600;color:#111;margin-bottom:6px">' + escapeHtml(it.label) + editedBadge + '</div>';
+
+  // Botones de opciones (radio-style)
+  html += '<div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:6px">';
+  (it.opts || []).forEach(function(opt){
+    var isSelected = (selected === opt.v);
+    var bg = isSelected ? 'var(--red)' : '#fff';
+    var color = isSelected ? '#fff' : '#444';
+    var border = isSelected ? 'var(--red)' : '#ccc';
+    // Color suave para "OK / Buen estado" cuando seleccionado: verde en vez de rojo
+    var isPositive = /^(ok|buen_estado|sin_fugas|sin_dtc|reemplazado|realizado|correcto|nivelacion_ok|reinstalado_ok|calibrados|confirmado|buena|sin_problemas|sin_ruidos|lubricadas|no_aplica|no_necesita|contam_normal|estado_normal|desgaste_normal)$/.test(opt.v);
+    if (isSelected && isPositive) {
+      bg = 'var(--green)'; border = 'var(--green)';
+    } else if (isSelected && opt.req_comment) {
+      bg = 'var(--gold)'; border = 'var(--gold)'; color = '#fff';
+    }
+    html += '<button type="button" class="pauta-v2-opt" data-pauta-v2-opt="' + opt.v + '" '
+      +   'onclick="pickPautaV2Opt(\'' + zoneId + '\',\'' + key + '\',\'' + opt.v + '\')" '
+      +   'style="padding:7px 11px;border:1.5px solid ' + border + ';background:' + bg + ';color:' + color + ';'
+      +   'border-radius:18px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;line-height:1.2">'
+      +   escapeHtml(opt.l) + '</button>';
+  });
+  html += '</div>';
+
+  // Campos adicionales segun tipo
+  if (it.type === 'oil_motor') {
+    // 3 campos: litros, viscosidad, marca
+    html +=
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:4px">'
+      +   '<div><label style="font-size:10px;color:var(--wh3);font-weight:600;text-transform:uppercase">Litros</label>'
+      +     '<input type="number" step="0.1" class="inp" style="padding:6px 8px;font-size:12px" '
+      +       'placeholder="Ej: 4.5" value="' + escapeHtml(data.litros || '') + '" '
+      +       'onchange="updatePautaV2Item(\'' + zoneId + '\',\'' + key + '\',\'litros\',this.value)"/></div>'
+      +   '<div><label style="font-size:10px;color:var(--wh3);font-weight:600;text-transform:uppercase">Viscosidad</label>'
+      +     '<input type="text" class="inp" style="padding:6px 8px;font-size:12px" '
+      +       'placeholder="Ej: 5W30" value="' + escapeHtml(data.viscosidad || '') + '" '
+      +       'onchange="updatePautaV2Item(\'' + zoneId + '\',\'' + key + '\',\'viscosidad\',this.value)"/></div>'
+      + '</div>'
+      + '<div style="margin-top:4px">'
+      +   '<label style="font-size:10px;color:var(--wh3);font-weight:600;text-transform:uppercase">Marca</label>'
+      +   '<input type="text" class="inp" style="padding:6px 8px;font-size:12px" '
+      +     'placeholder="Ej: LIQUI MOLY LONGTIME HIGHTECH" value="' + escapeHtml(data.marca || '') + '" '
+      +     'onchange="updatePautaV2Item(\'' + zoneId + '\',\'' + key + '\',\'marca\',this.value)"/>'
+      + '</div>';
+  } else if ((it.type === 'state_with_numeric' || it.type === 'apriete_ruedas') && it.numeric) {
+    var n = it.numeric;
+    html +=
+        '<div style="display:flex;align-items:center;gap:8px;margin-top:4px">'
+      +   '<label style="font-size:11px;color:var(--wh2);font-weight:600;min-width:90px">' + escapeHtml(n.label) + '</label>'
+      +   '<input type="number" step="' + (n.step || 0.1) + '" class="inp" style="padding:6px 8px;font-size:12px;max-width:120px" '
+      +     'placeholder="' + escapeHtml(n.placeholder || '') + '" value="' + escapeHtml(data[n.key] != null ? String(data[n.key]) : '') + '" '
+      +     'onchange="updatePautaV2Item(\'' + zoneId + '\',\'' + key + '\',\'' + n.key + '\',this.value)"/>'
+      + '</div>';
+  }
+
+  // Textarea de comentario condicional (visible si la opcion seleccionada lo requiere)
+  var selOpt = (it.opts || []).find(function(o){ return o.v === selected; });
+  var needComment = !!(selOpt && selOpt.req_comment);
+  html +=
+      '<div data-pauta-v2-comment-row="' + zoneId + '__' + key + '" style="margin-top:6px;' + (needComment ? '' : 'display:none') + '">'
+    +   '<textarea class="inp" rows="2" style="padding:6px 8px;font-size:12px" '
+    +     'placeholder="Comentario obligatorio para esta respuesta" '
+    +     'onchange="updatePautaV2Item(\'' + zoneId + '\',\'' + key + '\',\'comentario\',this.value)">' + escapeHtml(data.comentario || '') + '</textarea>'
+    + '</div>';
+
+  html += '</div>';
+  return html;
+}
+window.renderPautaV2Item = renderPautaV2Item;
+
+// Maneja seleccion de opcion (radio-style). Si selecciona la misma, NO la
+// deselecciona (evita estados intermedios). Para deseleccionar, el tecnico
+// elige otra opcion.
+function pickPautaV2Opt(zoneId, key, optValue) {
+  if (!_activePautaV2) return;
+  var st = _activePautaV2;
+  if (!st.zonas[zoneId]) st.zonas[zoneId] = {};
+  if (!st.zonas[zoneId][key]) st.zonas[zoneId][key] = {};
+  var prevValue = st.zonas[zoneId][key].estado || null;
+  st.zonas[zoneId][key].estado = optValue;
+  // Si la opcion no requiere comentario, limpiar el comentario previo
+  var def = CHECKLISTS_TECH_PAUTAS_V2[st.service];
+  var zone = def.zonas.find(function(z){return z.id === zoneId;});
+  var item = zone && zone.items.find(function(i){return i.key === key;});
+  var opt = item && item.opts.find(function(o){return o.v === optValue;});
+  if (opt && !opt.req_comment) {
+    delete st.zonas[zoneId][key].comentario;
+  }
+  // Audit log si el contexto es admin (jefatura editando)
+  if (st.context === 'admin' && prevValue !== optValue) {
+    st.audit_log = st.audit_log || [];
+    st.audit_log.push({
+      at: new Date().toISOString(),
+      by_id: CU ? CU.id : null,
+      by_name: CU ? CU.name : null,
+      zone_id: zoneId,
+      item_key: key,
+      field: 'estado',
+      before: prevValue,
+      after: optValue
+    });
+  }
+  // FRENTE 7 FASE B: autosave si contexto live/admin (no en finalize que ya guarda al final)
+  if (st.context === 'live' || st.context === 'admin') {
+    schedulePautaV2Autosave();
+  }
+  // Re-render solo el item (no toda la pauta, para no perder focus en inputs)
+  // Por simplicidad y robustez, re-renderizamos el modal entero y reabrimos zona.
+  var wasOpen = isPautaV2ZoneOpen(zoneId);
+  renderPautaV2Modal();
+  if (wasOpen) togglePautaV2Zone(zoneId, true);
+}
+window.pickPautaV2Opt = pickPautaV2Opt;
+
+// Actualiza un campo adicional (litros, viscosidad, mm, nm, comentario, etc.)
+// No re-renderiza (evita perder focus en input). Solo actualiza estado y
+// refresca progreso/header.
+function updatePautaV2Item(zoneId, key, field, value) {
+  if (!_activePautaV2) return;
+  var st = _activePautaV2;
+  if (!st.zonas[zoneId]) st.zonas[zoneId] = {};
+  if (!st.zonas[zoneId][key]) st.zonas[zoneId][key] = {};
+  var prevVal = st.zonas[zoneId][key][field];
+  if (value == null || value === '') {
+    delete st.zonas[zoneId][key][field];
+  } else {
+    // Convertir a number si es campo numerico
+    var def = CHECKLISTS_TECH_PAUTAS_V2[st.service];
+    var zone = def.zonas.find(function(z){return z.id === zoneId;});
+    var item = zone && zone.items.find(function(i){return i.key === key;});
+    if (item && item.numeric && item.numeric.key === field) {
+      var n = parseFloat(value);
+      st.zonas[zoneId][key][field] = isNaN(n) ? null : n;
+    } else if (item && item.type === 'oil_motor' && field === 'litros') {
+      var n2 = parseFloat(value);
+      st.zonas[zoneId][key][field] = isNaN(n2) ? null : n2;
+    } else {
+      st.zonas[zoneId][key][field] = value;
+    }
+  }
+  // Audit log si contexto admin
+  var newVal = st.zonas[zoneId][key][field];
+  if (st.context === 'admin' && prevVal !== newVal) {
+    st.audit_log = st.audit_log || [];
+    st.audit_log.push({
+      at: new Date().toISOString(),
+      by_id: CU ? CU.id : null,
+      by_name: CU ? CU.name : null,
+      zone_id: zoneId,
+      item_key: key,
+      field: field,
+      before: prevVal == null ? null : prevVal,
+      after: newVal == null ? null : newVal
+    });
+  }
+  // FRENTE 7 FASE B: autosave si live/admin
+  if (st.context === 'live' || st.context === 'admin') {
+    schedulePautaV2Autosave();
+  }
+  refreshPautaV2Progress();
+}
+window.updatePautaV2Item = updatePautaV2Item;
+
+// Actualiza campos top-level del estado (observaciones_libres, etc.)
+function updatePautaV2Field(field, value) {
+  if (!_activePautaV2) return;
+  _activePautaV2[field] = value;
+  if (_activePautaV2.context === 'live' || _activePautaV2.context === 'admin') {
+    schedulePautaV2Autosave();
+  }
+}
+window.updatePautaV2Field = updatePautaV2Field;
+
+// Refresca solo header de progreso (sin re-render completo).
+function refreshPautaV2Progress() {
+  var st = _activePautaV2;
+  if (!st) return;
+  var total = pautaCountItems(st.service);
+  var done = pautaCountCompleted(st, st.service);
+  var pct = total ? Math.round(done / total * 100) : 0;
+  var pctColor = pct >= 95 ? 'var(--green)' : pct >= 60 ? 'var(--gold)' : 'var(--red)';
+  var bar = document.getElementById('pauta-v2-progress-bar');
+  var txt = document.getElementById('pauta-v2-progress-text');
+  if (bar) { bar.style.width = pct + '%'; bar.style.background = pctColor; }
+  if (txt) { txt.textContent = done + '/' + total; txt.style.color = pctColor; }
+}
+window.refreshPautaV2Progress = refreshPautaV2Progress;
+
+// Abre/cierra zona acordeon. Si forceOpen=true, fuerza abrir.
+function togglePautaV2Zone(zoneId, forceOpen) {
+  var body = document.querySelector('[data-zone-body="' + zoneId + '"]');
+  var arrow = document.querySelector('[data-zone-arrow="' + zoneId + '"]');
+  if (!body) return;
+  var isOpen = body.style.display !== 'none';
+  var shouldOpen = forceOpen ? true : !isOpen;
+  body.style.display = shouldOpen ? 'block' : 'none';
+  if (arrow) arrow.style.transform = shouldOpen ? 'rotate(90deg)' : 'rotate(0deg)';
+}
+window.togglePautaV2Zone = togglePautaV2Zone;
+
+function isPautaV2ZoneOpen(zoneId) {
+  var body = document.querySelector('[data-zone-body="' + zoneId + '"]');
+  return !!(body && body.style.display !== 'none');
+}
+
+// Guarda la pauta v2 en BD. Si la completitud es < 100%, muestra confirmacion
+// suave (permite guardar igualmente porque el usuario asi lo definio).
+async function savePautaV2() {
+  var st = _activePautaV2;
+  if (!st) { showGlobalError('No hay pauta activa', 3000); return; }
+  var total = pautaCountItems(st.service);
+  var done = pautaCountCompleted(st, st.service);
+  var pct = total ? Math.round(done / total * 100) : 0;
+
+  // Confirmacion suave si incompleto
+  if (pct < 100) {
+    var incomplete = pautaIncompleteItems(st, st.service);
+    var first5 = incomplete.slice(0, 5).map(function(i){ return '• ' + i.zona + ': ' + i.item; }).join('\n');
+    var more = incomplete.length > 5 ? '\n... y ' + (incomplete.length - 5) + ' más' : '';
+    var msg = 'Estás guardando con ' + (total - done) + ' de ' + total + ' ítems sin completar (' + pct + '% completado).\n\n'
+      + 'Items pendientes:\n' + first5 + more + '\n\n'
+      + '¿Confirmas guardar la pauta incompleta?';
+    if (!confirm(msg)) {
+      logR('PAUTA_V2_SAVE_CANCELED', {ot: st.otNumber, pct: pct, missing: incomplete.length});
+      return;
+    }
+  }
+
+  // Marcar finalizado_at (siempre se actualiza al guardar)
+  st.finalizado_at = new Date().toISOString();
+  st.tecnico_username = CU.username;
+  st.tecnico_name = CU.name;
+  st.completitud_pct = pct;
+
+  try {
+    // Leer checklist_data actual para no pisar otros campos
+    var rcur = await sb.from('work_orders').select('checklist_data, status').eq('id', st.woId).single();
+    if (rcur && rcur.error) {
+      showGlobalError('Error al leer datos previos: ' + rcur.error.message, 5000);
+      return;
+    }
+    var cd = (rcur && rcur.data && rcur.data.checklist_data) || {};
+    var prevStatus = (rcur && rcur.data && rcur.data.status) || null;
+    if (!cd.tech_checklist) cd.tech_checklist = {};
+    // Snapshot de la pauta (sin la metadata interna como woId)
+    cd.tech_checklist.pauta_v2 = {
+      service: st.service,
+      tiempo_objetivo_min: st.tiempo_objetivo_min,
+      iniciado_at: st.iniciado_at,
+      finalizado_at: st.finalizado_at,
+      tecnico_username: st.tecnico_username,
+      tecnico_name: st.tecnico_name,
+      completitud_pct: pct,
+      zonas: st.zonas,
+      observaciones_libres: st.observaciones_libres || ''
+    };
+    // Mantener tambien tech_observations top-level para compat con informes editor
+    if (st.observaciones_libres) cd.tech_checklist.tech_observations = st.observaciones_libres;
+    // Metadata top-level alineada con saveTechChecklist (necesaria para
+    // deriveOTStatus y para que el editor de informes muestre "completado").
+    cd.tech_completed_at = new Date().toISOString();
+    cd.tech_completed_by = CU ? CU.id : null;
+    cd.tech_completed_by_name = CU ? CU.name : null;
+
+    // FASE 3.2: transicion correcta. checklist tecnico -> pending_double_check.
+    // Si ya estaba mas adelante (closed/pending_visado), no retroceder.
+    var newStatus;
+    if (prevStatus === 'closed' || prevStatus === 'pending_visado') {
+      newStatus = prevStatus;
+    } else {
+      newStatus = 'pending_double_check';
+    }
+
+    var rup = await sb.from('work_orders').update({
+      checklist_data: cd,
+      status: newStatus,
+      tech_completed_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      updated_by: CU ? CU.id : null
+    }).eq('id', st.woId);
+    if (rup && rup.error) {
+      showGlobalError('Error al guardar pauta: ' + rup.error.message, 5000);
+      logR('PAUTA_V2_SAVE_ERR', {ot: st.otNumber, msg: rup.error.message}, 'err');
+      return;
+    }
+
+    // Si la sesion del cronometro sigue corriendo para esta OT, cerrarla
+    // para que el tecnico no quede con un cronometro abierto despues de
+    // guardar la pauta (analogo a doFinish).
+    try {
+      var openSess = (liveData || []).find(function(s){ return s.work_order_id === st.woId && s.username === CU.username; });
+      if (openSess) {
+        var finalSec = liveSecondsNow(openSess);
+        if (!finalSec && openSess.seconds) finalSec = openSess.seconds;
+        if (finalSec < 1) finalSec = 1;
+        await sb.from('active_sessions').update({
+          running: false,
+          status: 'completed',
+          seconds: finalSec,
+          updated_at: new Date().toISOString()
+        }).eq('session_key', openSess.session_key);
+      }
+    } catch(eClose) {
+      logR('PAUTA_V2_CLOSE_SESSION_WARN', {msg: eClose.message}, 'warn');
+    }
+
+    // Notificar a visadores que hay una OT lista para doble control
+    try {
+      await pushNotif('pending_double_check', 'Doble control pendiente - ' + (st.plate || '?'),
+        st.service + ' por ' + (CU ? CU.name : '?') + ' - completitud ' + pct + '%');
+    } catch(_) {}
+
+    logR('PAUTA_V2_SAVE_OK', {ot: st.otNumber, srv: st.service, pct: pct, items: done + '/' + total, newStatus: newStatus});
+    closeModal('m-pauta-v2');
+    _activePautaV2 = null;
+    showGlobalError('✓ Pauta guardada (' + pct + '% completada). La OT pasa a doble control.', 5000);
+    // Re-cargar lista de OTs del tecnico y datos en vivo
+    if (typeof loadMyOTs === 'function') await loadMyOTs();
+    if (typeof fetchLive === 'function') await fetchLive();
+  } catch(e) {
+    logR('PAUTA_V2_SAVE_THREW', {msg: e.message}, 'err');
+    showGlobalError('Error inesperado: ' + e.message, 5000);
+  }
+}
+window.savePautaV2 = savePautaV2;
+
+function openTechChecklist(otId) {
+  // FRENTE 7 (2026-05-13): bifurcacion a pauta v2 si el servicio la tiene.
+  // Los servicios sin pauta v2 caen al flujo legacy (checklist tradicional).
+  var rowBif = _myOTsCache.find(function(r){return r.ot.id === otId;});
+  if (rowBif && rowBif.ot && hasPautaV2(rowBif.ot.service_classification)) {
+    return openPautaV2Modal(otId);
+  }
+  var row = rowBif;
   if (!row) return;
   _activeOT = row;
   var o = row.ot;
@@ -13476,7 +14982,21 @@ function renderChecklistItem(it, currentValue, currentReason) {
       + '<input type="number" class="inp" data-chk-key="' + key + '" value="' + (currentValue != null ? currentValue : '') + '" step="' + (it.step || 1) + '" min="0" data-no-upper/>'
       + (it.unit ? '<div style="font-size:10px;color:var(--wh4);margin-top:-4px;font-family:var(--mono)">Unidad: ' + escapeHtml(it.unit) + '</div>' : '');
   } else if (it.type === 'textarea') {
+    // FRENTE 6 FASE B (2026-05-13): plantillas rapidas para campos de observaciones.
+    // Si el item es un campo de observacion conocido, se renderizan chips clickeables
+    // arriba del textarea para acelerar la escritura. El servicio activo se lee de
+    // _activeOT para que las plantillas sean especificas al contexto.
+    var tplBar = '';
+    try {
+      var srvKeyForTpl = (_activeOT && _activeOT.ot && _activeOT.ot.service_classification) || null;
+      // Lista blanca de campos con plantillas. Si el key esta aqui, se intenta render.
+      if (typeof renderObsTemplatesHTML === 'function'
+          && (key === 'tech_observations' || key === 'dc_observations' || key === 'dc_na_reason' || key === 'vs_observations')) {
+        tplBar = renderObsTemplatesHTML(key, srvKeyForTpl, '#m-techchk-body [data-chk-key="' + key + '"]');
+      }
+    } catch(_) {}
     html += '<div class="lbl" style="margin-bottom:4px">' + lbl + '</div>'
+      + tplBar
       + '<textarea class="inp" data-chk-key="' + key + '" rows="' + (it.rows || 3) + '" placeholder="' + escapeHtml(it.placeholder || '') + '">' + escapeHtml(currentValue || '') + '</textarea>';
   } else { // text
     html += '<div class="lbl" style="margin-bottom:4px">' + lbl + '</div>'
@@ -13936,10 +15456,23 @@ function renderDCItem(it, currentValue, currentReason) {
     var rows = it.rows || 2;
     var v = currentValue != null ? String(currentValue) : '';
     var ph = it.placeholder ? ' placeholder="' + escapeHtml(it.placeholder) + '"' : '';
+    // FRENTE 6 FASE B (2026-05-13): plantillas rapidas para dc_observations y
+    // dc_na_reason. Las plantillas se leen de OBSERVATION_TEMPLATES._common
+    // (las dc_* no varian por servicio). El selector apunta al textarea del
+    // doble control: '#m-dc-body [data-dc-key="..."]'.
+    var dcTplBar = '';
+    try {
+      if (typeof renderObsTemplatesHTML === 'function'
+          && (it.key === 'dc_observations' || it.key === 'dc_na_reason')) {
+        var dcSrvKey = (_activeOT && _activeOT.ot && _activeOT.ot.service_classification) || null;
+        dcTplBar = renderObsTemplatesHTML(it.key, dcSrvKey, '#m-dc-body [data-dc-key="' + it.key + '"]');
+      }
+    } catch(_) {}
     // Nota: dc_na_reason quedó obsoleto (ahora cada item bool tiene su propio
     // motivo inline). Se mantiene como campo libre opcional por compat.
     return '<div style="margin-bottom:10px">'
       + '<div class="lbl" style="margin-bottom:4px">' + lbl + '</div>'
+      + dcTplBar
       + '<textarea class="inp" data-dc-key="' + it.key + '" rows="' + rows + '"' + ph + ' data-no-upper>' + escapeHtml(v) + '</textarea></div>';
   }
   return '';
@@ -18944,6 +20477,166 @@ function informeCollectResumenSources(techDef, tcData) {
   return sources;
 }
 
+// ═══════════════════════════════════════════════════════════════
+// FRENTE 7 (2026-05-13): RENDER PAUTA V2 EN PDF DE INFORME
+// ═══════════════════════════════════════════════════════════════
+// Renderiza la pauta Rosso-Autodata como secciones por zona, con
+// tabla de items: nombre, accion ejecutada, valor numerico/comentario.
+// Recibe doc (jsPDF), pautaData (objeto checklist_data.tech_checklist.pauta_v2),
+// y dimensiones de pagina. Retorna y final (para que el caller continue).
+function renderPautaV2InPdf(doc, pautaData, startY, pageW, pageH, marginX, contentW) {
+  var def = CHECKLISTS_TECH_PAUTAS_V2[pautaData.service];
+  if (!def) return startY;
+  var y = startY;
+
+  // Bloque de encabezado de programa
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(11);
+  doc.setTextColor(20, 20, 20);
+  doc.text('Programa de revisión', marginX, y);
+  y += 4;
+  doc.setFont('helvetica', 'italic');
+  doc.setFontSize(8);
+  doc.setTextColor(110, 110, 110);
+  doc.text('Programa de inspección según las recomendaciones y especificaciones del fabricante.', marginX, y);
+  y += 5;
+
+  var programaRows = [
+    ['Tipo de servicio', def.label],
+    ['Intervalo recomendado', def.intervalo_recomendado || '—'],
+    ['Tiempo objetivo', def.tiempo_objetivo_min + ' min'],
+    ['Completitud', (pautaData.completitud_pct != null ? pautaData.completitud_pct : 0) + '%']
+  ];
+  if (pautaData.tecnico_name) programaRows.push(['Técnico', pautaData.tecnico_name]);
+  doc.autoTable({
+    startY: y,
+    body: programaRows,
+    theme: 'grid',
+    styles: {fontSize: 9, cellPadding: 2, lineColor: [200, 200, 200], lineWidth: 0.2, textColor: [40, 40, 40]},
+    columnStyles: {
+      0: {cellWidth: 45, fontStyle: 'bold', fillColor: [248, 248, 248]},
+      1: {cellWidth: contentW - 45}
+    },
+    margin: {left: marginX, right: marginX}
+  });
+  y = doc.lastAutoTable.finalY + 6;
+
+  // Render por zona: cada zona es un titulo + tabla de items
+  // Acumular hallazgos relevantes para resumen final
+  var hallazgos = [];
+
+  def.zonas.forEach(function(z) {
+    var zoneData = (pautaData.zonas || {})[z.id] || {};
+    // Construir filas de items: solo items con estado seleccionado.
+    var rows = [];
+    (z.items || []).forEach(function(it) {
+      var d = zoneData[it.key];
+      if (!d || !d.estado) return; // omitir items sin completar
+      // Determinar label del estado
+      var opt = (it.opts || []).find(function(o){ return o.v === d.estado; });
+      var estadoLabel = opt ? opt.l : d.estado;
+      // Detalle adicional segun tipo
+      var detalle = '';
+      if (it.type === 'oil_motor') {
+        var parts = [];
+        if (d.litros != null) parts.push(d.litros + ' L');
+        if (d.viscosidad) parts.push(d.viscosidad);
+        if (d.marca) parts.push(d.marca);
+        if (parts.length) detalle = parts.join(' · ');
+      } else if ((it.type === 'state_with_numeric' || it.type === 'apriete_ruedas') && it.numeric) {
+        var nVal = d[it.numeric.key];
+        if (nVal != null) detalle = nVal + ' ' + (it.numeric.label.match(/\(([^)]+)\)/) || ['',''])[1];
+        if (detalle.endsWith(' ')) detalle = detalle.trim();
+      }
+      if (d.comentario && d.comentario.trim()) {
+        detalle = detalle ? (detalle + ' — ' + d.comentario.trim()) : d.comentario.trim();
+      }
+      rows.push([it.label, estadoLabel, detalle]);
+
+      // Detectar hallazgos: opcion que requiere comentario o valor "critico" / "grave" / "fuga" / etc.
+      var isHallazgo = (opt && opt.req_comment) || /critic|grave|fuga|mal|fallida|quemada|desgaste_alto/i.test(d.estado || '');
+      if (isHallazgo) {
+        hallazgos.push({zona: z.title, item: it.label, estado: estadoLabel, detalle: detalle});
+      }
+    });
+    if (!rows.length) return;
+
+    // Salto de pagina si queda poco espacio
+    if (y > pageH - 40) { doc.addPage(); y = 18; }
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10);
+    doc.setTextColor(20, 20, 20);
+    doc.text(z.title, marginX, y);
+    y += 4;
+
+    doc.autoTable({
+      startY: y,
+      head: [['Componente', 'Resultado', 'Detalle']],
+      body: rows,
+      theme: 'grid',
+      styles: {fontSize: 8.5, cellPadding: 1.8, lineColor: [200, 200, 200], lineWidth: 0.15, textColor: [40, 40, 40], valign: 'middle'},
+      headStyles: {fillColor: [235, 235, 235], textColor: [40, 40, 40], fontSize: 9, fontStyle: 'bold'},
+      columnStyles: {
+        0: {cellWidth: 70, fontStyle: 'bold'},
+        1: {cellWidth: 38},
+        2: {cellWidth: contentW - 108}
+      },
+      margin: {left: marginX, right: marginX}
+    });
+    y = doc.lastAutoTable.finalY + 4;
+  });
+
+  // Bloque "DETALLES ENCONTRADOS" — visible solo si hay hallazgos
+  if (hallazgos.length) {
+    if (y > pageH - 40) { doc.addPage(); y = 18; }
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11);
+    doc.setTextColor(180, 30, 30); // rojo Rosso para destacar
+    doc.text('Detalles encontrados en la inspección', marginX, y);
+    y += 5;
+    var hRows = hallazgos.map(function(h){
+      var det = h.detalle ? (h.estado + ' — ' + h.detalle) : h.estado;
+      return [h.zona, h.item, det];
+    });
+    doc.autoTable({
+      startY: y,
+      head: [['Zona', 'Componente', 'Resultado']],
+      body: hRows,
+      theme: 'grid',
+      styles: {fontSize: 8.5, cellPadding: 2, lineColor: [220, 200, 200], lineWidth: 0.15, textColor: [40, 40, 40]},
+      headStyles: {fillColor: [255, 240, 240], textColor: [180, 30, 30], fontSize: 9, fontStyle: 'bold'},
+      columnStyles: {
+        0: {cellWidth: 45},
+        1: {cellWidth: 65, fontStyle: 'bold'},
+        2: {cellWidth: contentW - 110}
+      },
+      margin: {left: marginX, right: marginX}
+    });
+    y = doc.lastAutoTable.finalY + 6;
+  }
+
+  // Notas del tecnico (observaciones libres)
+  if (pautaData.observaciones_libres && pautaData.observaciones_libres.trim()) {
+    if (y > pageH - 30) { doc.addPage(); y = 18; }
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11);
+    doc.setTextColor(20, 20, 20);
+    doc.text('Notas / comentarios del técnico', marginX, y);
+    y += 5;
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(9);
+    doc.setTextColor(50, 50, 50);
+    var notas = pautaData.observaciones_libres.trim();
+    var lines = doc.splitTextToSize(notas, contentW);
+    doc.text(lines, marginX, y);
+    y += lines.length * 4 + 4;
+  }
+
+  return y;
+}
+window.renderPautaV2InPdf = renderPautaV2InPdf;
+
 async function generateInformePdf(woId) {
   if (!sb) { showGlobalError('Sin conexión a BD', 4000); return; }
   var jsPDFCtor = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
@@ -19046,8 +20739,15 @@ async function generateInformePdf(woId) {
     });
     y = doc.lastAutoTable.finalY + 7;
 
-    // 5) Por cada sección del checklist técnico, render
-    if (techDef && techDef.sections) {
+    // FRENTE 7 (2026-05-13): si la OT tiene pauta v2, renderizarla con el
+    // estilo Rosso-Autodata (zonas + items + respuestas estructuradas).
+    // Esto reemplaza el render legacy (5) por el bloque pauta v2.
+    var pautaV2 = tc.pauta_v2;
+    if (pautaV2 && pautaV2.zonas && CHECKLISTS_TECH_PAUTAS_V2[pautaV2.service]) {
+      y = renderPautaV2InPdf(doc, pautaV2, y, pageW, pageH, marginX, contentW);
+    }
+    // 5) Por cada sección del checklist técnico, render (legacy, solo si no hay pauta v2)
+    else if (techDef && techDef.sections) {
       var sectionNum = 0;
       techDef.sections.forEach(function(sec) {
         var split = informeSplitItems(sec, tc);
@@ -20528,12 +22228,17 @@ async function openInformeEditor(woId) {
       woId: woId,
       otNumber: o.ot_number || '',
       origObs: origObs,
+      serviceKey: o.service_classification || null, // FRENTE 6 FASE B: para plantillas
       extras: loaded.extras,
       // FASE 4.0: hallazgos en vivo + metadata del informe en desarrollo
       liveFindings: loaded.live_findings || [],
       reportStartedAt: loaded.report_started_at,
       reportStartedByName: loaded.report_started_by_name,
-      reportState: loaded.report_state
+      reportState: loaded.report_state,
+      // FRENTE 7 FASE B: info de pauta v2 si existe, para boton "Editar pauta"
+      hasPautaV2: !!(tc.pauta_v2 && tc.pauta_v2.zonas),
+      pautaV2Pct: (tc.pauta_v2 && typeof tc.pauta_v2.completitud_pct === 'number') ? tc.pauta_v2.completitud_pct : null,
+      pautaV2AuditCount: (tc.pauta_v2 && Array.isArray(tc.pauta_v2.audit_log)) ? tc.pauta_v2.audit_log.length : 0
     };
     renderInformeEditorBody();
   } catch(e) {
@@ -20585,6 +22290,23 @@ function renderInformeEditorBody() {
     }
   }
 
+  // FRENTE 7 FASE B (2026-05-13): bloque de pauta v2 con boton "Editar pauta"
+  // que abre el modal de pauta en modo admin (audit log activo).
+  if (st.hasPautaV2) {
+    var pctTxt = st.pautaV2Pct != null ? (st.pautaV2Pct + '% completada') : 'sin datos';
+    var pctColor = st.pautaV2Pct == null ? '#999' : st.pautaV2Pct >= 95 ? 'var(--green)' : st.pautaV2Pct >= 60 ? 'var(--gold)' : 'var(--red)';
+    html += '<div style="background:#fffdf5;border:1px solid var(--gold);border-left:4px solid var(--gold);border-radius:4px;padding:11px 13px;margin-bottom:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
+      + '<div style="flex:1;min-width:200px">'
+      +   '<div style="font-size:11px;font-weight:700;color:var(--gold3);text-transform:uppercase;letter-spacing:.04em;font-family:\'Rajdhani\',sans-serif">📋 Pauta de inspección Rosso-Autodata</div>'
+      +   '<div style="font-size:12px;color:#333;margin-top:3px">'
+      +     '<span style="color:' + pctColor + ';font-weight:700">' + escapeHtml(pctTxt) + '</span>'
+      +     (st.pautaV2AuditCount ? ' · <span style="color:#666">' + st.pautaV2AuditCount + ' edición' + (st.pautaV2AuditCount === 1 ? '' : 'es') + ' registrada' + (st.pautaV2AuditCount === 1 ? '' : 's') + '</span>' : '')
+      +   '</div>'
+      + '</div>'
+      + '<button class="btn-sm" style="border:1.5px solid var(--gold3);color:var(--gold3);font-weight:700;padding:7px 14px" onclick="openPautaV2AdminEditor(\'' + escapeHtml(st.woId) + '\')">Editar pauta</button>'
+      + '</div>';
+  }
+
   // 1) Observaciones (editables)
   html += '<div style="margin-bottom:14px">'
     + '<div style="font-weight:700;font-size:12px;margin-bottom:4px;color:#222">Observaciones del técnico</div>';
@@ -20593,6 +22315,23 @@ function renderInformeEditorBody() {
   } else if (ex.edited_observations) {
     html += '<div style="font-size:10px;color:#888;margin-bottom:4px">Versión editada — el texto original sigue guardado en el checklist.</div>';
   }
+  // FRENTE 6 FASE B (2026-05-13): plantillas rapidas en el editor del informe.
+  // Aqui se mezclan plantillas tech_observations del servicio (utiles para
+  // expandir el texto original) + plantillas edited_observations del _common
+  // (resumenes para cliente). Eso ofrece al admin/tecnico el menu mas completo.
+  try {
+    if (typeof renderObsTemplatesHTML === 'function') {
+      var srvK = st.serviceKey || null;
+      // Primero las plantillas del servicio (tech_observations) — son las mas relevantes.
+      html += renderObsTemplatesHTML('tech_observations', srvK, '#inf-edit-obs');
+      // Plantillas comunes para resumen cliente — _common.edited_observations.
+      // Se renderiza un segundo bloque solo si hay plantillas (sin duplicar header).
+      var commonTpls = (OBSERVATION_TEMPLATES._common && OBSERVATION_TEMPLATES._common.edited_observations) || [];
+      if (commonTpls.length) {
+        html += renderObsTemplatesHTML('edited_observations', null, '#inf-edit-obs');
+      }
+    }
+  } catch(_) {}
   html += '<textarea id="inf-edit-obs" class="inp" rows="4" style="width:100%;font-size:13px;line-height:1.45" placeholder="Observaciones del servicio...">'
     + escapeHtml(ex.edited_observations || st.origObs || '')
     + '</textarea>';
