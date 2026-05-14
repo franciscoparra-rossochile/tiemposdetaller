@@ -18372,8 +18372,13 @@ async function viewProtocolosDoubleCheck(otId) {
 //   created_at      timestamptz default now()
 //
 // SQL de creación (ejecutar 1 vez en Supabase):
+//
+// IMPORTANTE: el resto del schema operacional NO usa RLS (anon-key permissive
+// architecture). Esta tabla DEBE seguir la misma convención. Si ejecutaste el
+// SQL anterior con RLS habilitada y los cierres no se guardan, ejecuta el
+// bloque DISABLE al final.
 /*
-create table public.local_closures (
+create table if not exists public.local_closures (
   id uuid primary key default gen_random_uuid(),
   closed_at timestamptz not null default now(),
   responsible_id uuid references public.users(id),
@@ -18384,11 +18389,13 @@ create table public.local_closures (
   missing_items jsonb,
   created_at timestamptz not null default now()
 );
-create index idx_local_closures_closed_at on public.local_closures(closed_at desc);
-alter table public.local_closures enable row level security;
-create policy "auth read closures" on public.local_closures for select to authenticated using (true);
-create policy "auth insert closures" on public.local_closures for insert to authenticated with check (true);
-create policy "auth update closures" on public.local_closures for update to authenticated using (true);
+create index if not exists idx_local_closures_closed_at on public.local_closures(closed_at desc);
+
+-- FRENTE 9.5 (2026-05-14): la versión previa de este SQL habilitaba RLS y
+-- creaba policies for authenticated. Pero el resto del sistema usa anon-key
+-- permissive — por lo tanto authenticated NUNCA está activo y los inserts
+-- se bloqueaban silenciosamente. La convención del proyecto es RLS off.
+alter table public.local_closures disable row level security;
 */
 // ═══════════════════════════════════════════════════════════════
 
@@ -18783,6 +18790,7 @@ function _cierreLocalRenderForm(body) {
 
   var saveBtn = mk('button','btn btn-red');
   saveBtn.style.marginTop = '10px';
+  saveBtn.id = 'cierre-save-btn';
   saveBtn.textContent = compl.isComplete ? 'Registrar cierre completo' : 'Guardar avance (incompleto)';
   saveBtn.onclick = function() {
     if (!compl.isComplete) {
@@ -18793,33 +18801,107 @@ function _cierreLocalRenderForm(body) {
   body.appendChild(saveBtn);
 }
 
+// FRENTE 9.5 (2026-05-14): refactor de guardado del cierre de local.
+//
+// Bug reportado: "no se están guardando los cierres de local".
+//
+// Root causes detectadas:
+//   1. .insert() / .update() sin .select() — el cliente Supabase no
+//      retorna data por defecto. Si RLS está habilitada y la política
+//      SELECT no permite leer el row recién insertado, devolvía
+//      {error: null, data: null} y el código mostraba "éxito" pese a
+//      que la fila no era recuperable / no se persistió correctamente.
+//   2. La tabla local_closures se creó con RLS habilitada (comentario
+//      SQL al inicio de la sección). El resto del schema operacional
+//      tiene RLS deshabilitado para el anon-key. Inconsistencia →
+//      inserts bloqueados silenciosamente desde el cliente.
+//   3. Sin logging detallado: imposible diagnosticar desde la consola.
+//   4. Sin loading state: el usuario tocaba "Guardar" y no sabía si
+//      la operación estaba en vuelo o ya falló.
+//
+// Fix:
+//   • .select().maybeSingle() para forzar retorno del row escrito.
+//   • Validación de res.data === null como señal de RLS bloqueando.
+//   • logR() con detalle del payload, response y error.
+//   • Botón en estado "Guardando…" durante la operación, restaurar al
+//     finalizar (éxito o error) para permitir reintentar.
+//   • Mensaje de error específico cuando se detecta el patrón RLS.
 async function _cierreLocalSave(body) {
   var today = new Date();
   var compl = _cierreLocalCompletion(_cierreLocalState, today);
   var payload = {
     closed_at: new Date().toISOString(),
-    responsible_id: CU.id || null,
-    responsible_name: CU.name,
-    checklist: _cierreLocalState.checklist,
+    responsible_id: CU && CU.id ? CU.id : null,
+    responsible_name: CU ? CU.name : '—',
+    checklist: _cierreLocalState.checklist || {},
     notes: _cierreLocalState.notes || null,
     is_complete: compl.isComplete,
     missing_items: compl.missing
   };
+
+  var btn = document.getElementById('cierre-save-btn');
+  var origLabel = btn ? btn.textContent : null;
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spin"></span> Guardando...'; }
+
+  logR('CIERRE_LOCAL_SAVE_START', {
+    isUpdate: !!_cierreLocalState.inProgressId,
+    inProgressId: _cierreLocalState.inProgressId || null,
+    isComplete: compl.isComplete,
+    missingCount: compl.missing.length,
+    checklistKeys: Object.keys(payload.checklist).length
+  });
+
   try {
     var res;
     if (_cierreLocalState.inProgressId) {
       res = await sb.from('local_closures')
         .update(payload)
-        .eq('id', _cierreLocalState.inProgressId);
+        .eq('id', _cierreLocalState.inProgressId)
+        .select()
+        .maybeSingle();
     } else {
-      res = await sb.from('local_closures').insert(payload);
+      res = await sb.from('local_closures')
+        .insert(payload)
+        .select()
+        .maybeSingle();
     }
+
+    logR('CIERRE_LOCAL_SAVE_RESULT', {
+      hasError: !!(res && res.error),
+      errorMsg: res && res.error ? res.error.message : null,
+      errorCode: res && res.error ? res.error.code : null,
+      hasData: !!(res && res.data),
+      returnedId: res && res.data ? res.data.id : null
+    });
+
     if (res.error) throw res.error;
-    showGlobalError(compl.isComplete ? 'Cierre registrado correctamente' : 'Cierre guardado como incompleto', 3500);
+
+    // Si no hubo error pero tampoco volvió data, es señal clara de RLS
+    // bloqueando el SELECT post-insert. El insert pudo o no haberse
+    // persistido — desde el cliente no podemos saberlo. Tratar como error
+    // para evitar reportar éxito falso.
+    if (!res.data) {
+      throw new Error('La operación no devolvió datos. Posiblemente RLS de Supabase está bloqueando la lectura tras insertar. Revisa el SQL al inicio de la sección "CIERRE DE LOCAL".');
+    }
+
+    showGlobalError(compl.isComplete ? '✓ Cierre registrado correctamente' : '✓ Cierre guardado como incompleto', 3500);
     _cierreLocalState = { checklist: {}, notes: '', inProgressId: null };
     renderBossCierreLocal(body);
   } catch (e) {
-    showGlobalError('Error guardando cierre: ' + (e.message || e), 5000);
+    var msg = (e && e.message) ? e.message : String(e);
+    logR('CIERRE_LOCAL_SAVE_ERR', {msg: msg, code: e && e.code}, 'err');
+    // Mensaje accionable según el tipo de error detectado.
+    var hint = '';
+    if (msg.indexOf('row-level security') !== -1 || msg.indexOf('RLS') !== -1 || (e && e.code === '42501')) {
+      hint = '\n\n→ Ejecuta en Supabase SQL Editor: ALTER TABLE local_closures DISABLE ROW LEVEL SECURITY;';
+    } else if (msg.indexOf('does not exist') !== -1 || (e && e.code === '42P01')) {
+      hint = '\n\n→ La tabla local_closures no existe. Ejecuta el SQL del comentario al inicio de la sección "CIERRE DE LOCAL".';
+    } else if (msg.indexOf('violates not-null') !== -1 || (e && e.code === '23502')) {
+      hint = '\n\n→ Faltó algún campo obligatorio. Avisa a admin con el código de error.';
+    }
+    showGlobalError('Error guardando cierre: ' + msg + hint, 8000);
+    // Restaurar el botón para que el usuario pueda reintentar.
+    if (btn && origLabel) { btn.disabled = false; btn.textContent = origLabel; }
   }
 }
 
@@ -21019,25 +21101,40 @@ function generatePDFTecnico() {
 
     y = pdfSectionTitle(doc, idx + 1, techName, y);
 
-    // Mini KPIs del tecnico en 3 cajas
+    // Mini KPIs del tecnico — FRENTE 9.5: 4 cajas para separar productividad
+    // del trabajador (Productivo del periodo, cap jornada) de eficiencia
+    // del servicio (Acumulado de cronómetros, suma cruda multi-día).
     var w = doc.internal.pageSize.getWidth();
-    var boxW = (w - 28 - 4) / 3;
+    var boxW = (w - 28 - 6) / 4;
     var boxH = 18;
-    // BUG-FIX 446b7b6d: "Servicios" cuenta vehículos únicos del técnico
-    // (1 patente atendida = 1 servicio), no registros de tiempo.
+    // "Servicios" cuenta vehículos únicos del técnico (1 patente = 1 servicio).
     var tSrvLabel = String(tKpis.total);
     if (tKpis.activosPausados > 0) {
       tSrvLabel += ' · ' + tKpis.activosPausados + ' pend.';
     }
+    // Acumulado de cronómetros: suma cruda de seconds, incluye tiempo
+    // que cayó FUERA del periodo del reporte. Útil para entender la
+    // dimensión total del trabajo en curso del técnico.
+    var sumCronoSec = 0;
+    tRows.forEach(function(r){ sumCronoSec += (r.seconds || 0); });
     pdfKPIBox(doc, 14, y, boxW, boxH, 'Servicios', tSrvLabel, PDF_COLORS.black);
-    pdfKPIBox(doc, 14 + boxW + 2, y, boxW, boxH, 'En objetivo', tKpis.pctOnTime + '%', tKpis.pctOnTime >= 70 ? PDF_COLORS.green : PDF_COLORS.red);
-    pdfKPIBox(doc, 14 + (boxW+2)*2, y, boxW, boxH, 'Productivo', fmtHM(tKpis.productiveSec), [48, 80, 176]);
+    pdfKPIBox(doc, 14 + (boxW+2), y, boxW, boxH, 'En objetivo', tKpis.pctOnTime + '%', tKpis.pctOnTime >= 70 ? PDF_COLORS.green : PDF_COLORS.red);
+    pdfKPIBox(doc, 14 + (boxW+2)*2, y, boxW, boxH, 'Productivo periodo', fmtHM(tKpis.productiveSec), [48, 80, 176]);
+    pdfKPIBox(doc, 14 + (boxW+2)*3, y, boxW, boxH, 'Acum. cronometros', fmtHM(sumCronoSec), [110, 110, 110]);
     y += boxH + 5;
 
     // Tabla
+    // FRENTE 9.5 (2026-05-14): separar columnas "Cronómetro" (tiempo total
+    // del cronómetro, puede cruzar varios días = eficiencia del servicio)
+    // de "Periodo" (productivo prorrateado al rango del reporte = lo que
+    // efectivamente trabajó el técnico en el periodo, cap a jornada).
+    // Antes una sola columna "Duración" confundía ambos conceptos: el lector
+    // veía 16h 23m y lo leía como "trabajó 16h hoy" cuando en realidad ese
+    // cronómetro lleva 5 días de servicio multi-día.
+    var rbT = repRangeBounds();
     doc.autoTable({
       startY: y,
-      head: [['Fecha','Servicio','Patente','Duracion','Objetivo','Estado','Pausas']],
+      head: [['Fecha','Servicio','Patente','Cronómetro','Periodo','Objetivo','Estado','Pausas']],
       body: tRows.map(function(r) {
         var fecha = new Date(r.ended_at).toLocaleDateString('es-CL',{day:'2-digit',month:'2-digit',year:'2-digit'});
         var pauseTxt = (r.pauses && r.pauses.length) ? r.pauses.map(function(p){return p.reason;}).join(', ') : '-';
@@ -21048,18 +21145,31 @@ function generatePDFTecnico() {
           else if (r._status === 'paused') estado = 'Pausado';
           else estado = 'Pend. checklist';
         }
-        return [fecha, r.service, r.plate || '-', r.duration, r.goal_minutes ? r.goal_minutes+'m' : '-', estado, pauseTxt];
+        // "Periodo" = productivo del servicio prorrateado al rango del reporte.
+        // Si el cronómetro está enteramente dentro del rango, "Periodo" ≈ "Cronómetro".
+        // Si cruza días, "Periodo" será menor → eso es lo que evita el "44h imposible".
+        var periodoTxt = '-';
+        try {
+          var pr = proRateRowInRange(r, rbT.from, rbT.to);
+          if (pr && pr.productiveSec > 0) periodoTxt = fmtT(pr.productiveSec);
+        } catch(_) {}
+        // Marcador visual: si el cronómetro empezó antes del rango, es multi-día.
+        var startedMs = r.started_at ? new Date(r.started_at).getTime() : null;
+        var multiDayMark = (startedMs && startedMs < rbT.from.getTime()) ? '↩ ' : '';
+        return [fecha, r.service, r.plate || '-', multiDayMark + r.duration, periodoTxt, r.goal_minutes ? r.goal_minutes+'m' : '-', estado, pauseTxt];
       }),
       theme: 'plain',
       styles: {fontSize: 7.5, cellPadding: 1.8, lineColor: PDF_COLORS.grayBorder, lineWidth: 0.1},
       headStyles: {fillColor: PDF_COLORS.black, textColor: PDF_COLORS.white, fontStyle: 'bold', fontSize: 7.5},
       alternateRowStyles: {fillColor: PDF_COLORS.grayBg},
       columnStyles: {
-        3: {halign: 'right', font: 'courier'},
-        4: {halign: 'center'},
-        5: {halign: 'center', fontSize: 7}
+        3: {halign: 'right', font: 'courier'},                              // Cronómetro
+        4: {halign: 'right', font: 'courier', fontStyle: 'bold'},           // Periodo (destacado)
+        5: {halign: 'center'},                                              // Objetivo
+        6: {halign: 'center', fontSize: 7}                                  // Estado
       },
       didParseCell: function(data) {
+        // Columna Cronómetro: rojo si superó el goal (eficiencia del servicio).
         if (data.section === 'body' && data.column.index === 3) {
           var row = tRows[data.row.index];
           if (row && row.goal_minutes && row.seconds > row.goal_minutes * 60) {
@@ -21067,19 +21177,33 @@ function generatePDFTecnico() {
             data.cell.styles.fontStyle = 'bold';
           }
         }
+        // Columna Periodo: azul (productividad del periodo).
+        if (data.section === 'body' && data.column.index === 4) {
+          data.cell.styles.textColor = [48, 80, 176];
+        }
         // Colorear columna Estado segun el tipo
-        if (data.section === 'body' && data.column.index === 5) {
-          var row = tRows[data.row.index];
-          if (row && row._is_active) {
-            if (row._status === 'paused') data.cell.styles.textColor = [200, 150, 0];
-            else if (row._status === 'running') data.cell.styles.textColor = [0, 140, 0];
+        if (data.section === 'body' && data.column.index === 6) {
+          var row2 = tRows[data.row.index];
+          if (row2 && row2._is_active) {
+            if (row2._status === 'paused') data.cell.styles.textColor = [200, 150, 0];
+            else if (row2._status === 'running') data.cell.styles.textColor = [0, 140, 0];
             else data.cell.styles.textColor = [60, 100, 200];
             data.cell.styles.fontStyle = 'bold';
           }
         }
       }
     });
-    y = doc.lastAutoTable.finalY + 10;
+    y = doc.lastAutoTable.finalY + 3;
+    // Disclaimer al pie de la tabla para clarificar las dos columnas de tiempo.
+    doc.setFont('helvetica', 'italic');
+    doc.setFontSize(7);
+    doc.setTextColor.apply(doc, PDF_COLORS.grayMid);
+    var disclaimer = '↩ = cronómetro iniciado antes del periodo · Cronómetro = duración total del servicio · Periodo = productivo prorrateado al rango (cap a jornada)';
+    doc.text(disclaimer, 14, y);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(0,0,0);
+    y += 7;
   });
 
   // Footer
