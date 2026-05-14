@@ -275,7 +275,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     <div class="tab active" data-tab="b-online" onclick="bossTab('b-online')" id="tab-online">En curso<span class="ndot" id="boss-online-dot" title="Hay muchos servicios pausados"></span></div>
     <div class="tab" data-tab="b-stock-ot" onclick="bossTab('b-stock-ot')" id="tab-stock-ot" style="display:none" title="OTs sin asignar">Stock OTs<span class="ndot" id="boss-stock-ot-dot" title="OTs sin asignar con +4h"></span></div>
     <div class="tab" data-tab="b-calendario" onclick="bossTab('b-calendario')" id="tab-calendario">Calendario</div>
-    <div class="tab" data-tab="b-plan" onclick="bossTab('b-plan')" id="tab-plan">Planificacion</div>
+    <div class="tab" data-tab="b-plan" onclick="bossTab('b-plan')" id="tab-plan">Smart Planner</div>
     <div class="tab" data-tab="b-hist" onclick="bossTab('b-hist')" id="tab-hist">Historial</div>
     <div class="tab" data-tab="b-reportes" onclick="bossTab('b-reportes')" id="tab-reportes">Reportes</div>
     <div class="tab" data-tab="b-informes" onclick="bossTab('b-informes')" id="tab-informes">Informes Técnicos</div>
@@ -3088,7 +3088,7 @@ window.applyObsTemplate = applyObsTemplate;
 const CHECKLISTS_TECH_PAUTAS_V2 = {
   CAMBIO_ACEITE: {
     label: 'Cambio de Aceite',
-    tiempo_objetivo_min: 30,
+    tiempo_objetivo_min: 60,
     intervalo_recomendado: '5.000 km',
     zonas: [
       {
@@ -3403,37 +3403,6 @@ function hasPautaV2(serviceKey) {
   return !!(serviceKey && CHECKLISTS_TECH_PAUTAS_V2[serviceKey]);
 }
 window.hasPautaV2 = hasPautaV2;
-
-// HOTFIX 2026-05-14: resolver service key desde el label del servicio cuando
-// active_sessions.service_classification viene null (caso: OT creada por flujo
-// legacy que no setea service_classification, o sesion iniciada antes de que
-// se crease la OT). El label en active_sessions.service es la fuente de verdad
-// alternativa porque siempre se setea al iniciar el cronometro.
-function resolveServiceKeyFromLabel(label) {
-  if (!label) return null;
-  var norm = String(label).toLowerCase().trim();
-  if (typeof SERVICES_INGRESO === 'undefined' || !Array.isArray(SERVICES_INGRESO)) return null;
-  for (var i = 0; i < SERVICES_INGRESO.length; i++) {
-    var item = SERVICES_INGRESO[i];
-    if (item && item.label && String(item.label).toLowerCase().trim() === norm) {
-      return item.key;
-    }
-  }
-  return null;
-}
-window.resolveServiceKeyFromLabel = resolveServiceKeyFromLabel;
-
-// HOTFIX 2026-05-14: helper unificado para obtener la service key de una sesion
-// activa. Prefiere service_classification (hidratada desde work_orders); si
-// esta vacia, intenta resolver desde el label (sess.service). Esto blinda el
-// render del boton "Pauta de inspeccion" contra OTs con service_classification
-// NULL en BD y contra sesiones sin work_order_id.
-function getSessionServiceKey(sess) {
-  if (!sess) return null;
-  if (sess.service_classification) return sess.service_classification;
-  return resolveServiceKeyFromLabel(sess.service);
-}
-window.getSessionServiceKey = getSessionServiceKey;
 
 // Cuenta total de items de una pauta (suma todos los items de todas las zonas).
 function pautaCountItems(serviceKey) {
@@ -5054,6 +5023,110 @@ async function findOpenOTByPlate(plate) {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════
+// FRENTE 9.2 (2026-05-14): SHELL DEL INFORME + PARTICIPANTES
+// ═══════════════════════════════════════════════════════════════
+// Antes:
+//   - El shell del informe (cd.report_started_at) se creaba SOLO al iniciar
+//     cronómetro y SOLO si la OT no tenía tech_completed_at previo. Si el
+//     workOrderId era null en ese momento (OT en estado no detectable,
+//     fallback de findOpenOTByPlate), el informe quedaba huérfano: el
+//     servicio se trabajaba, history quedaba registrado, pero la OT
+//     nunca aparecía en la pestaña Informes Técnicos.
+//   - El filtro "Solo míos" (forzado para role='tech') solo consideraba
+//     report_started_by y tech_completed_by. Cuando varios técnicos
+//     trabajaban la misma OT (lavado por uno, mecánica por otro), solo
+//     el primero veía el informe. El resto trabajaba a ciegas.
+//
+// Ahora:
+//   - _ensureReportShellAndParticipant(woId, srvLabel) es el helper
+//     canónico: crea el shell si falta y registra al usuario actual
+//     como participante. Idempotente: no duplica entradas ni pisa shells
+//     ya cerrados (tech_completed_at presente respeta la inmutabilidad
+//     del informe terminado).
+//   - report_participants[] = [{user_id, user_name, username, first_at,
+//     last_at}]. Refleja la realidad multi-técnico del taller.
+//   - Se invoca desde: iniciar cronómetro, reanudar sesión, finalizar
+//     (resolución retroactiva de woId).
+//   - El filtro "Solo míos" en Informes Técnicos ahora incluye
+//     participantes, además de creador/completador.
+//
+// Por qué importa: un servicio que vive en 4 manos (lavador, diagnosta,
+// mecánico, doble control) genera UN informe técnico colectivo. Cada
+// participante tiene derecho a ver y completar la parte que le toca.
+async function _ensureReportShellAndParticipant(workOrderId, srvLabel) {
+  if (!workOrderId || !sb || !CU || !CU.id) return null;
+  // Servicios no informables (lavado, logística, compras, etc.): no crear shell.
+  // Pero SÍ registrar participación si el shell ya existe (puede haberlo creado
+  // otro técnico haciendo el servicio mecánico de la misma OT).
+  var isReportable = !srvLabel || (typeof srvNeedsChecklist === 'function' && srvNeedsChecklist(srvLabel));
+  try {
+    var rGet = await sb.from('work_orders').select('checklist_data').eq('id', workOrderId).maybeSingle();
+    if (rGet.error || !rGet.data) {
+      logR('ENSURE_SHELL_FETCH_ERR', {wo: workOrderId, msg: rGet.error ? rGet.error.message : 'no data'}, 'warn');
+      return null;
+    }
+    var cd = rGet.data.checklist_data || {};
+    var mutated = false;
+
+    // 1) Shell del informe: crear si no existe Y no hay informe cerrado previo.
+    //    Si tech_completed_at ya estaba seteado, NO pisamos (informe inmutable).
+    if (isReportable && !cd.report_started_at && !cd.tech_completed_at) {
+      cd.report_started_at = new Date().toISOString();
+      cd.report_started_by = CU.id;
+      cd.report_started_by_name = CU.name;
+      cd.report_state = 'en_desarrollo';
+      if (!Array.isArray(cd.live_findings)) cd.live_findings = [];
+      mutated = true;
+      logR('REPORT_SHELL_CREATED_VIA_HELPER', {wo: workOrderId, srv: srvLabel || null});
+    }
+
+    // 2) Participante: registrar si el shell existe (o se acaba de crear).
+    //    Si el shell NO existe Y el servicio no es informable, no hay informe
+    //    al cual unirse — saltamos. Si el shell existe (lo creó otro técnico
+    //    para el servicio mecánico, por ejemplo), igual nos registramos
+    //    aunque nuestro servicio sea un lavado: facilita trazabilidad.
+    var hasShell = !!cd.report_started_at || !!cd.tech_completed_at;
+    if (hasShell) {
+      if (!Array.isArray(cd.report_participants)) cd.report_participants = [];
+      var nowIso = new Date().toISOString();
+      var existing = cd.report_participants.find(function(p){ return p && p.user_id === CU.id; });
+      if (existing) {
+        // Actualizar last_at solo si pasó más de 1 minuto (evita churn de update por cada tick).
+        var lastMs = existing.last_at ? new Date(existing.last_at).getTime() : 0;
+        if (!lastMs || (Date.now() - lastMs) > 60000) {
+          existing.last_at = nowIso;
+          mutated = true;
+        }
+      } else {
+        cd.report_participants.push({
+          user_id: CU.id,
+          user_name: CU.name,
+          username: CU.username,
+          first_at: nowIso,
+          last_at: nowIso
+        });
+        mutated = true;
+        logR('REPORT_PARTICIPANT_ADDED', {wo: workOrderId, user: CU.username, srv: srvLabel || null});
+      }
+    }
+
+    if (mutated) {
+      var rUp = await sb.from('work_orders').update({
+        checklist_data: cd,
+        updated_by: CU.id
+      }).eq('id', workOrderId);
+      if (rUp.error) {
+        logR('ENSURE_SHELL_UPDATE_ERR', {wo: workOrderId, msg: rUp.error.message}, 'warn');
+      }
+    }
+    return cd;
+  } catch(e) {
+    logR('ENSURE_SHELL_EXCEPTION', {wo: workOrderId, msg: e.message}, 'warn');
+    return null;
+  }
+}
+
 // FASE 2.6: detector de OT abierta + tiempo acumulado al ingresar patente
 // en "Nuevo registro". Muestra banner "Continuar trabajo de [técnico]".
 var _plateCheckTimer = null;
@@ -6494,36 +6567,21 @@ async function _doStartSessionInner() {
           if (rGetWO && rGetWO.data && (rGetWO.data.status === 'open' || rGetWO.data.status === 'assigned')) {
             await sb.from('work_orders').update({status:'in_progress', updated_by: CU?CU.id:null}).eq('id', workOrderId);
           }
-          // FASE 4.0: AUTO-CREAR EL INFORME EN ESTADO "EN DESARROLLO" al iniciar el cronómetro.
-          // Si la OT aún no tenía report_started_at, lo seteamos ahora. Esto convierte el informe
-          // en un objeto de primera clase desde el momento exacto en que el técnico arranca:
-          //   - aparece en la pestaña Informes con badge "EN DESARROLLO"
-          //   - acepta hallazgos en vivo (live_findings)
-          //   - puede ser editado/comentado desde la card "En curso" antes de cerrar el servicio
-          // Si ya tiene tech_completed_at o ya tiene report_started_at, no lo pisamos (idempotente).
+          // FRENTE 9.2 (2026-05-14): shell del informe + registro de participante
+          // canónico vía helper. Antes: lógica inline duplicada en 3 sitios y
+          // sin tracking de quién más trabajó en la OT (Bug Moisés JKDB39).
+          // Ahora: _ensureReportShellAndParticipant maneja idempotencia, crea
+          // el shell si falta, y registra al usuario actual como participante.
           try {
-            var cdNow = (rGetWO && rGetWO.data && rGetWO.data.checklist_data) ? rGetWO.data.checklist_data : {};
-            if (!cdNow.report_started_at && !cdNow.tech_completed_at) {
-              cdNow.report_started_at = new Date().toISOString();
-              cdNow.report_started_by = CU ? CU.id : null;
-              cdNow.report_started_by_name = CU ? CU.name : null;
-              cdNow.report_state = 'en_desarrollo';
-              // live_findings: array de hallazgos en tiempo real durante el servicio.
-              // Cada entrada: {at, by_id, by_name, text, photo (dataUrl optional)}
-              if (!Array.isArray(cdNow.live_findings)) cdNow.live_findings = [];
-              await sb.from('work_orders').update({
-                checklist_data: cdNow,
-                updated_by: CU ? CU.id : null
-              }).eq('id', workOrderId);
-              logServiceEvent({
-                plate: selPlate,
-                workOrderId: workOrderId,
-                action: 'report_shell_created',
-                origin: 'session_start',
-                serviceLabel: label,
-                sessionKey: key
-              });
-            }
+            await _ensureReportShellAndParticipant(workOrderId, label);
+            logServiceEvent({
+              plate: selPlate,
+              workOrderId: workOrderId,
+              action: 'report_shell_ensured',
+              origin: 'session_start',
+              serviceLabel: label,
+              sessionKey: key
+            });
           } catch(eRep) { logR('REPORT_SHELL_CREATE_ERR', {msg: eRep.message, wo: workOrderId}, 'warn'); }
         } catch(_){}
       }
@@ -6661,10 +6719,8 @@ function renderTimerCard(body, sess) {
   // tiene pauta v2 disponible. service_classification se hidrata en fetchLive()
   // desde el JOIN con work_orders. El indicador de % avance se actualiza en vivo
   // desde el cache active_sessions.pauta_v2_pct.
-  // HOTFIX 2026-05-14: usar getSessionServiceKey con fallback al label.
-  var srvKeyPautaTC = getSessionServiceKey(sess);
-  if (srvKeyPautaTC && typeof hasPautaV2 === 'function' && hasPautaV2(srvKeyPautaTC)) {
-    var srvKeyPauta = srvKeyPautaTC;
+  if (sess.work_order_id && sess.service_classification && typeof hasPautaV2 === 'function' && hasPautaV2(sess.service_classification)) {
+    var srvKeyPauta = sess.service_classification;
     // Leer progreso desde cache: si existe pauta_v2_pct en la sesion, usarlo.
     var pautaPct = (typeof sess.pauta_v2_pct === 'number') ? sess.pauta_v2_pct : 0;
     var pautaTotal = pautaCountItems(srvKeyPauta);
@@ -6681,7 +6737,7 @@ function renderTimerCard(body, sess) {
       +   '<span style="background:' + pautaColor + ';color:#fff;font-size:10px;font-weight:800;padding:2px 7px;border-radius:10px;font-family:var(--mono)">' + (pautaTotal ? Math.round(pautaPct * pautaTotal / 100) + '/' + pautaTotal : '—') + '</span>'
       + '</span>';
     pautaBtn.onclick = function() {
-      openPautaV2DuringService(sess.work_order_id || '', sess.session_key);
+      openPautaV2DuringService(sess.work_order_id, sess.session_key);
     };
     body.appendChild(pautaBtn);
   }
@@ -7018,6 +7074,20 @@ async function resumeSession(sessionKey) {
     updated_at: new Date().toISOString()
   }).eq('session_key', sessionKey);
   if (error) { showGlobalError('Error al reanudar: ' + error.message, 5000); return; }
+
+  // FRENTE 9.2 (2026-05-14): asegurar shell + registrar participante al reanudar.
+  // Cubre el caso en que el técnico actual no fue quien inició el cronómetro
+  // original pero ahora retoma el trabajo (handoff entre técnicos).
+  if (sess.work_order_id) {
+    try { await _ensureReportShellAndParticipant(sess.work_order_id, sess.service); } catch(_){}
+  } else if (sess.plate && sess.plate !== 'Logistica de taller') {
+    // Fallback: si la sesión no tiene work_order_id grabado, resolver ahora.
+    try {
+      var fbOTr = await findOpenOTByPlate(sess.plate);
+      if (fbOTr) await _ensureReportShellAndParticipant(fbOTr.id, sess.service);
+    } catch(_){}
+  }
+
   await pushNotif('resume', CU.name + ' reanudo servicio', sess.service + ' - ' + (sess.plate||''));
   await fetchLive();
   techTab('t-nuevo');
@@ -7275,6 +7345,17 @@ async function doFinish(checklist, sessionKey) {
         var fbOT = await findOpenOTByPlate(finPlate);
         if (fbOT) { woId = fbOT.id; logR('OT_RESOLVED_AT_FINISH', {plate: finPlate, ot_id: woId}); }
       } catch(_){}
+    }
+
+    // FRENTE 9.2 (2026-05-14): asegurar shell del informe + registrar
+    // participante AL FINALIZAR. Cubre el caso Benjamin SKXS56: la sesión
+    // arrancó sin workOrderId resuelto (OT en estado fuera del filtro de
+    // findOpenOTByPlate) → no se creó shell. Al finalizar resolvemos woId
+    // retroactivamente, por lo que es el último punto donde podemos
+    // garantizar que el informe quede creado y descubrible en Informes
+    // Técnicos. Idempotente: no pisa shells ya cerrados.
+    if (woId && finSrv) {
+      try { await _ensureReportShellAndParticipant(woId, finSrv); } catch(_){}
     }
 
     var histPayload = {
@@ -7845,18 +7926,13 @@ function buildMisServCard(s, status) {
   // pauta v2 disponible. Visible en running/paused (no en checklist_pending donde
   // el flujo de cierre toma otro camino). service_classification se hidrata en
   // fetchLive() desde el JOIN con work_orders.
-  // HOTFIX 2026-05-14: usar getSessionServiceKey con fallback al label porque
-  // service_classification puede venir NULL si la OT se creo por flujo legacy.
-  var srvKeyMis = getSessionServiceKey(s);
-  if (srvKeyMis && typeof hasPautaV2 === 'function'
-      && hasPautaV2(srvKeyMis) && (isRunning || isPaused)) {
+  if (s.work_order_id && s.service_classification && typeof hasPautaV2 === 'function'
+      && hasPautaV2(s.service_classification) && (isRunning || isPaused)) {
     var pctMis = (typeof s.pauta_v2_pct === 'number') ? s.pauta_v2_pct : 0;
-    var totalMis = pautaCountItems(srvKeyMis);
+    var totalMis = pautaCountItems(s.service_classification);
     var colorMis = pctMis >= 95 ? 'var(--green)' : pctMis >= 60 ? 'var(--gold)' : pctMis > 0 ? 'var(--gold3)' : '#999';
-    // Si no hay work_order_id, el onclick resuelve por patente al hacer click.
-    var woIdAttr = s.work_order_id ? escapeHtml(s.work_order_id) : '';
     h += '<button class="btn" style="margin-bottom:8px;width:100%;font-size:12px;padding:10px;background:#fff;border:2px solid ' + colorMis + ';color:#111;font-weight:700;display:flex;align-items:center;justify-content:space-between;gap:8px" '
-      + 'onclick="openPautaV2DuringService(\'' + woIdAttr + '\',\'' + s.session_key + '\')">'
+      + 'onclick="openPautaV2DuringService(\'' + escapeHtml(s.work_order_id) + '\',\'' + s.session_key + '\')">'
       + '<span style="display:flex;align-items:center;gap:6px"><span>📋</span><span>Pauta de inspección</span></span>'
       + '<span style="display:flex;align-items:center;gap:6px"><span style="font-size:10px;color:var(--wh3);font-weight:600">' + pctMis + '%</span>'
       + '<span style="background:' + colorMis + ';color:#fff;font-size:10px;font-weight:800;padding:2px 6px;border-radius:9px;font-family:var(--mono)">' + (totalMis ? Math.round(pctMis * totalMis / 100) + '/' + totalMis : '—') + '</span></span>'
@@ -10033,25 +10109,161 @@ function _planCapacityMinForDate(date) {
   return total;
 }
 
-// _planServiceEstimatedMin(event, liveSession, history) → minutos a contar
-// para el cómputo de carga del día. Maneja los 3 casos:
-//   1) Servicio agendado sin tocar: goal_minutes (o fallback 120)
-//   2) Servicio en curso o pausado: SOLO el goal_minutes (el servicio "ocupa"
-//      el slot planificado en el día del técnico, no las horas acumuladas en
-//      días previos). Antes contábamos consumido+restante, lo que inflaba la
-//      carga cuando un servicio cruzaba múltiples días.
-//   3) Servicio completado en history hoy: tiempo real consumido (esa
-//      capacidad del día ya fue gastada).
+// _planServiceEstimatedMin(event, liveSession, history) → minutos totales
+// estimados del servicio (usado en el modal de detalle como "~Xh"). Es un
+// número ÚNICO independiente del día, útil para mostrar la "magnitud" del
+// servicio sin importar dónde cae.
+//
+// FRENTE 9.3 (2026-05-14): este número NO es lo que se imputa a la celda
+// del Smart Planner — la distribución por día la hace _planServiceLoadByDay.
 function _planServiceEstimatedMin(event, liveSession, historyEntry) {
   var goalMin = event.goal_minutes || 120; // fallback 2h
   if (historyEntry && historyEntry.seconds) {
-    // Caso 3: ya cerrado hoy → tiempo real consumido
     return Math.round(historyEntry.seconds / 60);
   }
-  // Casos 1 y 2: agendado puro o en curso/pausado → goal planificado.
-  // El servicio en curso "ocupa" su slot del día independiente de si
-  // ya llevaba horas acumuladas de días previos.
+  if (liveSession && typeof liveSecondsNow === 'function') {
+    var sec = liveSecondsNow(liveSession);
+    if (sec > 0) {
+      // En curso/pausado: mostramos lo ya consumido + lo que falta hasta goal
+      // si goal supera lo consumido. Esto solo es para el "~Xh" del modal.
+      var consumedMin = Math.round(sec / 60);
+      return Math.max(consumedMin, goalMin);
+    }
+  }
   return goalMin;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// FRENTE 9.3 (2026-05-14): DISTRIBUCIÓN DE CARGA POR DÍA REAL
+// FRENTE 9.4 (2026-05-14): separar productividad del trabajador de
+// eficiencia del servicio. Esta función SOLO computa carga para el
+// Smart Planner — una métrica MIXTA "tiempo trabajado hoy + reservas
+// pendientes de servicios agendados hoy".
+// ═══════════════════════════════════════════════════════════════
+// La distinción importa:
+//   • Productividad del técnico = SOLO lo realmente trabajado en el
+//     día calendario. Se cap a la jornada (7/8/9h). Lo computa
+//     proRateRowInRange usado por computeKPIs en el reporte.
+//   • Eficiencia del servicio = duración total del cronómetro vs goal,
+//     puede cruzar varios días. Se mide a nivel del servicio en sí.
+//   • Carga del Smart Planner (esta función) = lo que el técnico tiene
+//     ASIGNADO al día. Mezcla trabajado + pendiente por trabajar HOY.
+//     Sirve para decidir "¿puedo cargarle otra OT?".
+//
+// Reglas:
+//   A. history presente (servicio cerrado): prorratear seconds reales
+//      al día calendario. Refleja productividad real del día.
+//   B. liveSession presente (en curso o pausado): prorratear lo
+//      productivo al día. SOLO si el servicio fue agendado para HOY
+//      Y está en estado 'running', reservar adicional el slot pendiente
+//      hasta cumplir goal_minutes. Para servicios agendados otro día
+//      o pausados, NO reservamos: el técnico ya está fuera de su slot
+//      original y la carga real del día es lo que efectivamente trabajó.
+//   C. servicio pendiente (no iniciado): asignar goal_minutes al día
+//      de scheduled_at. Refleja reserva planificada.
+//
+// Retorna: {dayISO → minutes}. Días sin carga no aparecen.
+function _planServiceLoadByDay(event, liveSession, historyEntry, rangeDays) {
+  var byDay = {};
+  if (!rangeDays || !rangeDays.length) return byDay;
+
+  // --- Caso A: history (servicio cerrado) ---
+  if (historyEntry && historyEntry.seconds && historyEntry.seconds > 0) {
+    var hStarted = historyEntry.started_at;
+    var hEnded   = historyEntry.ended_at;
+    if (!hStarted && hEnded) {
+      hStarted = new Date(new Date(hEnded).getTime() - historyEntry.seconds * 1000).toISOString();
+    }
+    if (hStarted && hEnded) {
+      var rowH = {
+        started_at: hStarted,
+        ended_at: hEnded,
+        seconds: historyEntry.seconds,
+        pauses: historyEntry.pauses || []
+      };
+      rangeDays.forEach(function(d){
+        var dayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0,0,0,0);
+        var dayEnd = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23,59,59,999);
+        try {
+          var pr = proRateRowInRange(rowH, dayStart, dayEnd);
+          if (pr && pr.productiveSec > 0) {
+            byDay[d.toISOString()] = (byDay[d.toISOString()] || 0) + Math.round(pr.productiveSec / 60);
+          }
+        } catch(_){}
+      });
+      return byDay;
+    }
+    // Fallback minimal: si no logramos prorratear, asignar al día de cierre.
+    var fbDate = hEnded ? new Date(hEnded) : null;
+    if (fbDate) {
+      var fbDayStart = new Date(fbDate.getFullYear(), fbDate.getMonth(), fbDate.getDate(), 0,0,0,0);
+      var fbMatch = rangeDays.find(function(d){ return _planSameDay(d, fbDayStart); });
+      if (fbMatch) byDay[fbMatch.toISOString()] = Math.round(historyEntry.seconds / 60);
+    }
+    return byDay;
+  }
+
+  // --- Caso B: liveSession (en curso o pausado) ---
+  if (liveSession && liveSession.started_at) {
+    var totalSec = (typeof liveSecondsNow === 'function') ? liveSecondsNow(liveSession) : (liveSession.seconds || 0);
+    if (totalSec > 0) {
+      var nowIso = new Date().toISOString();
+      var rowL = {
+        started_at: liveSession.started_at,
+        ended_at: nowIso,
+        seconds: totalSec,
+        pauses: liveSession.pauses || [],
+        _is_active: true,
+        _status: liveSession.status
+      };
+      var nowDateB = new Date();
+      var productiveMinTotal = 0;
+      rangeDays.forEach(function(d){
+        var dayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0,0,0,0);
+        var dayEnd   = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23,59,59,999);
+        if (_planSameDay(d, nowDateB)) dayEnd = nowDateB;
+        try {
+          var pr = proRateRowInRange(rowL, dayStart, dayEnd);
+          if (pr && pr.productiveSec > 0) {
+            var minDay = Math.round(pr.productiveSec / 60);
+            byDay[d.toISOString()] = (byDay[d.toISOString()] || 0) + minDay;
+            productiveMinTotal += minDay;
+          }
+        } catch(_){}
+      });
+      // Reservar slot pendiente SOLO si:
+      //   1. El servicio está RUNNING (no pausado).
+      //   2. El servicio fue agendado para HOY (scheduled_at == hoy).
+      //   3. Aún hay minutos por consumir hasta goal_minutes.
+      // Esta restricción evita inflar la carga de hoy cuando un servicio
+      // arrastra desde días anteriores: para esos, el día actual solo
+      // debe reflejar el tiempo realmente trabajado hoy.
+      if (liveSession.status === 'running' && event.goal_minutes && event.scheduled_at) {
+        var schDate = new Date(event.scheduled_at);
+        var isScheduledToday = (schDate.getFullYear() === nowDateB.getFullYear()
+          && schDate.getMonth() === nowDateB.getMonth()
+          && schDate.getDate() === nowDateB.getDate());
+        if (isScheduledToday) {
+          var pendingMin = (event.goal_minutes || 0) - productiveMinTotal;
+          if (pendingMin > 0) {
+            var todayKey = null;
+            rangeDays.forEach(function(d){ if (_planSameDay(d, nowDateB)) todayKey = d.toISOString(); });
+            if (todayKey) byDay[todayKey] = (byDay[todayKey] || 0) + pendingMin;
+          }
+        }
+      }
+      return byDay;
+    }
+  }
+
+  // --- Caso C: servicio pendiente (no tocado): goal en día agendado ---
+  if (event.scheduled_at) {
+    var dt = new Date(event.scheduled_at);
+    var dayStartC = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate(), 0,0,0,0);
+    var matchC = rangeDays.find(function(d){ return _planSameDay(d, dayStartC); });
+    if (matchC) byDay[matchC.toISOString()] = event.goal_minutes || 120;
+  }
+  return byDay;
 }
 
 // _planLoadColor(pct) → color según semáforo
@@ -10124,7 +10336,13 @@ function _planOpenCellDetail(techId, dateISO) {
           + '</div>';
       }).join('')
     + '</div>'
-    + '<button class="btn btn-out" onclick="closeModal(\'m-plan-cell\')" style="margin-top:12px;width:100%">Cerrar</button>';
+    + (isUnassigned
+        ? '<button class="btn btn-out" onclick="closeModal(\'m-plan-cell\')" style="margin-top:12px;width:100%">Cerrar</button>'
+        : '<div style="display:flex;gap:8px;margin-top:12px">'
+        +   '<button class="btn btn-red" onclick="closeModal(\'m-plan-cell\');_planNewServiceFromSlot(\'' + techId + '\', \'' + dateISO + '\')" style="flex:1">+ Agregar servicio</button>'
+        +   '<button class="btn btn-out" onclick="closeModal(\'m-plan-cell\')" style="flex:1">Cerrar</button>'
+        + '</div>'
+      );
 
   // Reutilizar overlay existente o crearlo siguiendo la estructura estándar
   // del sistema: <div class="overlay"> → <div class="modal">. NO inventar
@@ -10422,6 +10640,33 @@ async function renderBossPlan(body) {
     .order('scheduled_at');
   var events = r1.data || [];
 
+  // FRENTE 9.3 (2026-05-14): traer también scheduled_services cuyo trabajo
+  // sigue VIVO (sesiones activas/pausadas) aunque fueron agendados antes
+  // del rango. Sin esto, un servicio agendado hace 5 días que sigue en
+  // curso hoy NO contribuye a la carga del jueves — el jefe ve al técnico
+  // "libre" cuando en realidad está ocupado. La query usa el plate de las
+  // sesiones vivas para no traer basura.
+  try {
+    var livePlatesForExtras = (liveData || [])
+      .filter(function(s){ return s && s.plate && s.plate !== 'Logistica de taller'; })
+      .map(function(s){ return s.plate; });
+    if (livePlatesForExtras.length) {
+      var existingIds = {};
+      events.forEach(function(e){ if (e && e.id) existingIds[e.id] = true; });
+      var rExtras = await sb.from('scheduled_services').select('*')
+        .in('plate', livePlatesForExtras)
+        .lt('scheduled_at', rangeFrom.toISOString())
+        .neq('status','cancelado')
+        .order('scheduled_at', {ascending: false})
+        .limit(60); // tope defensivo: no traer más de 60 extras
+      if (rExtras && rExtras.data) {
+        rExtras.data.forEach(function(e){
+          if (e && e.id && !existingIds[e.id]) events.push(e);
+        });
+      }
+    }
+  } catch(_){ /* fallback silencioso: si la query falla, seguimos con el rango */ }
+
   // 2) Precarga de marca/modelo
   try {
     var planPlates = events.map(function(e){ return e.plate; }).filter(Boolean);
@@ -10468,7 +10713,10 @@ async function renderBossPlan(body) {
     if (canon.status === 'en_proceso')      e._derived_status = 'en_proceso';
     else if (canon.status === 'pausado')    e._derived_status = 'pausado';
     else if (canon.status === 'completado' && histRow) e._derived_status = 'completado';
-    // minutos estimados para cómputo de carga
+    // FRENTE 9.3: guardar referencias para distribución por día calendario
+    e._liveSess = liveSess || null;
+    e._histRow = histRow || null;
+    // minutos estimados (total del servicio, usado en el modal de detalle como "~Xh")
     e._estimatedMin = _planServiceEstimatedMin(e, liveSess, histRow);
     // label/color para el modal de detalle
     var st = e._derived_status || e.status || 'pendiente';
@@ -10483,31 +10731,42 @@ async function renderBossPlan(body) {
                    : 'var(--wh3)';
   });
 
-  // 5) Agrupar eventos por (técnico, día)
+  // 5) Agrupar eventos por (técnico, día) — DISTRIBUCIÓN POR DÍA REAL
+  // FRENTE 9.3 (2026-05-14): antes la carga se imputaba al día de scheduled_at,
+  // así un servicio agendado lunes que sigue EN CURSO hoy aparecía cargado en
+  // lunes y nulo en hoy. Ahora _planServiceLoadByDay prorratea la carga al
+  // día calendario donde el técnico realmente trabajó (vía proRateRowInRange).
+  // Servicios pendientes (no iniciados) siguen cayendo en su día agendado.
   // _planCache permite que _planOpenCellDetail acceda al detalle por celda.
   var cache = {};
   events.forEach(function(e){
     if (!e.scheduled_at) return;
-    var dt = new Date(e.scheduled_at);
-    var dayStart = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate(), 0,0,0,0);
-    // Buscar día en rangeDays
-    var dayMatch = rangeDays.find(function(d){ return _planSameDay(d, dayStart); });
-    if (!dayMatch) return;
     var tid = e.technician_id || '__none__';
-    var key = tid + '|' + dayMatch.toISOString();
-    if (!cache[key]) {
-      cache[key] = {
-        techId: tid,
-        techName: e.technician_name || 'Sin asignar',
-        date: dayMatch,
-        events: [],
-        loadMin: 0,
-        capacityMin: _planCapacityMinForDate(dayMatch),
-        pct: 0
-      };
-    }
-    cache[key].events.push(e);
-    cache[key].loadMin += e._estimatedMin;
+    var loadByDay = _planServiceLoadByDay(e, e._liveSess, e._histRow, rangeDays);
+    // Para cada día con carga, agregar a la celda correspondiente
+    Object.keys(loadByDay).forEach(function(dayISO){
+      var minutes = loadByDay[dayISO];
+      if (!minutes || minutes <= 0) return;
+      var dayMatch = rangeDays.find(function(d){ return d.toISOString() === dayISO; });
+      if (!dayMatch) return;
+      var key = tid + '|' + dayISO;
+      if (!cache[key]) {
+        cache[key] = {
+          techId: tid,
+          techName: e.technician_name || 'Sin asignar',
+          date: dayMatch,
+          events: [],
+          loadMin: 0,
+          capacityMin: _planCapacityMinForDate(dayMatch),
+          pct: 0
+        };
+      }
+      // Evitar duplicar el mismo evento en la lista (puede aparecer en varios días).
+      if (!cache[key].events.some(function(ev){ return ev.id === e.id; })) {
+        cache[key].events.push(e);
+      }
+      cache[key].loadMin += minutes;
+    });
   });
   // Calcular %
   Object.keys(cache).forEach(function(k){
@@ -13573,7 +13832,7 @@ async function saveClient() {
           if (newOTId && (!schedHidden || !schedHidden.value)) {
             schedCreatedOk = await autoCreateScheduledForOT(newOTId, vehicleId, srvKey, srvSub, mgrId);
             if (schedCreatedOk) {
-              showGlobalError('✓ Evento agendado en Calendario y Planificación del día (sin técnico asignado).', 5000);
+              showGlobalError('✓ Evento agendado en Calendario y Smart Planner del día (sin técnico asignado).', 5000);
             } else {
               showGlobalError('⚠ La OT se creó pero NO se agendó en el calendario. Usa el botón "📅 Agendar" en la lista dorada para hacerlo manual.', 8000);
             }
@@ -14877,50 +15136,14 @@ window.openPautaV2Modal = openPautaV2Modal;
 //   - Cierre del modal con boton "Cerrar y seguir" en vez de "Guardar pauta"
 //   - Se invoca desde renderTimerCard (lamina del cronometro)
 async function openPautaV2DuringService(woId, sessionKey) {
-  if (!sb) { showGlobalError('Sin conexión a BD', 3000); return; }
+  if (!sb || !woId) { showGlobalError('Datos insuficientes para abrir pauta', 3000); return; }
   try {
-    // HOTFIX 2026-05-14: si no llega woId, intentar resolverlo desde la sesion
-    // activa via patente. Esto cubre el caso donde la sesion no quedo vinculada
-    // a una OT al iniciar el cronometro pero la OT existe ahora.
-    if (!woId && sessionKey && Array.isArray(liveData)) {
-      var sessFb = liveData.find(function(x){ return x.session_key === sessionKey; });
-      if (sessFb) {
-        if (sessFb.work_order_id) {
-          woId = sessFb.work_order_id;
-        } else if (sessFb.plate && typeof findOpenOTByPlate === 'function') {
-          try {
-            var foundFb = await findOpenOTByPlate(sessFb.plate);
-            if (foundFb && foundFb.id) {
-              woId = foundFb.id;
-              // Best-effort: vincular la OT a la sesion para futuros renders.
-              try { await sb.from('active_sessions').update({work_order_id: woId}).eq('session_key', sessionKey); } catch(_){}
-            }
-          } catch(_){}
-        }
-      }
-    }
-    if (!woId) {
-      showGlobalError('No se encontró OT vinculada. Avisa a jefatura para crear la OT antes de continuar.', 5000);
-      return;
-    }
     // Cargar OT actual (siempre datos frescos para reflejar autosave previo)
     var r = await sb.from('work_orders').select('id, ot_number, service_classification, plate, checklist_data, vehicle_id').eq('id', woId).single();
     if (r && r.error) { showGlobalError('Error al cargar OT: ' + r.error.message, 4000); return; }
     var o = r.data;
     if (!o) { showGlobalError('OT no encontrada', 3000); return; }
     var srv = o.service_classification;
-    // HOTFIX 2026-05-14: si la OT no tiene service_classification (caso legacy),
-    // resolverlo desde el label de la sesion activa y hacer backfill en BD.
-    if (!srv && sessionKey && Array.isArray(liveData)) {
-      var sessForLabel = liveData.find(function(x){ return x.session_key === sessionKey; });
-      if (sessForLabel && sessForLabel.service && typeof resolveServiceKeyFromLabel === 'function') {
-        srv = resolveServiceKeyFromLabel(sessForLabel.service);
-        if (srv) {
-          try { await sb.from('work_orders').update({service_classification: srv}).eq('id', woId); } catch(_){}
-          logR('PAUTA_V2_BACKFILL_SRV', {ot: o.ot_number, srv: srv}, 'warn');
-        }
-      }
-    }
     var def = CHECKLISTS_TECH_PAUTAS_V2[srv];
     if (!def) { showGlobalError('Este servicio no tiene pauta v2', 3500); return; }
     var existing = ((o.checklist_data || {}).tech_checklist || {}).pauta_v2;
@@ -19319,7 +19542,7 @@ async function notifyOTCreated(otId, otNumber, srvLabel, plate, mgrId) {
   if (!sb) return;
   try {
     var title = '⚙ OT-' + (otNumber || '?') + ' pendiente de asignar técnico';
-    var sub = (srvLabel || 'Servicio') + (plate ? ' · ' + plate : '') + ' · Asigna técnico desde Calendario / Planificación';
+    var sub = (srvLabel || 'Servicio') + (plate ? ' · ' + plate : '') + ' · Asigna técnico desde Calendario / Smart Planner';
     var targets = [];
     if (mgrId) targets.push(mgrId);
     // Buscar al jefe de taller (Oscar Bueno) por username
@@ -20637,7 +20860,13 @@ function generatePDFDiario() {
   var rows = REP.data;
   if (!rows.length) { showGlobalError('No hay servicios en el periodo seleccionado para generar reporte.', 5000); return; }
   var doc = new window.jspdf.jsPDF({unit:'mm', format:'a4'});
-  var kpis = computeKPIs(rows);
+  // FRENTE 9.4 (2026-05-14): pasar periodCtx para que computeKPIs prorratee
+  // las horas trabajadas al rango del reporte. Antes computeKPIs en modo
+  // legacy sumaba `seconds` crudo → un servicio multi-día contribuía con
+  // sus 16h completas al "Hoy", produciendo "44h productivas en jornada
+  // de 8h" (físicamente imposible). Ahora el productivo es real.
+  var rb = repRangeBounds();
+  var kpis = computeKPIs(rows, {from: rb.from, to: rb.to});
   var y = pdfRenderHeaderBlock(doc, 'Reporte Diario Operativo', repRangeLabel(), kpis);
 
   // Tabla: servicios del dia
@@ -20775,7 +21004,15 @@ function generatePDFTecnico() {
 
   techs.forEach(function(techName, idx) {
     var tRows = byTech[techName];
-    var tKpis = computeKPIs(tRows);
+    // FRENTE 9.4 (2026-05-14): prorratear las horas al rango del reporte.
+    // Antes: tKpis.productiveSec era la suma cruda de seconds → un servicio
+    // multi-día se contaba ENTERO en cada día consultado, generando totales
+    // físicamente imposibles ("44h productivas hoy" cuando la jornada es 8h).
+    // La productividad del técnico es OTRA métrica distinta de la eficiencia
+    // del servicio: aquí queremos saber CUÁNTO TRABAJÓ HOY el técnico, no
+    // cuánto duró el servicio que está atendiendo.
+    var rbTech = repRangeBounds();
+    var tKpis = computeKPIs(tRows, {from: rbTech.from, to: rbTech.to, technicianCount: 1});
 
     // Si no cabe el bloque minimo, nueva pagina
     if (y > 230) { doc.addPage(); pdfDrawHeader(doc, 'Reporte por Tecnico'); y = 28; }
@@ -20861,18 +21098,30 @@ function generatePDFGestion() {
   var rows = REP.data;
   if (!rows.length) { showGlobalError('No hay servicios en el periodo para generar reporte.', 5000); return; }
   var doc = new window.jspdf.jsPDF({unit:'mm', format:'a4'});
-  var kpis = computeKPIs(rows);
+  // FRENTE 9.4 (2026-05-14): pasar periodCtx (ver fix gemelo en generatePDFDiario).
+  var rbG = repRangeBounds();
+  var kpis = computeKPIs(rows, {from: rbG.from, to: rbG.to});
   var y = pdfRenderHeaderBlock(doc, 'Reporte de Gestion', repRangeLabel(), kpis);
 
   // Distribucion de carga por tecnico
   y = pdfSectionTitle(doc, 1, 'Distribucion de carga por tecnico', y);
+  // FRENTE 9.4 (2026-05-14): prorratear seconds por técnico al rango del
+  // reporte. Antes la suma cruda permitía que un servicio multi-día se
+  // contara entero — distorsionaba ranking de "más productivo".
   var byTech = {};
   rows.forEach(function(r) {
     if (!byTech[r.technician]) byTech[r.technician] = {count: 0, seconds: 0, onTime: 0, withGoal: 0};
     byTech[r.technician].count += 1;
-    byTech[r.technician].seconds += (r.seconds || 0);
+    var rSec = 0;
+    try {
+      var pr = proRateRowInRange(r, rbG.from, rbG.to);
+      rSec = pr && pr.productiveSec ? pr.productiveSec : 0;
+    } catch(_) { rSec = r.seconds || 0; }
+    byTech[r.technician].seconds += rSec;
     if (r.goal_minutes) {
       byTech[r.technician].withGoal += 1;
+      // "En objetivo" sigue evaluándose contra el seconds total del servicio
+      // (eficiencia del servicio), no contra el prorrateado.
       if (r.seconds <= r.goal_minutes * 60) byTech[r.technician].onTime += 1;
     }
   });
@@ -23322,11 +23571,21 @@ async function renderBossInformes(body) {
     return hasChk || inDev || hasFindings;
   });
 
-  // Filtro técnico: solo ver los suyos (los que él inició o cerró)
+  // Filtro técnico: ver TODOS los informes donde el técnico trabajó.
+  // FRENTE 9.2 (2026-05-14): antes solo se consideraba creador (report_started_by)
+  // o completador (tech_completed_by). Cuando varios técnicos trabajaban la
+  // misma OT (lavado + mecánica + diagnóstico), solo el primero la veía.
+  // Ahora incluimos cd.report_participants[] que registra a cada técnico
+  // que abrió cronómetro contra la OT (vía _ensureReportShellAndParticipant).
   if (_informesFilters.onlyMine && CU) {
     allOTs = allOTs.filter(function(o){
       var cd = o.checklist_data || {};
-      return cd.tech_completed_by === CU.id || cd.report_started_by === CU.id;
+      if (cd.tech_completed_by === CU.id) return true;
+      if (cd.report_started_by === CU.id) return true;
+      if (Array.isArray(cd.report_participants)) {
+        return cd.report_participants.some(function(p){ return p && p.user_id === CU.id; });
+      }
+      return false;
     });
   }
 
