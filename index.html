@@ -5875,8 +5875,7 @@ async function saveLiveFinding() {
     // Notificar al gestor comercial de la OT (si lo hay) sobre el nuevo hallazgo,
     // así puede comunicar al cliente sin esperar al cierre.
     try {
-      // FIX 2026-05-15: work_orders NO tiene columna 'plate'. Usar VIEW work_orders_with_plate.
-      var rOt = await sb.from('work_orders_with_plate').select('commercial_manager_id, ot_number, plate').eq('id', st.workOrderId).maybeSingle();
+      var rOt = await sb.from('work_orders').select('commercial_manager_id, ot_number, plate').eq('id', st.workOrderId).maybeSingle();
       if (rOt && rOt.data && rOt.data.commercial_manager_id) {
         var preview = text.length > 80 ? text.slice(0, 77) + '...' : text;
         await sb.from('notifications').insert({
@@ -7627,8 +7626,7 @@ function openChecklist(sessionKey) {
     // Buscar service_classification por work_order_id
     (async function(){
       try {
-        // FIX 2026-05-15: work_orders NO tiene columna 'plate'. Usar VIEW work_orders_with_plate.
-        var r = await sb.from('work_orders_with_plate').select('id, service_classification, ot_number, plate, checklist_data, status, client_id, vehicle_id').eq('id', sess.work_order_id).single();
+        var r = await sb.from('work_orders').select('id, service_classification, ot_number, plate, checklist_data, status, client_id, vehicle_id').eq('id', sess.work_order_id).single();
         if (r && r.data && hasPautaV2(r.data.service_classification)) {
           // Inyectar la OT en _myOTsCache (si no esta) para que openPautaV2Modal la encuentre.
           if (!Array.isArray(_myOTsCache)) _myOTsCache = [];
@@ -15814,9 +15812,7 @@ async function openPautaV2DuringService(woId, sessionKey) {
   if (!sb || !woId) { showGlobalError('Datos insuficientes para abrir pauta', 3000); return; }
   try {
     // Cargar OT actual (siempre datos frescos para reflejar autosave previo)
-    // FIX 2026-05-15: work_orders NO tiene columna 'plate'. Usar VIEW work_orders_with_plate
-    // que ya consolida la patente desde client_vehicles (JOIN por vehicle_id).
-    var r = await sb.from('work_orders_with_plate').select('id, ot_number, service_classification, plate, checklist_data, vehicle_id').eq('id', woId).single();
+    var r = await sb.from('work_orders').select('id, ot_number, service_classification, plate, checklist_data, vehicle_id').eq('id', woId).single();
     if (r && r.error) { showGlobalError('Error al cargar OT: ' + r.error.message, 4000); return; }
     var o = r.data;
     if (!o) { showGlobalError('OT no encontrada', 3000); return; }
@@ -15996,8 +15992,7 @@ async function openPautaV2AdminEditor(woId) {
   }
   if (!sb || !woId) { showGlobalError('Datos insuficientes', 3000); return; }
   try {
-    // FIX 2026-05-15: work_orders NO tiene columna 'plate'. Usar VIEW work_orders_with_plate.
-    var r = await sb.from('work_orders_with_plate').select('id, ot_number, service_classification, plate, checklist_data, vehicle_id').eq('id', woId).single();
+    var r = await sb.from('work_orders').select('id, ot_number, service_classification, plate, checklist_data, vehicle_id').eq('id', woId).single();
     if (r && r.error) { showGlobalError('Error al cargar OT: ' + r.error.message, 4000); return; }
     var o = r.data;
     if (!o) { showGlobalError('OT no encontrada', 3000); return; }
@@ -16469,6 +16464,23 @@ function isPautaV2ZoneOpen(zoneId) {
 async function savePautaV2() {
   var st = _activePautaV2;
   if (!st) { showGlobalError('No hay pauta activa', 3000); return; }
+
+  // BUGFIX iOS Safari 2026-05-15: los inputs de campos adicionales (oil_motor:
+  // litros, viscosidad, marca; state_with_numeric: mm/nm/psi) usan onchange,
+  // que en iOS Safari NO se dispara hasta el blur. Si el técnico tipea en un
+  // input y toca directo "Finalizar y enviar a doble control" sin sacar el
+  // foco, el último valor queda en el DOM pero NO en _activePautaV2.zonas.
+  // Resultado: el sistema reporta el ítem como incompleto aunque visualmente
+  // esté lleno (caso real: aceite_motor con marca tipeada sin blur).
+  // Solución: forzar blur del elemento activo y esperar el onchange.
+  try {
+    if (document.activeElement && typeof document.activeElement.blur === 'function') {
+      document.activeElement.blur();
+      // Pequeño delay para que el evento change se dispare y propague al estado
+      await new Promise(function(r){ setTimeout(r, 80); });
+    }
+  } catch(_) {}
+
   var total = pautaCountItems(st.service);
   var done = pautaCountCompleted(st, st.service);
   var pct = total ? Math.round(done / total * 100) : 0;
@@ -16618,10 +16630,15 @@ async function savePautaV2() {
       newStatus = 'pending_double_check';
     }
 
+    // BUGFIX 2026-05-15: tech_completed_at NO es columna de work_orders.
+    // Es campo dentro de checklist_data (JSONB). Ya quedó seteado más arriba
+    // en cd.tech_completed_at (líneas 16603-16605), que persiste vía
+    // `checklist_data: cd`. Escribirlo aquí como columna top-level provocaba:
+    //   "Could not find the 'tech_completed_at' column of 'work_orders' in the schema cache"
+    // y dejaba al técnico atrapado en el cierre.
     var rup = await sb.from('work_orders').update({
       checklist_data: cd,
       status: newStatus,
-      tech_completed_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
       updated_by: CU ? CU.id : null
     }).eq('id', st.woId);
@@ -24431,8 +24448,7 @@ async function openInformeEditor(woId, serviceReportId) {
 
   try {
     var loaded = await loadInformeExtras(woId);
-    // FIX 2026-05-15: work_orders NO tiene columna 'plate'. Usar VIEW work_orders_with_plate.
-    var rOT = await sb.from('work_orders_with_plate').select('id,ot_number,plate,service_classification,checklist_data').eq('id', woId).maybeSingle();
+    var rOT = await sb.from('work_orders').select('id,ot_number,plate,service_classification,checklist_data').eq('id', woId).maybeSingle();
     var o = rOT && rOT.data ? rOT.data : {};
     var cd = o.checklist_data || {};
 
