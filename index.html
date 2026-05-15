@@ -3159,6 +3159,17 @@ var SEVERITY_STATE_MAP = {
 // contra los thresholds declarados en def.numeric.
 // def.numeric puede tener: min (límite inferior), max (límite superior),
 // target (valor ideal — usado para apriete de ruedas).
+//
+// BUGFIX 2026-05-15: la versión anterior marcaba CRÍTICO si la medición
+// estaba dentro del 10% sobre el mínimo. Para discos de freno (min=28 mm),
+// una medición de 29.7 mm (margen 1.7 mm, threshold 2.8 mm) caía como
+// crítico aunque el disco está por encima del mínimo. Realmente, mientras
+// la medición esté ≥ min, el componente es CONFORME — el min es el umbral
+// de cambio definido por el fabricante. La nueva regla:
+//   v < min          → critico (efectivamente bajo spec)
+//   v ≥ min y < min*1.10 (10% margen) → alerta (cerca del cambio, monitorear)
+//   v ≥ min*1.10     → ok
+// Esto se alinea con cómo los mecánicos leen las mediciones en taller.
 function _severityFromNumeric(value, numDef) {
   if (value == null || isNaN(value) || !numDef) return null;
   var v = parseFloat(value);
@@ -3175,15 +3186,14 @@ function _severityFromNumeric(value, numDef) {
     return 'critico';
   }
 
-  // Caso min: si v < min → crítico inmediato.
+  // Caso min: regla físicamente correcta. El min es el umbral del fabricante
+  // por debajo del cual hay que cambiar el componente. Por encima del min,
+  // todo es conforme — y muy cerca del min es para monitoreo, no para alarma.
   if (hasMin) {
-    if (v < numDef.min) return 'critico';
-    // Margen sobre el mínimo
-    var margin = v - numDef.min;
-    var threshold = numDef.min * 0.10;       // 10% del mínimo
-    var altThreshold = numDef.min * 0.30;    // 30% del mínimo
-    if (margin <= threshold) return 'critico';
-    if (margin <= altThreshold) return 'alerta';
+    if (v < numDef.min) return 'critico';            // por debajo del spec
+    var alertWindow = numDef.min * 0.10;             // 10% por encima del min
+    if (v < numDef.min + alertWindow) return 'alerta'; // cerca del cambio, vigilar
+    // pasa: caer al return ok más abajo
   }
 
   // Caso max: si v > max → alerta (sobre-presión, sobre-torque)
@@ -3214,13 +3224,40 @@ function _itemSeverity(itemDef, itemData) {
   }
   // Lectura compatible: estado (v2 canónico) o state (SQL backfill)
   var stateVal = itemData.estado != null ? itemData.estado : itemData.state;
-  // 2) Combinación estado + numérico: tomar la peor de las dos.
+  // 2) Combinación estado + numérico.
   var sevState = _severityFromState(stateVal);
   var sevNum = null;
   if (itemDef && itemDef.numeric && itemData[itemDef.numeric.key] != null && itemData[itemDef.numeric.key] !== '') {
     sevNum = _severityFromNumeric(itemData[itemDef.numeric.key], itemDef.numeric);
   }
-  // Tomar la peor (crítico > alerta > ok)
+  // POLÍTICA 2026-05-15 (Francisco): el juicio del técnico DOMINA en el informe
+  // al cliente. Si el técnico marcó estado OK explícito (buen_estado, confirmado,
+  // sin_fugas, etc.) y el componente está físicamente conforme (v >= min del
+  // fabricante), la severidad final es OK PURO — no alerta por proximidad al
+  // límite ni por desviación al target. Las discrepancias entre número y juicio
+  // del técnico se levantan INTERNAMENTE por jefatura, no aparecen como
+  // "amarillo preventivo" en el informe del cliente.
+  //
+  // Única excepción de seguridad: si el técnico dice OK pero la medición está
+  // FÍSICAMENTE BAJO el min del fabricante (ej. discos a 25 mm con min 28), se
+  // mantiene CRÍTICO. El min es un hecho objetivo no sobreescribible
+  // tácitamente. El técnico puede usar el override manual con justificación.
+  //
+  // Casos negativos (desgaste_critico, fuga_critica, etc.) se evalúan normal.
+  if (sevState === 'ok') {
+    var numKey = itemDef && itemDef.numeric && itemDef.numeric.key;
+    var minDef = itemDef && itemDef.numeric && itemDef.numeric.min;
+    var vRaw = numKey ? itemData[numKey] : null;
+    var belowMin = (minDef != null && vRaw != null && vRaw !== '' && !isNaN(parseFloat(vRaw)))
+                   ? (parseFloat(vRaw) < minDef)
+                   : false;
+    if (belowMin) {
+      return 'critico'; // discrepancia objetiva: v < min físico del fabricante
+    }
+    return 'ok'; // técnico validó, componente sobre el min → OK puro
+  }
+
+  // Estado negativo o sin estado: combinar normal (toma la peor de las dos).
   var rank = {critico:3, alerta:2, ok:1};
   var best = null;
   [sevState, sevNum].forEach(function(s){
@@ -3300,6 +3337,35 @@ var SEVERITY_COLORS = {
   ok:      {hex:'#27ae60', rgb:[39, 174, 96],  label:'OK',       emoji:'🟢', bg:'#e6f4ea'},
   unknown: {hex:'#7f8c8d', rgb:[127, 140, 141],label:'—',        emoji:'⚪', bg:'#ecf0f1'}
 };
+
+
+// ═══════════════════════════════════════════════════════════════
+// CATÁLOGO DE ACEITES DE TALLER (2026-05-15)
+// ═══════════════════════════════════════════════════════════════
+// Productos efectivamente en stock/uso en Rosso Chile. El item oil_motor
+// de la pauta v2 usa esta matriz para construir selects encadenados
+// (marca → viscosidades disponibles), eliminando errores de tipeo y
+// estandarizando data para reportes/KPIs.
+//
+// Para AGREGAR un producto:
+//   - Nueva marca: agregar entrada nueva con array de viscosidades.
+//   - Nueva viscosidad para marca existente: push al array.
+// Los valores en `marca` y `viscosidad` del JSONB DEBEN coincidir con
+// estas constantes para que el select renderice la opción seleccionada;
+// si no coinciden (datos legacy de inputs libres anteriores), el render
+// los preserva como opción "(valor anterior)" para no perder el dato.
+const OIL_PRODUCTS = {
+  'LIQUI MOLY': ['5W30'],
+  'MOBIL':      ['5W30', '10W40', '15W40']
+};
+function getOilBrands() { return Object.keys(OIL_PRODUCTS); }
+function getOilViscosities(brand) {
+  if (!brand) return [];
+  return OIL_PRODUCTS[brand] || [];
+}
+window.OIL_PRODUCTS = OIL_PRODUCTS;
+window.getOilBrands = getOilBrands;
+window.getOilViscosities = getOilViscosities;
 
 
 const CHECKLISTS_TECH_PAUTAS_V2 = {
@@ -7781,6 +7847,21 @@ async function doFinish(checklist, sessionKey) {
     }
     // Load session data
     var sess = liveData.find(function(s) { return s.session_key === useKey; });
+
+    // LOG DIAGNÓSTICO 2026-05-15: registra el estado de entrada al cierre.
+    // José reportó "no me deja finalizar en pausa, tuve que reanudar". No hay
+    // guard real en el código que bloquee paused, pero dejamos rastro detallado
+    // para diagnosticar si vuelve a pasar.
+    logR('FINISH_ENTRY', {
+      useKey: useKey,
+      hasSess: !!sess,
+      sessStatus: sess ? sess.status : null,
+      sessRunning: sess ? sess.running : null,
+      sessPausedAt: sess ? sess.paused_at : null,
+      hasChecklist: !!checklist,
+      tSessionKey: T.sessionKey,
+      tRunning: T.running
+    });
 
     // Guard: si la sesion ya no existe en liveData Y tampoco tenemos estado local,
     // quizas fue finalizada desde otra pantalla o hay un race condition.
@@ -15741,14 +15822,27 @@ async function openMyOTDetail(otId) {
     +   '</div>'
     + '</div>'
     // FASE 3.2: botones encadenados — doble control bloqueado hasta cerrar checklist técnico.
+    // BUGFIX 2026-05-15: el botón usa "Pauta de inspección" cuando hay pauta v2,
+    // para mantener consistencia con el botón de la lámina del cronómetro y con
+    // el lenguaje usado por los técnicos. Antes decía "Llenar checklist técnico"
+    // y los técnicos no asociaban el botón con la pauta que conocen.
     + '<div style="display:flex;flex-direction:column;gap:6px;margin-top:14px">'
     +   (hasChecklist
-        ? '<button class="btn btn-red" onclick="openTechChecklist(\'' + o.id + '\')">' + (techDone ? '✏️ Editar checklist técnico' : '📝 1. Llenar checklist técnico') + '</button>'
+        ? (function(){
+            var usesPautaV2 = (typeof hasPautaV2 === 'function') && hasPautaV2(o.service_classification);
+            var label;
+            if (usesPautaV2) {
+              label = techDone ? '✏️ Editar pauta de inspección' : '📋 1. Pauta de inspección';
+            } else {
+              label = techDone ? '✏️ Editar checklist técnico' : '📝 1. Llenar checklist técnico';
+            }
+            return '<button class="btn btn-red" onclick="openTechChecklist(\'' + o.id + '\')">' + label + '</button>';
+          })()
         : '<div style="font-size:11px;color:var(--wh4);text-align:center;padding:8px;background:#f8f8f8;border-radius:3px">Checklist técnico para este tipo de servicio aún no implementado</div>')
     +   (hasChecklist && techDone
         ? '<button class="btn btn-gold" onclick="openDoubleCheck(\'' + o.id + '\')">' + (dcDone ? '✏️ Editar doble control' : '✅ 2. Doble control de cierre') + '</button>'
         : (hasChecklist
-            ? '<button class="btn" disabled style="opacity:.4;cursor:not-allowed" title="Completa el checklist técnico primero">🔒 2. Doble control (cerrar checklist primero)</button>'
+            ? '<button class="btn" disabled style="opacity:.4;cursor:not-allowed" title="Completa la pauta de inspección primero">🔒 2. Doble control (cerrar pauta primero)</button>'
             : ''))
     + '</div>';
   openModal('m-my-ot');
@@ -15763,9 +15857,46 @@ async function openMyOTDetail(otId) {
 var _activePautaV2 = null;
 
 // Abre el modal de pauta v2 para una OT. Carga datos previos si existen.
-function openPautaV2Modal(otId) {
+async function openPautaV2Modal(otId) {
+  // BUGFIX 2026-05-15: antes este lookup era estrictamente sobre _myOTsCache.
+  // Si la cache estaba stale (técnico recién recargó la pestaña, cambió de tab
+  // y volvió, cronómetro se cerró y no refrescó la lista, etc) el técnico veía
+  // el botón "Pauta de inspección" pero al tocarlo no pasaba nada visible o
+  // salía "OT no encontrada". Caso real: José tras cerrar el servicio.
+  // Defensa: si la cache no la tiene, vamos directo a BD y reconstruimos la
+  // row mínima necesaria para el modal.
   var row = _myOTsCache.find(function(r){return r.ot.id === otId;});
-  if (!row) { showGlobalError('OT no encontrada', 3000); return; }
+  if (!row) {
+    try {
+      var rwo = await sb.from('work_orders').select('*').eq('id', otId).maybeSingle();
+      if (!rwo || rwo.error || !rwo.data) {
+        showGlobalError('OT no encontrada: ' + ((rwo && rwo.error && rwo.error.message) || 'sin datos'), 4000);
+        return;
+      }
+      var vData = null, cData = null;
+      if (rwo.data.vehicle_id) {
+        try {
+          var rv = await sb.from('client_vehicles').select('*').eq('id', rwo.data.vehicle_id).maybeSingle();
+          vData = (rv && rv.data) || null;
+        } catch(_){}
+      }
+      if (rwo.data.client_id) {
+        try {
+          var rc = await sb.from('clients').select('id,name,rut,phone').eq('id', rwo.data.client_id).maybeSingle();
+          cData = (rc && rc.data) || null;
+        } catch(_){}
+      }
+      row = {ot: rwo.data, vehicle: vData, client: cData};
+      // Inyectar a cache para llamadas siguientes (doble control, etc.)
+      if (!Array.isArray(_myOTsCache)) _myOTsCache = [];
+      _myOTsCache.push(row);
+      logR('PAUTA_V2_OPEN_CACHE_MISS_RECOVERED', {ot: rwo.data.ot_number, woId: otId});
+    } catch(eFb) {
+      showGlobalError('Error al cargar la OT: ' + eFb.message, 4500);
+      logR('PAUTA_V2_OPEN_FALLBACK_ERR', {woId: otId, msg: eFb.message}, 'err');
+      return;
+    }
+  }
   var o = row.ot;
   var srv = o.service_classification;
   var def = CHECKLISTS_TECH_PAUTAS_V2[srv];
@@ -15795,7 +15926,16 @@ function openPautaV2Modal(otId) {
   def.zonas.forEach(function(z){
     if (!_activePautaV2.zonas[z.id]) _activePautaV2.zonas[z.id] = {};
   });
-  renderPautaV2Modal();
+  // BUGFIX 2026-05-15: try/catch para no dejar el botón "muerto" si el render
+  // falla. Antes una excepción en renderPautaV2Modal abortaba silenciosamente
+  // y el modal de pauta nunca se abría (botón sin respuesta visible).
+  try {
+    renderPautaV2Modal();
+  } catch(eRender) {
+    showGlobalError('Error al renderizar pauta: ' + eRender.message, 5000);
+    logR('PAUTA_V2_RENDER_ERR', {ot: o.ot_number, srv: srv, msg: eRender.message}, 'err');
+    return;
+  }
   closeModal('m-my-ot');
   openModal('m-pauta-v2');
   logR('PAUTA_V2_OPEN', {ot: o.ot_number, srv: srv, items: pautaCountItems(srv), prev: !!existing, context: 'finalize'});
@@ -16208,23 +16348,63 @@ function renderPautaV2Item(zoneId, it, data) {
 
   // Campos adicionales segun tipo
   if (it.type === 'oil_motor') {
-    // 3 campos: litros, viscosidad, marca
+    // BUGFIX/MEJORA 2026-05-15: marca y viscosidad ahora son SELECTABLES
+    // (antes inputs de texto libre que causaban errores de tipeo, capitalización
+    // inconsistente, y onchange-iOS-Safari issues). El catálogo OIL_PRODUCTS
+    // define qué viscosidades aplican para cada marca.
+    //
+    // Retrocompatibilidad: si data.marca/viscosidad antiguas no coinciden con
+    // el catálogo actual (datos previos al fix), se preservan como opción
+    // "(valor anterior)" para no perder el dato — el técnico puede dejarlo o
+    // re-seleccionar al nuevo catálogo.
+    var brands = getOilBrands();
+    var currMarca = data.marca || '';
+    var currVisc = data.viscosidad || '';
+    var brandIsLegacy = currMarca && brands.indexOf(currMarca) === -1;
+    var viscList = brandIsLegacy ? [] : getOilViscosities(currMarca);
+    var viscIsLegacy = currVisc && viscList.indexOf(currVisc) === -1;
+
+    // Select de Marca
+    var marcaOpts = '<option value="">— Selecciona marca —</option>';
+    brands.forEach(function(b){
+      marcaOpts += '<option value="' + escapeHtml(b) + '"' + (currMarca === b ? ' selected' : '') + '>' + escapeHtml(b) + '</option>';
+    });
+    if (brandIsLegacy) {
+      marcaOpts += '<option value="' + escapeHtml(currMarca) + '" selected>' + escapeHtml(currMarca) + ' (valor anterior)</option>';
+    }
+
+    // Select de Viscosidad — depende de la marca elegida
+    var viscOpts = '<option value="">— Selecciona viscosidad —</option>';
+    if (currMarca && !brandIsLegacy) {
+      viscList.forEach(function(v){
+        viscOpts += '<option value="' + escapeHtml(v) + '"' + (currVisc === v ? ' selected' : '') + '>' + escapeHtml(v) + '</option>';
+      });
+    }
+    if (viscIsLegacy) {
+      viscOpts += '<option value="' + escapeHtml(currVisc) + '" selected>' + escapeHtml(currVisc) + ' (valor anterior)</option>';
+    }
+    var viscDisabled = (!currMarca || brandIsLegacy) ? '' : ''; // siempre habilitado, pero vacío si no hay marca
+    var viscHint = !currMarca ? 'Selecciona marca primero' : '';
+
     html +=
         '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:4px">'
       +   '<div><label style="font-size:10px;color:var(--wh3);font-weight:600;text-transform:uppercase">Litros</label>'
       +     '<input type="number" step="0.1" class="inp" style="padding:6px 8px;font-size:12px" '
       +       'placeholder="Ej: 4.5" value="' + escapeHtml(data.litros || '') + '" '
+      +       'oninput="updatePautaV2Item(\'' + zoneId + '\',\'' + key + '\',\'litros\',this.value)" '
       +       'onchange="updatePautaV2Item(\'' + zoneId + '\',\'' + key + '\',\'litros\',this.value)"/></div>'
-      +   '<div><label style="font-size:10px;color:var(--wh3);font-weight:600;text-transform:uppercase">Viscosidad</label>'
-      +     '<input type="text" class="inp" style="padding:6px 8px;font-size:12px" '
-      +       'placeholder="Ej: 5W30" value="' + escapeHtml(data.viscosidad || '') + '" '
-      +       'onchange="updatePautaV2Item(\'' + zoneId + '\',\'' + key + '\',\'viscosidad\',this.value)"/></div>'
+      +   '<div><label style="font-size:10px;color:var(--wh3);font-weight:600;text-transform:uppercase">Marca</label>'
+      +     '<select class="inp" style="padding:6px 8px;font-size:12px" '
+      +       'onchange="pickOilBrand(\'' + zoneId + '\',\'' + key + '\',this.value)">'
+      +       marcaOpts
+      +     '</select></div>'
       + '</div>'
       + '<div style="margin-top:4px">'
-      +   '<label style="font-size:10px;color:var(--wh3);font-weight:600;text-transform:uppercase">Marca</label>'
-      +   '<input type="text" class="inp" style="padding:6px 8px;font-size:12px" '
-      +     'placeholder="Ej: LIQUI MOLY LONGTIME HIGHTECH" value="' + escapeHtml(data.marca || '') + '" '
-      +     'onchange="updatePautaV2Item(\'' + zoneId + '\',\'' + key + '\',\'marca\',this.value)"/>'
+      +   '<label style="font-size:10px;color:var(--wh3);font-weight:600;text-transform:uppercase">Viscosidad' + (viscHint ? ' <span style="color:var(--wh4);font-weight:400;text-transform:none">· ' + viscHint + '</span>' : '') + '</label>'
+      +   '<select class="inp" style="padding:6px 8px;font-size:12px" '
+      +     'onchange="updatePautaV2Item(\'' + zoneId + '\',\'' + key + '\',\'viscosidad\',this.value)">'
+      +     viscOpts
+      +   '</select>'
       + '</div>';
   } else if ((it.type === 'state_with_numeric' || it.type === 'apriete_ruedas') && it.numeric) {
     var n = it.numeric;
@@ -16233,6 +16413,7 @@ function renderPautaV2Item(zoneId, it, data) {
       +   '<label style="font-size:11px;color:var(--wh2);font-weight:600;min-width:90px">' + escapeHtml(n.label) + '</label>'
       +   '<input type="number" step="' + (n.step || 0.1) + '" class="inp" style="padding:6px 8px;font-size:12px;max-width:120px" '
       +     'placeholder="' + escapeHtml(n.placeholder || '') + '" value="' + escapeHtml(data[n.key] != null ? String(data[n.key]) : '') + '" '
+      +     'oninput="updatePautaV2Item(\'' + zoneId + '\',\'' + key + '\',\'' + n.key + '\',this.value)" '
       +     'onchange="updatePautaV2Item(\'' + zoneId + '\',\'' + key + '\',\'' + n.key + '\',this.value)"/>'
       + '</div>';
   }
@@ -16367,6 +16548,60 @@ function pickPautaV2Opt(zoneId, key, optValue) {
   if (wasOpen) togglePautaV2Zone(zoneId, true);
 }
 window.pickPautaV2Opt = pickPautaV2Opt;
+
+// MEJORA 2026-05-15: maneja el cambio de marca de aceite (oil_motor).
+// Lógica:
+//   - Setea data.marca.
+//   - Si la nueva marca tiene UNA sola viscosidad disponible, la auto-selecciona
+//     (Liqui Moly → 5W30 automático, ahorra un tap al técnico).
+//   - Si la viscosidad actual no es válida para la nueva marca, se limpia.
+//   - Re-renderiza para refrescar el dropdown de viscosidad (depende de marca).
+function pickOilBrand(zoneId, key, brand) {
+  if (!_activePautaV2) return;
+  var st = _activePautaV2;
+  if (!st.zonas[zoneId]) st.zonas[zoneId] = {};
+  if (!st.zonas[zoneId][key]) st.zonas[zoneId][key] = {};
+  var prevBrand = st.zonas[zoneId][key].marca || null;
+  if (!brand) {
+    delete st.zonas[zoneId][key].marca;
+  } else {
+    st.zonas[zoneId][key].marca = brand;
+  }
+  // Validar viscosidad contra el catálogo de la nueva marca
+  var available = brand ? getOilViscosities(brand) : [];
+  var currVisc = st.zonas[zoneId][key].viscosidad;
+  if (brand && available.length === 1) {
+    // Auto-set si solo hay una opción (ej. Liqui Moly → 5W30)
+    st.zonas[zoneId][key].viscosidad = available[0];
+  } else if (currVisc && available.indexOf(currVisc) === -1) {
+    // Viscosidad previa ya no aplica a la nueva marca → limpiar
+    delete st.zonas[zoneId][key].viscosidad;
+  }
+  // Audit log si admin
+  if (st.context === 'admin' && prevBrand !== brand) {
+    st.audit_log = st.audit_log || [];
+    st.audit_log.push({
+      at: new Date().toISOString(),
+      by_id: CU ? CU.id : null,
+      by_name: CU ? CU.name : null,
+      zone_id: zoneId,
+      item_key: key,
+      field: 'marca',
+      before: prevBrand,
+      after: brand || null
+    });
+  }
+  // Autosave si live/admin
+  if (st.context === 'live' || st.context === 'admin') {
+    schedulePautaV2Autosave();
+  }
+  // Re-render para refrescar el select dependiente de viscosidad
+  var wasOpen = isPautaV2ZoneOpen(zoneId);
+  renderPautaV2Modal();
+  if (wasOpen) togglePautaV2Zone(zoneId, true);
+}
+window.pickOilBrand = pickOilBrand;
+
 
 // Actualiza un campo adicional (litros, viscosidad, mm, nm, comentario, etc.)
 // No re-renderiza (evita perder focus en input). Solo actualiza estado y
