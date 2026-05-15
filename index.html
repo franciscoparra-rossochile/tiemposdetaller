@@ -13053,27 +13053,23 @@ function renderBugReports(body) {
   }
 }
 
-// FRENTE 9.8: toggle entry_type del formulario. Re-renderiza para que
-// los labels/placeholders cambien según el tipo elegido.
+// FRENTE 9.8: toggle entry_type del formulario.
+// FRENTE 9.8 rev (2026-05-15): antes hacía re-render completo del módulo
+// (caro y frágil). El bug visible: al hacer toggle quedaban ambos botones
+// "on" simultáneamente porque el re-render disparaba el listado admin y se
+// pintaba dos veces. Ahora hacemos toggle in-place — solo cambian las
+// clases CSS de los dos botones del row, igual que pickBugSeverity. Los
+// placeholders se mantienen (son solo hints), y entry_type queda en memoria.
 function pickBugEntryType(type) {
   if (type !== 'error' && type !== 'mejora') return;
-  // Preservar lo escrito antes de re-renderizar
-  var titleEl = document.getElementById('bug-title');
-  var areaEl  = document.getElementById('bug-area');
-  var stepsEl = document.getElementById('bug-steps');
-  if (titleEl) _bugForm.title = titleEl.value;
-  if (areaEl)  _bugForm.area  = areaEl.value;
-  if (stepsEl) _bugForm.steps = stepsEl.value;
   _bugForm.entry_type = type;
-  // Re-renderizar el módulo entero (en boss o tech)
-  var body = document.getElementById('t-bugs') || document.getElementById('b-bugs');
-  if (body) {
-    // Buscar el body activo (renderizado actual)
-    var bossB = document.getElementById('boss-body');
-    var techB = document.getElementById('tech-body');
-    var active = bossB && bossB.querySelector('.card') ? bossB : techB;
-    if (active) renderBugReports(active);
-  }
+  // Toggle visual: marcar el botón clickeado, desmarcar el otro.
+  document.querySelectorAll('#bug-type-row [data-bug-type]').forEach(function(b){
+    b.classList.toggle('on', b.dataset.bugType === type);
+  });
+  // Actualizar el label del botón "Enviar" para que refleje el tipo elegido.
+  var btn = document.getElementById('bug-send-btn');
+  if (btn) btn.textContent = (type === 'mejora') ? 'Enviar sugerencia' : 'Enviar reporte';
 }
 window.pickBugEntryType = pickBugEntryType;
 
