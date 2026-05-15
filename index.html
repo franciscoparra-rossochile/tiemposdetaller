@@ -3085,6 +3085,223 @@ window.applyObsTemplate = applyObsTemplate;
 // flujo legacy con CHECKLISTS_TECH + plantillas chip.
 // ═══════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════
+// FRENTE 9.7 (2026-05-14): MOTOR DE SEVERIDAD (rojo/amarillo/verde)
+// ═══════════════════════════════════════════════════════════════
+// Clasifica cada item de pauta v2 en uno de tres niveles:
+//   • 'critico'  (rojo)    → acción inmediata recomendada
+//   • 'alerta'   (amarillo) → monitorear / prevenir
+//   • 'ok'       (verde)   → conforme, sin acción
+//   • 'unknown'            → item sin datos suficientes para clasificar
+//
+// Reglas (en orden de prioridad):
+//   1. Override manual del técnico (campo `_severity_override` en el item)
+//   2. Estado puro: ciertos valores mapean directo a severidad.
+//   3. Medición numérica vs mínimo declarado:
+//        - margen <= 10% del mínimo → crítico
+//        - margen <= 30% del mínimo → alerta
+//        - margen >  30% → ok
+//   4. Si nada aplica → unknown (no entra al resumen ejecutivo)
+//
+// El sistema SUGIERE; el técnico puede override (campo `_severity_override`
+// en el item del checklist guardado, valores: 'critico'|'alerta'|'ok').
+
+// Mapeos de estado puro → severidad. Estos valores ya existen en el schema.
+var SEVERITY_STATE_MAP = {
+  // CRITICO (rojo)
+  desgaste_critico: 'critico',
+  danos_graves:     'critico',
+  fuga_critica:     'critico',
+  falla_critica:    'critico',
+  mal_estado:       'critico',
+  compromete_integridad: 'critico',
+  desgaste_alto:    'critico',
+  nivelacion_fallida: 'critico',
+  mala:             'critico',
+  ruidos_evidentes: 'critico',
+  contam_metalica:  'critico',
+  // ALERTA (amarillo)
+  desgaste_normal:  'alerta',
+  danos_leves:      'alerta',
+  fuga_leve:        'alerta',
+  desgaste_medio:   'alerta',
+  estado_normal:    'alerta',
+  inspeccionar:     'alerta',
+  con_dtc_borrados: 'alerta',
+  luces_quemadas:   'alerta',
+  detalles_leves:   'alerta',
+  no_calibrados:    'alerta',
+  bajo_rellenado:   'alerta',
+  // OK (verde)
+  buen_estado:      'ok',
+  ok:               'ok',
+  sin_fugas:        'ok',
+  sin_dtc:          'ok',
+  sin_problemas:    'ok',
+  sin_ruidos:       'ok',
+  calibrados:       'ok',
+  correcto:         'ok',
+  alto:             'ok',
+  buena:            'ok',
+  normal:           'ok',
+  realizado:        'ok',
+  no_aplica:        'ok',
+  no_necesita:      'ok',
+  lubricadas:       'ok',
+  confirmado:       'ok',
+  reemplazado:      'ok',
+  reinstalado_ok:   'ok',
+  contam_normal:    'ok',
+  nivelacion_ok:    'ok'
+};
+
+// _severityFromNumeric(value, def): clasifica una medición numérica
+// contra los thresholds declarados en def.numeric.
+// def.numeric puede tener: min (límite inferior), max (límite superior),
+// target (valor ideal — usado para apriete de ruedas).
+function _severityFromNumeric(value, numDef) {
+  if (value == null || isNaN(value) || !numDef) return null;
+  var v = parseFloat(value);
+  var hasMin = numDef.min != null;
+  var hasMax = numDef.max != null;
+  var hasTarget = numDef.target != null;
+
+  // Caso target: clasificación por desviación porcentual.
+  // ±5% target = ok, ±15% = alerta, fuera = crítico.
+  if (hasTarget && numDef.target > 0) {
+    var pct = Math.abs(v - numDef.target) / numDef.target;
+    if (pct <= 0.05) return 'ok';
+    if (pct <= 0.15) return 'alerta';
+    return 'critico';
+  }
+
+  // Caso min: si v < min → crítico inmediato.
+  if (hasMin) {
+    if (v < numDef.min) return 'critico';
+    // Margen sobre el mínimo
+    var margin = v - numDef.min;
+    var threshold = numDef.min * 0.10;       // 10% del mínimo
+    var altThreshold = numDef.min * 0.30;    // 30% del mínimo
+    if (margin <= threshold) return 'critico';
+    if (margin <= altThreshold) return 'alerta';
+  }
+
+  // Caso max: si v > max → alerta (sobre-presión, sobre-torque)
+  if (hasMax && v > numDef.max) return 'alerta';
+
+  return 'ok';
+}
+
+// _severityFromState(stateValue): mapea valor de estado puro a severidad.
+function _severityFromState(stateValue) {
+  if (stateValue == null) return null;
+  return SEVERITY_STATE_MAP[stateValue] || null;
+}
+
+// _itemSeverity(itemDef, itemData): API principal.
+// itemDef: la definición del item en la pauta (CHECKLISTS_TECH_PAUTAS_V2)
+// itemData: lo que el técnico llenó. Estructura:
+//   { estado, mm/psi/nm/etc, comentario, _severity_override }
+//   (también soporta `state` y `comment` para compatibilidad con SQL
+//    backfilled que usó esos nombres).
+// Retorna: 'critico' | 'alerta' | 'ok' | 'unknown'
+function _itemSeverity(itemDef, itemData) {
+  if (!itemData) return 'unknown';
+  // 1) Override manual del técnico (siempre gana)
+  var override = itemData._severity_override;
+  if (override === 'critico' || override === 'alerta' || override === 'ok') {
+    return override;
+  }
+  // Lectura compatible: estado (v2 canónico) o state (SQL backfill)
+  var stateVal = itemData.estado != null ? itemData.estado : itemData.state;
+  // 2) Combinación estado + numérico: tomar la peor de las dos.
+  var sevState = _severityFromState(stateVal);
+  var sevNum = null;
+  if (itemDef && itemDef.numeric && itemData[itemDef.numeric.key] != null && itemData[itemDef.numeric.key] !== '') {
+    sevNum = _severityFromNumeric(itemData[itemDef.numeric.key], itemDef.numeric);
+  }
+  // Tomar la peor (crítico > alerta > ok)
+  var rank = {critico:3, alerta:2, ok:1};
+  var best = null;
+  [sevState, sevNum].forEach(function(s){
+    if (!s) return;
+    if (!best || rank[s] > rank[best]) best = s;
+  });
+  return best || 'unknown';
+}
+
+// _itemSeverityIsManual(itemData): true si la severidad final viene de override.
+function _itemSeverityIsManual(itemData) {
+  if (!itemData) return false;
+  var o = itemData._severity_override;
+  return (o === 'critico' || o === 'alerta' || o === 'ok');
+}
+
+// _pautaSeverityCounts(pauta_v2, pautaDef): cuenta severidades por nivel.
+// pauta_v2: el objeto guardado en cd.tech_checklist.pauta_v2 (o equivalente en service_report).
+// pautaDef: CHECKLISTS_TECH_PAUTAS_V2[srvKey]
+// Retorna: { critico: N, alerta: N, ok: N, unknown: N, items: [{key, label, severity, isManual, value, unit, comment, sectionTitle}] }
+function _pautaSeverityCounts(pauta_v2, pautaDef) {
+  var result = {critico: 0, alerta: 0, ok: 0, unknown: 0, items: []};
+  if (!pauta_v2 || !pautaDef || !Array.isArray(pautaDef.zonas)) return result;
+  var zonasData = pauta_v2.zonas || {};
+  pautaDef.zonas.forEach(function(zona){
+    var zoneData = zonasData[zona.id] || {};
+    (zona.items || []).forEach(function(itemDef){
+      var itemData = zoneData[itemDef.key];
+      if (!itemData) return; // item sin llenar
+      var sev = _itemSeverity(itemDef, itemData);
+      if (sev === 'unknown') {
+        result.unknown++;
+        return;
+      }
+      result[sev]++;
+      // Construir info de display
+      var displayVal = '';
+      var unit = '';
+      if (itemDef.numeric && itemData[itemDef.numeric.key] != null) {
+        displayVal = String(itemData[itemDef.numeric.key]);
+        unit = itemDef.numeric.key === 'mm' ? 'mm'
+             : itemDef.numeric.key === 'psi' ? 'psi'
+             : itemDef.numeric.key === 'nm'  ? 'Nm'
+             : itemDef.numeric.key;
+      }
+      // Label del estado para mostrar
+      var stateLbl = '';
+      var stateVal = itemData.estado != null ? itemData.estado : itemData.state;
+      if (stateVal && itemDef.opts) {
+        var opt = itemDef.opts.find(function(o){ return o.v === stateVal; });
+        stateLbl = opt ? opt.l : stateVal;
+      }
+      result.items.push({
+        key: itemDef.key,
+        label: itemDef.label,
+        severity: sev,
+        isManual: _itemSeverityIsManual(itemData),
+        state: stateVal || null,
+        stateLabel: stateLbl,
+        value: displayVal,
+        unit: unit,
+        comment: itemData.comentario || itemData.comment || '',
+        sectionTitle: zona.title,
+        // Para recomendaciones
+        minVal: itemDef.numeric && itemDef.numeric.min != null ? itemDef.numeric.min : null,
+        targetVal: itemDef.numeric && itemDef.numeric.target != null ? itemDef.numeric.target : null
+      });
+    });
+  });
+  return result;
+}
+
+// Colores estandarizados para PDF/UI
+var SEVERITY_COLORS = {
+  critico: {hex:'#c0392b', rgb:[192, 57, 43],  label:'CRÍTICO',  emoji:'🔴', bg:'#fde7e7'},
+  alerta:  {hex:'#e67e22', rgb:[230, 126, 34], label:'ALERTA',   emoji:'🟡', bg:'#fff4e6'},
+  ok:      {hex:'#27ae60', rgb:[39, 174, 96],  label:'OK',       emoji:'🟢', bg:'#e6f4ea'},
+  unknown: {hex:'#7f8c8d', rgb:[127, 140, 141],label:'—',        emoji:'⚪', bg:'#ecf0f1'}
+};
+
+
 const CHECKLISTS_TECH_PAUTAS_V2 = {
   CAMBIO_ACEITE: {
     label: 'Cambio de Aceite',
@@ -3201,7 +3418,7 @@ const CHECKLISTS_TECH_PAUTAS_V2 = {
             opts:[{v:'buen_estado',l:'Buen estado'},{v:'desgaste_normal',l:'Desgaste normal'},{v:'desgaste_critico',l:'Desgaste crítico',req_comment:true}]},
           {key:'presion_neumaticos', label:'Presión de los neumáticos', type:'state_with_numeric',
             opts:[{v:'calibrados',l:'Calibrados'},{v:'no_calibrados',l:'No calibrados'}],
-            numeric:{key:'psi', label:'Presión (PSI)', step:0.1, placeholder:'Ej: 32.0'}}
+            numeric:{key:'psi', label:'Presión (PSI)', step:0.1, placeholder:'Ej: 32.0', min:28, max:38}}
         ]
       },
       {
@@ -3328,23 +3545,23 @@ const CHECKLISTS_TECH_PAUTAS_V2 = {
             opts:[{v:'buen_estado',l:'Buen estado'},{v:'desgaste_normal',l:'Desgaste normal'},{v:'desgaste_critico',l:'Desgaste crítico',req_comment:true}]},
           {key:'pastillas_del', label:'Pastillas de freno delanteras', type:'state_with_numeric',
             opts:[{v:'buen_estado',l:'Buen estado'},{v:'desgaste_normal',l:'Desgaste normal'},{v:'desgaste_critico',l:'Desgaste crítico',req_comment:true}],
-            numeric:{key:'mm', label:'Espesor (mm)', step:0.1, placeholder:'Ej: 6.5'}},
+            numeric:{key:'mm', label:'Espesor (mm)', step:0.1, placeholder:'Ej: 6.5', min:3}},
           {key:'discos_del', label:'Discos de freno delanteros', type:'state_with_numeric',
             opts:[{v:'buen_estado',l:'Buen estado'},{v:'desgaste_normal',l:'Desgaste normal'},{v:'desgaste_critico',l:'Desgaste crítico',req_comment:true}],
-            numeric:{key:'mm', label:'Espesor (mm)', step:0.1, placeholder:'Ej: 26.0'}},
+            numeric:{key:'mm', label:'Espesor (mm)', step:0.1, placeholder:'Ej: 26.0', min:28}},
           {key:'pastillas_tras', label:'Pastillas o balatas de freno traseras', type:'state_with_numeric',
             opts:[{v:'buen_estado',l:'Buen estado'},{v:'desgaste_normal',l:'Desgaste normal'},{v:'desgaste_critico',l:'Desgaste crítico',req_comment:true}],
-            numeric:{key:'mm', label:'Espesor (mm)', step:0.1, placeholder:'Ej: 5.0'}},
+            numeric:{key:'mm', label:'Espesor (mm)', step:0.1, placeholder:'Ej: 5.0', min:3}},
           {key:'discos_tras', label:'Discos o tambor de freno trasero', type:'state_with_numeric',
             opts:[{v:'buen_estado',l:'Buen estado'},{v:'desgaste_normal',l:'Desgaste normal'},{v:'desgaste_critico',l:'Desgaste crítico',req_comment:true}],
-            numeric:{key:'mm', label:'Espesor (mm)', step:0.1, placeholder:'Ej: 9.0'}},
+            numeric:{key:'mm', label:'Espesor (mm)', step:0.1, placeholder:'Ej: 9.0', min:9}},
           {key:'sistema_hidraulico_frenos', label:'Sistema hidráulico de frenos', type:'state_with_comment',
             opts:[{v:'buen_estado',l:'Buen estado'},{v:'desgaste_normal',l:'Desgaste normal'},{v:'desgaste_critico',l:'Desgaste crítico',req_comment:true}]},
           {key:'liquido_frenos', label:'Líquido de frenos', type:'state_with_comment',
             opts:[{v:'buen_estado',l:'Buen estado'},{v:'estado_normal',l:'Estado normal'},{v:'mal_estado',l:'Mal estado',req_comment:true}]},
           {key:'presion_neumaticos', label:'Presión de los neumáticos', type:'state_with_numeric',
             opts:[{v:'calibrados',l:'Calibrados'},{v:'no_calibrados',l:'No calibrados'}],
-            numeric:{key:'psi', label:'Presión (PSI)', step:0.1, placeholder:'Ej: 32.0'}}
+            numeric:{key:'psi', label:'Presión (PSI)', step:0.1, placeholder:'Ej: 32.0', min:28, max:38}}
         ]
       },
       {
@@ -3379,7 +3596,7 @@ const CHECKLISTS_TECH_PAUTAS_V2 = {
             opts:[{v:'lubricadas',l:'Lubricadas'}]},
           {key:'apriete_ruedas', label:'Apriete de ruedas', type:'apriete_ruedas',
             opts:[{v:'confirmado',l:'Confirmado y marcado'}],
-            numeric:{key:'nm', label:'Apriete (Nm)', step:1, placeholder:'Ej: 180'}}
+            numeric:{key:'nm', label:'Apriete (Nm)', step:1, placeholder:'Ej: 180', min:100, target:180}}
         ]
       },
       {
@@ -15853,10 +16070,82 @@ function renderPautaV2Item(zoneId, it, data) {
     +     'onchange="updatePautaV2Item(\'' + zoneId + '\',\'' + key + '\',\'comentario\',this.value)">' + escapeHtml(data.comentario || '') + '</textarea>'
     + '</div>';
 
+  // FRENTE 9.7 (2026-05-14): badge de severidad sugerida + botón override.
+  // El motor de severidad calcula automáticamente la prioridad del item
+  // según el estado seleccionado + medición numérica. El técnico puede
+  // confirmar (no hace nada → queda la sugerencia) o cambiar (override).
+  //
+  // El override se persiste en data._severity_override y prevalece sobre
+  // la sugerencia automática en el PDF y en el resumen ejecutivo.
+  //
+  // Solo mostramos el badge si el item tiene datos suficientes para
+  // clasificar (estado seleccionado o número ingresado).
+  var suggestedSev = _itemSeverity(it, data);
+  if (suggestedSev !== 'unknown') {
+    var override = data._severity_override;
+    var displaySev = (override === 'critico' || override === 'alerta' || override === 'ok') ? override : suggestedSev;
+    var SC = SEVERITY_COLORS[displaySev];
+    var isOverride = !!override;
+    var diffsFromSuggested = isOverride && override !== suggestedSev;
+    html +=
+        '<div style="margin-top:8px;padding:6px 8px;background:' + SC.bg + ';border-radius:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11px">'
+      +   '<span style="font-weight:700;color:' + SC.hex + '">' + SC.emoji + ' ' + SC.label + '</span>'
+      +   (isOverride
+            ? '<span style="background:#fff;border:1px solid ' + SC.hex + ';color:' + SC.hex + ';padding:1px 6px;border-radius:8px;font-size:9px;font-weight:700">MANUAL</span>'
+            : '<span style="color:#666;font-size:10px">(sugerido por sistema)</span>')
+      +   (diffsFromSuggested
+            ? '<span style="color:#666;font-size:10px;font-style:italic">— sistema sugería ' + SEVERITY_COLORS[suggestedSev].label + '</span>'
+            : '')
+      +   '<div style="margin-left:auto;display:flex;gap:3px">'
+      +     '<button type="button" title="Marcar como crítico"' +
+              ' onclick="overridePautaV2Severity(\'' + zoneId + '\',\'' + key + '\',\'critico\')"' +
+              ' style="padding:2px 6px;border:1px solid #ccc;background:' + (override==='critico'?SEVERITY_COLORS.critico.hex:'#fff') + ';color:' + (override==='critico'?'#fff':SEVERITY_COLORS.critico.hex) + ';border-radius:4px;font-size:11px;font-weight:700;cursor:pointer">🔴</button>'
+      +     '<button type="button" title="Marcar como alerta"' +
+              ' onclick="overridePautaV2Severity(\'' + zoneId + '\',\'' + key + '\',\'alerta\')"' +
+              ' style="padding:2px 6px;border:1px solid #ccc;background:' + (override==='alerta'?SEVERITY_COLORS.alerta.hex:'#fff') + ';color:' + (override==='alerta'?'#fff':SEVERITY_COLORS.alerta.hex) + ';border-radius:4px;font-size:11px;font-weight:700;cursor:pointer">🟡</button>'
+      +     '<button type="button" title="Marcar como OK"' +
+              ' onclick="overridePautaV2Severity(\'' + zoneId + '\',\'' + key + '\',\'ok\')"' +
+              ' style="padding:2px 6px;border:1px solid #ccc;background:' + (override==='ok'?SEVERITY_COLORS.ok.hex:'#fff') + ';color:' + (override==='ok'?'#fff':SEVERITY_COLORS.ok.hex) + ';border-radius:4px;font-size:11px;font-weight:700;cursor:pointer">🟢</button>'
+      +     (isOverride
+              ? '<button type="button" title="Volver a sugerencia automática"' +
+                  ' onclick="overridePautaV2Severity(\'' + zoneId + '\',\'' + key + '\',null)"' +
+                  ' style="padding:2px 6px;border:1px solid #aaa;background:#fff;color:#666;border-radius:4px;font-size:9px;cursor:pointer;font-weight:600">AUTO</button>'
+              : '')
+      +   '</div>'
+      + '</div>';
+  }
+
   html += '</div>';
   return html;
 }
 window.renderPautaV2Item = renderPautaV2Item;
+
+// FRENTE 9.7 (2026-05-14): override de severidad por el técnico.
+// Llamado desde los botones 🔴🟡🟢 del badge. value puede ser
+// 'critico' | 'alerta' | 'ok' | null (volver a sugerencia automática).
+function overridePautaV2Severity(zoneId, key, value) {
+  if (!_activePautaV2) return;
+  var st = _activePautaV2;
+  if (!st.zonas[zoneId]) st.zonas[zoneId] = {};
+  if (!st.zonas[zoneId][key]) st.zonas[zoneId][key] = {};
+  var prev = st.zonas[zoneId][key]._severity_override || null;
+  if (value === null || value === undefined) {
+    delete st.zonas[zoneId][key]._severity_override;
+  } else {
+    st.zonas[zoneId][key]._severity_override = value;
+  }
+  logR('PAUTA_V2_SEVERITY_OVERRIDE', {
+    ot: st.otNumber, zone: zoneId, item: key,
+    prev: prev, next: value || 'auto', by: CU && CU.username
+  });
+  // Auto-save igual que pickPautaV2Opt
+  if (typeof savePautaV2Partial === 'function') {
+    try { savePautaV2Partial().catch(function(){}); } catch(_){}
+  }
+  // Re-render para actualizar el badge
+  if (typeof renderPautaV2Modal === 'function') renderPautaV2Modal();
+}
+window.overridePautaV2Severity = overridePautaV2Severity;
 
 // Maneja seleccion de opcion (radio-style). Si selecciona la misma, NO la
 // deselecciona (evita estados intermedios). Para deseleccionar, el tecnico
@@ -21879,6 +22168,54 @@ function renderPautaV2InPdf(doc, pautaData, startY, pageW, pageH, marginX, conte
   if (!def) return startY;
   var y = startY;
 
+  // ═══════════════════════════════════════════════════════════════
+  // FRENTE 9.7 (2026-05-14): RESUMEN EJECUTIVO con clasificación
+  // automática de severidad (rojo / amarillo / verde).
+  // ═══════════════════════════════════════════════════════════════
+  // Calculamos los counts ANTES de renderizar zonas — el resumen ejecutivo
+  // va arriba para que el lector (jefe de flota, cliente corporativo)
+  // tenga la foto en 5 segundos sin leer todo el detalle.
+  var sevCounts = (typeof _pautaSeverityCounts === 'function')
+    ? _pautaSeverityCounts(pautaData, def)
+    : {critico:0, alerta:0, ok:0, unknown:0, items:[]};
+
+  // Render del bloque "Resumen ejecutivo" — 3 cajas en fila.
+  if (sevCounts.critico + sevCounts.alerta + sevCounts.ok > 0) {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11);
+    doc.setTextColor(20, 20, 20);
+    doc.text('Resumen ejecutivo', marginX, y);
+    y += 5;
+
+    var boxH = 16;
+    var boxW = (contentW - 6) / 3;  // 3 cajas con 3mm de gap entre cada una
+    var boxes = [
+      {label:'CRÍTICOS', val:sevCounts.critico, color:[192,57,43], bg:[253,231,231]},
+      {label:'ALERTAS',  val:sevCounts.alerta,  color:[230,126,34], bg:[255,244,230]},
+      {label:'CONFORME', val:sevCounts.ok,      color:[39,174,96],  bg:[230,244,234]}
+    ];
+    boxes.forEach(function(b, idx){
+      var bx = marginX + idx * (boxW + 3);
+      // Fondo
+      doc.setFillColor(b.bg[0], b.bg[1], b.bg[2]);
+      doc.rect(bx, y, boxW, boxH, 'F');
+      // Borde
+      doc.setDrawColor(b.color[0], b.color[1], b.color[2]);
+      doc.setLineWidth(0.4);
+      doc.rect(bx, y, boxW, boxH, 'S');
+      // Número grande
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(20);
+      doc.setTextColor(b.color[0], b.color[1], b.color[2]);
+      doc.text(String(b.val), bx + boxW/2, y + 8, {align: 'center'});
+      // Label
+      doc.setFontSize(8);
+      doc.setFont('helvetica', 'bold');
+      doc.text(b.label, bx + boxW/2, y + 13, {align: 'center'});
+    });
+    y += boxH + 6;
+  }
+
   // Bloque de encabezado de programa
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(11);
@@ -21911,21 +22248,23 @@ function renderPautaV2InPdf(doc, pautaData, startY, pageW, pageH, marginX, conte
   });
   y = doc.lastAutoTable.finalY + 6;
 
-  // Render por zona: cada zona es un titulo + tabla de items
-  // Acumular hallazgos relevantes para resumen final
-  var hallazgos = [];
-
+  // Render por zona: cada zona es un titulo + tabla de items.
+  // FRENTE 9.7: cada fila se colorea por severidad calculada (no por
+  // detección heurística antigua). Los hallazgos críticos y alertas se
+  // acumulan para la sección RECOMENDACIONES al final.
   def.zonas.forEach(function(z) {
     var zoneData = (pautaData.zonas || {})[z.id] || {};
     // Construir filas de items: solo items con estado seleccionado.
     var rows = [];
+    var rowsMeta = []; // severidad por fila para didParseCell
     (z.items || []).forEach(function(it) {
       var d = zoneData[it.key];
-      if (!d || !d.estado) return; // omitir items sin completar
-      // Determinar label del estado
-      var opt = (it.opts || []).find(function(o){ return o.v === d.estado; });
-      var estadoLabel = opt ? opt.l : d.estado;
-      // Detalle adicional segun tipo
+      // FRENTE 9.7: compatibilidad estado (canónico v2) / state (SQL backfill)
+      var estadoVal = d && (d.estado != null ? d.estado : d.state);
+      var comentVal = d && (d.comentario != null ? d.comentario : d.comment);
+      if (!d || !estadoVal) return; // omitir items sin completar
+      var opt = (it.opts || []).find(function(o){ return o.v === estadoVal; });
+      var estadoLabel = opt ? opt.l : estadoVal;
       var detalle = '';
       if (it.type === 'oil_motor') {
         var parts = [];
@@ -21938,20 +22277,18 @@ function renderPautaV2InPdf(doc, pautaData, startY, pageW, pageH, marginX, conte
         if (nVal != null) detalle = nVal + ' ' + (it.numeric.label.match(/\(([^)]+)\)/) || ['',''])[1];
         if (detalle.endsWith(' ')) detalle = detalle.trim();
       }
-      if (d.comentario && d.comentario.trim()) {
-        detalle = detalle ? (detalle + ' — ' + d.comentario.trim()) : d.comentario.trim();
+      if (comentVal && comentVal.trim()) {
+        detalle = detalle ? (detalle + ' — ' + comentVal.trim()) : comentVal.trim();
       }
+      // Severidad (motor de análisis + override del técnico si existe).
+      var sev = (typeof _itemSeverity === 'function') ? _itemSeverity(it, d) : 'unknown';
+      var isManual = (typeof _itemSeverityIsManual === 'function') ? _itemSeverityIsManual(d) : false;
       rows.push([it.label, estadoLabel, detalle]);
-
-      // Detectar hallazgos: opcion que requiere comentario o valor "critico" / "grave" / "fuga" / etc.
-      var isHallazgo = (opt && opt.req_comment) || /critic|grave|fuga|mal|fallida|quemada|desgaste_alto/i.test(d.estado || '');
-      if (isHallazgo) {
-        hallazgos.push({zona: z.title, item: it.label, estado: estadoLabel, detalle: detalle});
-      }
+      rowsMeta.push({severity: sev, isManual: isManual});
     });
     if (!rows.length) return;
 
-    // Salto de pagina si queda poco espacio
+    // Salto de página si queda poco espacio
     if (y > pageH - 40) { doc.addPage(); y = 18; }
 
     doc.setFont('helvetica', 'bold');
@@ -21972,38 +22309,143 @@ function renderPautaV2InPdf(doc, pautaData, startY, pageW, pageH, marginX, conte
         1: {cellWidth: 38},
         2: {cellWidth: contentW - 108}
       },
-      margin: {left: marginX, right: marginX}
+      margin: {left: marginX, right: marginX},
+      didParseCell: function(data) {
+        if (data.section !== 'body') return;
+        var meta = rowsMeta[data.row.index];
+        if (!meta) return;
+        var SC = (typeof SEVERITY_COLORS !== 'undefined') ? SEVERITY_COLORS[meta.severity] : null;
+        if (!SC) return;
+        // Banda de color en la primera columna (borde izquierdo).
+        // Aplicamos tinte de fondo suave en toda la fila + color de texto
+        // en la columna "Resultado" para que se vea el código rojo/amarillo/verde.
+        if (meta.severity === 'critico' || meta.severity === 'alerta') {
+          data.cell.styles.fillColor = SC.bg ? hexToRgbArray(SC.bg) : [255,255,255];
+          if (data.column.index === 1) {
+            data.cell.styles.textColor = SC.rgb;
+            data.cell.styles.fontStyle = 'bold';
+          }
+        } else if (meta.severity === 'ok' && data.column.index === 1) {
+          // Verde solo en la columna Resultado (no tintamos toda la fila para no saturar)
+          data.cell.styles.textColor = SC.rgb;
+        }
+      }
     });
     y = doc.lastAutoTable.finalY + 4;
   });
 
-  // Bloque "DETALLES ENCONTRADOS" — visible solo si hay hallazgos
-  if (hallazgos.length) {
-    if (y > pageH - 40) { doc.addPage(); y = 18; }
+  // ═══════════════════════════════════════════════════════════════
+  // FRENTE 9.7 (2026-05-14): SECCIÓN RECOMENDACIONES (al final).
+  // ═══════════════════════════════════════════════════════════════
+  // Agrupa items críticos + alertas como acciones recomendadas, con
+  // prioridad codificada. Sin fechas específicas (decisión del usuario):
+  // solo 'Crítico — acción inmediata' / 'Urgente — próximo mantenimiento'
+  // / 'Preventivo — monitorear'.
+  var criticos = (sevCounts.items || []).filter(function(x){ return x.severity === 'critico'; });
+  var alertas  = (sevCounts.items || []).filter(function(x){ return x.severity === 'alerta'; });
+
+  if (criticos.length || alertas.length) {
+    if (y > pageH - 50) { doc.addPage(); y = 18; }
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(11);
-    doc.setTextColor(180, 30, 30); // rojo Rosso para destacar
-    doc.text('Detalles encontrados en la inspección', marginX, y);
+    doc.setFontSize(12);
+    doc.setTextColor(20, 20, 20);
+    doc.text('RECOMENDACIONES', marginX, y);
+    y += 4;
+    doc.setDrawColor(180, 180, 180);
+    doc.setLineWidth(0.3);
+    doc.line(marginX, y, pageW - marginX, y);
     y += 5;
-    var hRows = hallazgos.map(function(h){
-      var det = h.detalle ? (h.estado + ' — ' + h.detalle) : h.estado;
-      return [h.zona, h.item, det];
-    });
-    doc.autoTable({
-      startY: y,
-      head: [['Zona', 'Componente', 'Resultado']],
-      body: hRows,
-      theme: 'grid',
-      styles: {fontSize: 8.5, cellPadding: 2, lineColor: [220, 200, 200], lineWidth: 0.15, textColor: [40, 40, 40]},
-      headStyles: {fillColor: [255, 240, 240], textColor: [180, 30, 30], fontSize: 9, fontStyle: 'bold'},
-      columnStyles: {
-        0: {cellWidth: 45},
-        1: {cellWidth: 65, fontStyle: 'bold'},
-        2: {cellWidth: contentW - 110}
-      },
-      margin: {left: marginX, right: marginX}
-    });
-    y = doc.lastAutoTable.finalY + 6;
+
+    // Bloque CRÍTICO
+    if (criticos.length) {
+      if (y > pageH - 35) { doc.addPage(); y = 18; }
+      doc.setFillColor(253, 231, 231);
+      doc.rect(marginX, y - 0.5, contentW, 6, 'F');
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(10);
+      doc.setTextColor(192, 57, 43);
+      doc.text('CRÍTICO — Acción inmediata recomendada', marginX + 2, y + 4);
+      y += 8;
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(9);
+      doc.setTextColor(40, 40, 40);
+      criticos.forEach(function(c){
+        if (y > pageH - 18) { doc.addPage(); y = 18; }
+        // Bullet + label + valor
+        var line = '• ' + c.label;
+        if (c.value) {
+          line += ': ' + c.value + (c.unit ? ' ' + c.unit : '');
+          if (c.minVal != null) line += ' (mínimo ' + c.minVal + ' ' + c.unit + ')';
+        } else if (c.stateLabel) {
+          line += ': ' + c.stateLabel;
+        }
+        var wrapped = doc.splitTextToSize(line, contentW - 4);
+        wrapped.forEach(function(ln){
+          if (y > pageH - 15) { doc.addPage(); y = 18; }
+          doc.text(ln, marginX + 2, y);
+          y += 4;
+        });
+        if (c.comment) {
+          doc.setFont('helvetica', 'italic');
+          doc.setTextColor(100, 100, 100);
+          var w2 = doc.splitTextToSize('  ' + c.comment, contentW - 6);
+          w2.forEach(function(ln){
+            if (y > pageH - 15) { doc.addPage(); y = 18; }
+            doc.text(ln, marginX + 4, y);
+            y += 3.5;
+          });
+          doc.setFont('helvetica', 'normal');
+          doc.setTextColor(40, 40, 40);
+        }
+        y += 1;
+      });
+      y += 2;
+    }
+
+    // Bloque ALERTA / PREVENTIVO
+    if (alertas.length) {
+      if (y > pageH - 35) { doc.addPage(); y = 18; }
+      doc.setFillColor(255, 244, 230);
+      doc.rect(marginX, y - 0.5, contentW, 6, 'F');
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(10);
+      doc.setTextColor(230, 126, 34);
+      doc.text('PREVENTIVO — Monitorear en próximos mantenimientos', marginX + 2, y + 4);
+      y += 8;
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(9);
+      doc.setTextColor(40, 40, 40);
+      alertas.forEach(function(a){
+        if (y > pageH - 18) { doc.addPage(); y = 18; }
+        var line = '• ' + a.label;
+        if (a.value) {
+          line += ': ' + a.value + (a.unit ? ' ' + a.unit : '');
+          if (a.minVal != null) line += ' (mínimo ' + a.minVal + ' ' + a.unit + ')';
+        } else if (a.stateLabel) {
+          line += ': ' + a.stateLabel;
+        }
+        var wA = doc.splitTextToSize(line, contentW - 4);
+        wA.forEach(function(ln){
+          if (y > pageH - 15) { doc.addPage(); y = 18; }
+          doc.text(ln, marginX + 2, y);
+          y += 4;
+        });
+        if (a.comment) {
+          doc.setFont('helvetica', 'italic');
+          doc.setTextColor(100, 100, 100);
+          var w3 = doc.splitTextToSize('  ' + a.comment, contentW - 6);
+          w3.forEach(function(ln){
+            if (y > pageH - 15) { doc.addPage(); y = 18; }
+            doc.text(ln, marginX + 4, y);
+            y += 3.5;
+          });
+          doc.setFont('helvetica', 'normal');
+          doc.setTextColor(40, 40, 40);
+        }
+        y += 1;
+      });
+      y += 2;
+    }
   }
 
   // Notas del tecnico (observaciones libres)
@@ -22026,6 +22468,15 @@ function renderPautaV2InPdf(doc, pautaData, startY, pageW, pageH, marginX, conte
   return y;
 }
 window.renderPautaV2InPdf = renderPautaV2InPdf;
+
+// Helper local: convierte string hex '#fde7e7' a [r,g,b] para jsPDF.
+function hexToRgbArray(hex) {
+  if (!hex || typeof hex !== 'string') return [255, 255, 255];
+  hex = hex.replace('#', '').trim();
+  if (hex.length === 3) hex = hex.split('').map(function(c){ return c+c; }).join('');
+  var n = parseInt(hex, 16);
+  return [(n >> 16) & 0xFF, (n >> 8) & 0xFF, n & 0xFF];
+}
 
 // FRENTE 9.6 (2026-05-14): el generador acepta un segundo argumento
 // serviceReportId. Si se pasa, renderiza ese service_report específico
