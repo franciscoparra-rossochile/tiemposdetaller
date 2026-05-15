@@ -5875,7 +5875,8 @@ async function saveLiveFinding() {
     // Notificar al gestor comercial de la OT (si lo hay) sobre el nuevo hallazgo,
     // así puede comunicar al cliente sin esperar al cierre.
     try {
-      var rOt = await sb.from('work_orders').select('commercial_manager_id, ot_number, plate').eq('id', st.workOrderId).maybeSingle();
+      // FIX 2026-05-15: work_orders NO tiene columna 'plate'. Usar VIEW work_orders_with_plate.
+      var rOt = await sb.from('work_orders_with_plate').select('commercial_manager_id, ot_number, plate').eq('id', st.workOrderId).maybeSingle();
       if (rOt && rOt.data && rOt.data.commercial_manager_id) {
         var preview = text.length > 80 ? text.slice(0, 77) + '...' : text;
         await sb.from('notifications').insert({
@@ -7626,7 +7627,8 @@ function openChecklist(sessionKey) {
     // Buscar service_classification por work_order_id
     (async function(){
       try {
-        var r = await sb.from('work_orders').select('id, service_classification, ot_number, plate, checklist_data, status, client_id, vehicle_id').eq('id', sess.work_order_id).single();
+        // FIX 2026-05-15: work_orders NO tiene columna 'plate'. Usar VIEW work_orders_with_plate.
+        var r = await sb.from('work_orders_with_plate').select('id, service_classification, ot_number, plate, checklist_data, status, client_id, vehicle_id').eq('id', sess.work_order_id).single();
         if (r && r.data && hasPautaV2(r.data.service_classification)) {
           // Inyectar la OT en _myOTsCache (si no esta) para que openPautaV2Modal la encuentre.
           if (!Array.isArray(_myOTsCache)) _myOTsCache = [];
@@ -15812,7 +15814,9 @@ async function openPautaV2DuringService(woId, sessionKey) {
   if (!sb || !woId) { showGlobalError('Datos insuficientes para abrir pauta', 3000); return; }
   try {
     // Cargar OT actual (siempre datos frescos para reflejar autosave previo)
-    var r = await sb.from('work_orders').select('id, ot_number, service_classification, plate, checklist_data, vehicle_id').eq('id', woId).single();
+    // FIX 2026-05-15: work_orders NO tiene columna 'plate'. Usar VIEW work_orders_with_plate
+    // que ya consolida la patente desde client_vehicles (JOIN por vehicle_id).
+    var r = await sb.from('work_orders_with_plate').select('id, ot_number, service_classification, plate, checklist_data, vehicle_id').eq('id', woId).single();
     if (r && r.error) { showGlobalError('Error al cargar OT: ' + r.error.message, 4000); return; }
     var o = r.data;
     if (!o) { showGlobalError('OT no encontrada', 3000); return; }
@@ -15992,7 +15996,8 @@ async function openPautaV2AdminEditor(woId) {
   }
   if (!sb || !woId) { showGlobalError('Datos insuficientes', 3000); return; }
   try {
-    var r = await sb.from('work_orders').select('id, ot_number, service_classification, plate, checklist_data, vehicle_id').eq('id', woId).single();
+    // FIX 2026-05-15: work_orders NO tiene columna 'plate'. Usar VIEW work_orders_with_plate.
+    var r = await sb.from('work_orders_with_plate').select('id, ot_number, service_classification, plate, checklist_data, vehicle_id').eq('id', woId).single();
     if (r && r.error) { showGlobalError('Error al cargar OT: ' + r.error.message, 4000); return; }
     var o = r.data;
     if (!o) { showGlobalError('OT no encontrada', 3000); return; }
@@ -24426,7 +24431,8 @@ async function openInformeEditor(woId, serviceReportId) {
 
   try {
     var loaded = await loadInformeExtras(woId);
-    var rOT = await sb.from('work_orders').select('id,ot_number,plate,service_classification,checklist_data').eq('id', woId).maybeSingle();
+    // FIX 2026-05-15: work_orders NO tiene columna 'plate'. Usar VIEW work_orders_with_plate.
+    var rOT = await sb.from('work_orders_with_plate').select('id,ot_number,plate,service_classification,checklist_data').eq('id', woId).maybeSingle();
     var o = rOT && rOT.data ? rOT.data : {};
     var cd = o.checklist_data || {};
 
