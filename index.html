@@ -248,7 +248,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     <div class="tab" data-tab="t-historial" onclick="techTab('t-historial')">Historial</div>
     <div class="tab" data-tab="t-informes" onclick="techTab('t-informes')">Informes</div>
     <div class="tab" data-tab="t-midia" onclick="techTab('t-midia')">Mi dia</div>
-    <div class="tab" data-tab="t-bugs" onclick="techTab('t-bugs')">Reportar bug</div>
+    <div class="tab" data-tab="t-bugs" onclick="techTab('t-bugs')">Mejoras y errores</div>
   </div>
   <div class="body" id="tech-body"></div>
 </div>
@@ -279,7 +279,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     <div class="tab" data-tab="b-hist" onclick="bossTab('b-hist')" id="tab-hist">Historial</div>
     <div class="tab" data-tab="b-reportes" onclick="bossTab('b-reportes')" id="tab-reportes">Reportes</div>
     <div class="tab" data-tab="b-informes" onclick="bossTab('b-informes')" id="tab-informes">Informes Técnicos</div>
-    <div class="tab" data-tab="b-bugs" onclick="bossTab('b-bugs')" id="tab-bugs">Bugs</div>
+    <div class="tab" data-tab="b-bugs" onclick="bossTab('b-bugs')" id="tab-bugs">Mejoras y errores</div>
     <div class="tab" data-tab="b-protocolos" onclick="bossTab('b-protocolos')" id="tab-protocolos" style="display:none">Protocolos de Seguridad<span class="ndot" id="boss-protocolos-dot"></span></div>
     <div class="tab" data-tab="b-cierre-local" onclick="bossTab('b-cierre-local')" id="tab-cierre-local" style="display:none">Cierre de Local<span class="ndot" id="boss-cierre-local-dot"></span></div>
     <div class="tab" data-tab="b-visado" onclick="bossTab('b-visado')" id="tab-boss-visado" style="display:none">Visado<span class="ndot" id="boss-visado-dot"></span></div>
@@ -12928,8 +12928,9 @@ var BUG_STATUSES = [
 ];
 
 // Estado del formulario en memoria
-var _bugForm = { area: '', severity: '', title: '', steps: '' };
+var _bugForm = { area: '', severity: '', title: '', steps: '', entry_type: 'error' };
 var _bugAdminFilter = 'pendientes'; // 'pendientes' | 'todos' | 'resueltos'
+var _bugAdminTypeFilter = 'all'; // 'all' | 'error' | 'mejora'
 
 // Captura contexto técnico automáticamente (sin preguntar al usuario)
 function captureBugContext() {
@@ -12967,26 +12968,44 @@ function isBugAdmin() {
 function renderBugReports(body) {
   body.innerHTML = '';
 
-  // Card explicativa
+  // FRENTE 9.8 (2026-05-15): pestaña ahora cubre ERRORES + MEJORAS en un
+  // mismo módulo. Antes solo errores ("Bugs"); ahora también captura
+  // sugerencias del equipo sin sumar otra pestaña. El registro lleva un
+  // campo `entry_type` que el admin filtra desde el listado.
   var intro = mk('div', 'card-accent');
-  intro.innerHTML = '<div class="lbl">Reporte de errores</div>'
+  intro.innerHTML = '<div class="lbl">Mejoras y errores</div>'
     + '<div style="font-size:12px;color:var(--wh3);line-height:1.45">'
-    + 'Si algo no funciona como esperabas, repórtalo aquí. Mientras más claro, más rápido lo arreglamos. '
+    + 'Si algo no funciona como esperabas, repórtalo. Si se te ocurre una idea o mejora, también. '
     + 'No te preocupes por los detalles técnicos — los capturamos automáticamente.'
     + '</div>';
   body.appendChild(intro);
 
-  // FORMULARIO (todos lo ven)
   var form = mk('div', 'card');
+  var isMejora = _bugForm.entry_type === 'mejora';
   form.innerHTML = ''
+    // Toggle Error / Mejora
+    + '<div class="lbl">Tipo de reporte <span style="color:var(--red)">*</span></div>'
+    + '<div id="bug-type-row" style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:10px">'
+    +   '<button type="button" class="sel-btn ' + (!isMejora ? 'on' : '') + '" data-bug-type="error" '
+    +     'onclick="pickBugEntryType(\'error\')" style="min-height:54px;line-height:1.25">'
+    +     '<span style="font-weight:700;font-size:13px">🐞 Error</span>'
+    +     '<span style="font-size:10px;color:var(--wh3);text-transform:none;font-weight:500;letter-spacing:0">Algo no funciona</span>'
+    +   '</button>'
+    +   '<button type="button" class="sel-btn ' + (isMejora ? 'on' : '') + '" data-bug-type="mejora" '
+    +     'onclick="pickBugEntryType(\'mejora\')" style="min-height:54px;line-height:1.25">'
+    +     '<span style="font-weight:700;font-size:13px">💡 Mejora</span>'
+    +     '<span style="font-size:10px;color:var(--wh3);text-transform:none;font-weight:500;letter-spacing:0">Sugerencia o idea</span>'
+    +   '</button>'
+    + '</div>'
+
     // Título / qué pasó
-    + '<div class="lbl">¿Qué pasó? <span style="color:var(--red)">*</span></div>'
+    + '<div class="lbl">' + (isMejora ? '¿Qué te gustaría que cambie o mejore?' : '¿Qué pasó?') + ' <span style="color:var(--red)">*</span></div>'
     + '<input type="text" class="inp" id="bug-title" maxlength="120" '
-    + 'placeholder="Ej: el botón finalizar no responde" autocomplete="off" data-no-upper '
+    + 'placeholder="' + (isMejora ? 'Ej: poder duplicar OTs desde el historial' : 'Ej: el botón finalizar no responde') + '" autocomplete="off" data-no-upper '
     + 'value="' + escapeHtml(_bugForm.title) + '"/>'
 
     // Área
-    + '<div class="lbl" style="margin-top:6px">¿Dónde estabas? <span style="color:var(--red)">*</span></div>'
+    + '<div class="lbl" style="margin-top:6px">¿En qué parte de la app? <span style="color:var(--red)">*</span></div>'
     + '<select class="inp" id="bug-area">'
     +   '<option value="">— Selecciona —</option>'
     +   BUG_AREAS.map(function(a){
@@ -12995,8 +13014,8 @@ function renderBugReports(body) {
         }).join('')
     + '</select>'
 
-    // Severidad (botones grandes)
-    + '<div class="lbl" style="margin-top:6px">¿Qué tan grave es? <span style="color:var(--red)">*</span></div>'
+    // Severidad / prioridad (botones grandes) — labels distintos según tipo
+    + '<div class="lbl" style="margin-top:6px">' + (isMejora ? '¿Qué prioridad le darías?' : '¿Qué tan grave es?') + ' <span style="color:var(--red)">*</span></div>'
     + '<div id="bug-sev-row" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:8px">'
     +   BUG_SEVERITIES.map(function(s){
           var on = _bugForm.severity === s.key ? 'on' : '';
@@ -13009,10 +13028,10 @@ function renderBugReports(body) {
         }).join('')
     + '</div>'
 
-    // Pasos (opcional)
-    + '<div class="lbl" style="margin-top:4px">¿Cómo lo reproduzco? <span style="color:var(--wh4);font-weight:500;text-transform:none;letter-spacing:0">(opcional pero ayuda mucho)</span></div>'
+    // Pasos / descripción
+    + '<div class="lbl" style="margin-top:4px">' + (isMejora ? '¿Por qué te ayudaría?' : '¿Cómo lo reproduzco?') + ' <span style="color:var(--wh4);font-weight:500;text-transform:none;letter-spacing:0">(opcional pero ayuda mucho)</span></div>'
     + '<textarea class="inp" id="bug-steps" rows="3" maxlength="800" data-no-upper '
-    + 'placeholder="Ej: 1) abrí la OT 234, 2) toqué Finalizar, 3) salió error rojo">' + escapeHtml(_bugForm.steps) + '</textarea>'
+    + 'placeholder="' + (isMejora ? 'Ej: ahorrarí­a 5 minutos en cada ingreso de cliente recurrente' : 'Ej: 1) abrí la OT 234, 2) toqué Finalizar, 3) salió error rojo') + '">' + escapeHtml(_bugForm.steps) + '</textarea>'
 
     // Aviso de captura automática
     + '<div style="font-size:10px;color:var(--wh4);margin:4px 0 10px;font-family:var(--mono);line-height:1.4">'
@@ -13021,7 +13040,7 @@ function renderBugReports(body) {
 
     // Error / botón
     + '<div id="bug-err" style="display:none;color:var(--red);font-size:12px;margin-bottom:8px;font-weight:600;padding:8px;background:var(--red4);border-radius:4px"></div>'
-    + '<button class="btn btn-red" id="bug-send-btn" onclick="submitBugReport()">Enviar reporte</button>';
+    + '<button class="btn btn-red" id="bug-send-btn" onclick="submitBugReport()">' + (isMejora ? 'Enviar sugerencia' : 'Enviar reporte') + '</button>';
   body.appendChild(form);
 
   // LISTADO (solo admin)
@@ -13033,6 +13052,30 @@ function renderBugReports(body) {
     renderBugAdminList();
   }
 }
+
+// FRENTE 9.8: toggle entry_type del formulario. Re-renderiza para que
+// los labels/placeholders cambien según el tipo elegido.
+function pickBugEntryType(type) {
+  if (type !== 'error' && type !== 'mejora') return;
+  // Preservar lo escrito antes de re-renderizar
+  var titleEl = document.getElementById('bug-title');
+  var areaEl  = document.getElementById('bug-area');
+  var stepsEl = document.getElementById('bug-steps');
+  if (titleEl) _bugForm.title = titleEl.value;
+  if (areaEl)  _bugForm.area  = areaEl.value;
+  if (stepsEl) _bugForm.steps = stepsEl.value;
+  _bugForm.entry_type = type;
+  // Re-renderizar el módulo entero (en boss o tech)
+  var body = document.getElementById('t-bugs') || document.getElementById('b-bugs');
+  if (body) {
+    // Buscar el body activo (renderizado actual)
+    var bossB = document.getElementById('boss-body');
+    var techB = document.getElementById('tech-body');
+    var active = bossB && bossB.querySelector('.card') ? bossB : techB;
+    if (active) renderBugReports(active);
+  }
+}
+window.pickBugEntryType = pickBugEntryType;
 
 function pickBugSeverity(key) {
   _bugForm.severity = key;
@@ -13088,12 +13131,33 @@ async function submitBugReport() {
     area: area,
     severity: sev,
     steps: steps ? steps.slice(0, 800) : null,
-    context: captureBugContext(),
+    // FRENTE 9.8 (2026-05-15): entry_type captura 'error' vs 'mejora'.
+    // Si la columna no existe aún en BD, también va en context como fallback
+    // para no perder la categorización del usuario.
+    entry_type: _bugForm.entry_type || 'error',
+    context: Object.assign(captureBugContext(), {entry_type: _bugForm.entry_type || 'error'}),
     status: 'nuevo'
   };
 
   try {
     var r = await sb.from('bug_reports').insert(payload);
+    if (r.error) {
+      var msgErr = (r.error.message || '').toLowerCase();
+      // FRENTE 9.8: si la columna entry_type no existe en BD aún, reintentar
+      // sin ella — la categorización queda en context.entry_type igualmente.
+      if (msgErr.indexOf('entry_type') !== -1) {
+        var fallback = Object.assign({}, payload);
+        delete fallback.entry_type;
+        var r2 = await sb.from('bug_reports').insert(fallback);
+        if (!r2.error) {
+          // Éxito sin entry_type — recordatorio admin de aplicar migración.
+          logR('BUG_REPORT_OK_FALLBACK_NO_ENTRY_TYPE', {hint: 'Ejecuta ALTER TABLE bug_reports ADD COLUMN entry_type text NOT NULL DEFAULT \'error\';'}, 'warn');
+          r = r2;
+        } else {
+          r = r2; // dejará el flujo de error normal abajo
+        }
+      }
+    }
     if (r.error) {
       // Detectar si la tabla no existe (migración no aplicada)
       var msg = (r.error.message || '').toLowerCase();
@@ -13109,7 +13173,7 @@ async function submitBugReport() {
     }
     logR('BUG_REPORT_OK', {area: area, severity: sev});
     // Limpiar formulario
-    _bugForm = { area: '', severity: '', title: '', steps: '' };
+    _bugForm = { area: '', severity: '', title: '', steps: '', entry_type: 'error' };
     showGlobalError('✓ Reporte enviado. Gracias!', 3500);
     // Re-renderizar la pestaña actual para limpiar formulario y refrescar listado si es admin
     var activeScreen = document.querySelector('.screen.active');
@@ -13129,9 +13193,12 @@ async function renderBugAdminList() {
   if (!wrap) return;
 
   // Header con filtros
+  // FRENTE 9.8 (2026-05-15): segunda fila de filtros para distinguir
+  // ERROR vs MEJORA. Permite al admin atacarlos por separado: errores
+  // primero (impactan producción), mejoras después (roadmap).
   var header = '<hr style="border:none;border-top:1px solid var(--border);margin:14px 0 10px"/>'
     + '<div class="lbl" style="margin-bottom:6px">Listado de reportes (solo admin)</div>'
-    + '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">'
+    + '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px">'
     +   [['pendientes','Pendientes'],['todos','Todos'],['resueltos','Resueltos']].map(function(f){
           var on = _bugAdminFilter === f[0] ? 'on' : '';
           return '<button class="sel-btn ' + on + '" style="flex:1 1 auto;min-height:36px;min-width:90px" '
@@ -13139,6 +13206,13 @@ async function renderBugAdminList() {
         }).join('')
     +   '<button class="sel-btn" style="flex:1 1 auto;min-height:36px;min-width:90px;background:var(--red);color:#fff;font-weight:700" '
     +     'onclick="exportBugReportsMd()">⬇ Exportar .md</button>'
+    + '</div>'
+    + '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">'
+    +   [['all','Todos','#666'],['error','🐞 Errores','#c00'],['mejora','💡 Mejoras','#a07000']].map(function(f){
+          var on = _bugAdminTypeFilter === f[0] ? 'on' : '';
+          return '<button class="sel-btn ' + on + '" style="flex:1 1 auto;min-height:32px;min-width:90px;font-size:11px" '
+            + 'onclick="setBugAdminTypeFilter(\'' + f[0] + '\')">' + f[1] + '</button>';
+        }).join('')
     + '</div>';
 
   wrap.innerHTML = header + '<div id="bug-list-inner"><div class="empty"><span class="spin"></span>Cargando...</div></div>';
@@ -13162,11 +13236,21 @@ async function renderBugAdminList() {
       }
       return;
     }
-    if (!data || !data.length) {
+    // FRENTE 9.8: filtro client-side por entry_type. Lee de la columna si
+    // existe, sino fallback a context.entry_type. Si no está en ninguno,
+    // se considera 'error' (legacy).
+    var filtered = data || [];
+    if (_bugAdminTypeFilter === 'error' || _bugAdminTypeFilter === 'mejora') {
+      filtered = filtered.filter(function(b){
+        var type = b.entry_type || (b.context && b.context.entry_type) || 'error';
+        return type === _bugAdminTypeFilter;
+      });
+    }
+    if (!filtered.length) {
       inner.innerHTML = '<div class="empty" style="padding:20px;text-align:center;color:var(--wh4)">Sin reportes en este filtro.</div>';
       return;
     }
-    inner.innerHTML = data.map(buildBugCardHTML).join('');
+    inner.innerHTML = filtered.map(buildBugCardHTML).join('');
   } catch(e) {
     inner.innerHTML = '<div class="card-err" style="font-size:12px">Error inesperado: ' + escapeHtml(e.message) + '</div>';
   }
@@ -13176,6 +13260,14 @@ function setBugAdminFilter(f) {
   _bugAdminFilter = f;
   renderBugAdminList();
 }
+
+// FRENTE 9.8: setter del filtro por tipo
+function setBugAdminTypeFilter(f) {
+  if (f !== 'all' && f !== 'error' && f !== 'mejora') return;
+  _bugAdminTypeFilter = f;
+  renderBugAdminList();
+}
+window.setBugAdminTypeFilter = setBugAdminTypeFilter;
 
 // ── EXPORT MASIVO DE BUGS A MARKDOWN ─────────────────────────────
 // Descarga un .md con todos los reportes que matchean el filtro
@@ -13325,6 +13417,11 @@ function buildBugCardHTML(b) {
   var st  = BUG_STATUSES.find(function(x){ return x.key === b.status; })   || BUG_STATUSES[0];
   var area = BUG_AREAS.find(function(x){ return x.key === b.area; });
   var areaLbl = area ? area.label : (b.area || '—');
+  // FRENTE 9.8: entry_type — leer de columna o fallback a context
+  var entryType = b.entry_type || (b.context && b.context.entry_type) || 'error';
+  var typeBadge = entryType === 'mejora'
+    ? '<span class="badge" style="background:#fff4cc;color:#a07000;border:1px solid #e0b800;font-weight:700">💡 MEJORA</span>'
+    : '<span class="badge" style="background:#fde7e7;color:#c0392b;border:1px solid #c0392b;font-weight:700">🐞 ERROR</span>';
 
   var when = b.created_at ? new Date(b.created_at).toLocaleString('es-CL', {day:'2-digit',month:'2-digit', hour:'2-digit', minute:'2-digit'}) : '—';
 
@@ -13338,9 +13435,13 @@ function buildBugCardHTML(b) {
     if (bits.length) ctxLine = '<div style="font-size:10px;color:var(--wh4);font-family:var(--mono);margin-top:6px">↳ ' + escapeHtml(bits.join(' · ')) + '</div>';
   }
 
-  return '<div class="card" style="border-left:4px solid ' + sev.color + ';margin-bottom:8px;padding:12px">'
+  // Borde izquierdo: rojo para errores (severidad), amarillo para mejoras.
+  var borderColor = entryType === 'mejora' ? '#e0b800' : sev.color;
+
+  return '<div class="card" style="border-left:4px solid ' + borderColor + ';margin-bottom:8px;padding:12px">'
     + '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:6px">'
     +   '<div style="flex:1;min-width:0">'
+    +     '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:4px">' + typeBadge + '</div>'
     +     '<div style="font-size:13px;font-weight:700;color:#111;font-family:\'Rajdhani\',sans-serif;line-height:1.3">' + escapeHtml(b.title) + '</div>'
     +     '<div style="font-size:11px;color:var(--wh3);margin-top:3px">'
     +       escapeHtml(b.reporter_name) + ' · ' + escapeHtml(areaLbl) + ' · ' + when
@@ -16302,6 +16403,55 @@ async function savePautaV2() {
     if (!confirm(msg)) {
       logR('PAUTA_V2_SAVE_CANCELED', {ot: st.otNumber, pct: pct, missing: incomplete.length});
       return;
+    }
+  }
+
+  // FRENTE 9.8 (2026-05-15): alerta no-bloqueante por falta de escáner adjunto.
+  // Para servicios donde el escáner DTC es parte estándar del trabajo
+  // (mantenimientos y diagnósticos), avisar al técnico si está cerrando sin
+  // haberlo adjuntado. NO bloquea: el técnico puede continuar si tiene una
+  // razón válida (vehículo sin OBD, falla del scanner, etc.), pero queda
+  // explícitamente registrada la decisión en el log.
+  var SCANNER_REQUIRED_SERVICES = ['MANT_COMPLETO', 'MANT_EXPRESS', 'CAMBIO_ACEITE'];
+  if (SCANNER_REQUIRED_SERVICES.indexOf(st.service) !== -1) {
+    try {
+      var rChk = await sb.from('work_orders').select('checklist_data').eq('id', st.woId).single();
+      if (rChk && rChk.data) {
+        var cdCheck = rChk.data.checklist_data || {};
+        // Buscar escáner adjunto: prioriza service_reports[] (modelo nuevo)
+        // y cae a cd.report_extras legacy si no encuentra.
+        var hasScanner = false;
+        if (Array.isArray(cdCheck.service_reports)) {
+          var srMatch = cdCheck.service_reports.find(function(r){
+            return r && r.service_classification === st.service;
+          });
+          if (srMatch && srMatch.report_extras && Array.isArray(srMatch.report_extras.pdfs)) {
+            hasScanner = srMatch.report_extras.pdfs.some(function(p){ return p && p.is_scanner; });
+          }
+        }
+        if (!hasScanner) {
+          var extras = cdCheck.report_extras || {};
+          if (Array.isArray(extras.pdfs)) {
+            hasScanner = extras.pdfs.some(function(p){ return p && p.is_scanner; });
+          }
+        }
+        if (!hasScanner) {
+          var scannerMsg = '⚠ Estás cerrando este servicio sin haber adjuntado el informe del escáner.\n\n'
+            + 'El escáner DTC es parte del estándar de calidad de Rosso.\n\n'
+            + '¿Quieres cerrar la pauta de todos modos?\n'
+            + '(Puedes adjuntarlo después desde "Editar informe")';
+          if (!confirm(scannerMsg)) {
+            logR('PAUTA_V2_SCANNER_MISSING_BLOCKED', {ot: st.otNumber, service: st.service, by: CU && CU.username});
+            return;
+          }
+          // Si el técnico aceptó cerrar igual: dejar el log explícito.
+          logR('PAUTA_V2_SCANNER_MISSING_ACCEPTED', {ot: st.otNumber, service: st.service, by: CU && CU.username}, 'warn');
+        }
+      }
+    } catch(eChk) {
+      // Si la verificación falla, no bloqueamos el guardado — el técnico no
+      // tiene por qué pagar por un error de red en una validación opcional.
+      logR('PAUTA_V2_SCANNER_CHECK_ERR', {ot: st.otNumber, msg: eChk.message}, 'warn');
     }
   }
 
@@ -24372,18 +24522,31 @@ function renderInformeEditorBody() {
     + '</div>';
 
   // 4) PDFs adjuntos
+  // FRENTE 9.8 (2026-05-15): se separa el botón "Adjuntar informe escáner"
+  // del botón genérico "Adjuntar PDF". Ambos guardan en cd.report_extras.pdfs[]
+  // pero el escáner se marca con flag `is_scanner: true` para:
+  //   • detectarlo en savePautaV2 (alerta no-bloqueante si falta)
+  //   • destacarlo visualmente en la lista de anexos
+  //   • priorizar su renderizado en el PDF final
   html += '<div style="margin-bottom:14px;border-top:1px solid #eee;padding-top:12px">'
     + '<div style="font-weight:700;font-size:12px;margin-bottom:6px;color:#222">Documentos anexos (PDF / escáner)</div>'
-    + '<div style="font-size:10px;color:#888;margin-bottom:6px">Hojas de inspección, presupuestos firmados, fichas técnicas. Máx. 12MB por archivo.</div>';
+    + '<div style="font-size:10px;color:#888;margin-bottom:6px">Hojas de inspección, informe del escáner (DTC), presupuestos firmados, fichas técnicas. Máx. 12MB por archivo.</div>';
   if (ex.pdfs.length) {
     ex.pdfs.forEach(function(pd, idx){
       var sizeKb = pd.size ? Math.round(pd.size / 1024) : 0;
       var sizeLbl = sizeKb >= 1024 ? (Math.round(sizeKb/102.4)/10 + ' MB') : (sizeKb + ' KB');
-      html += '<div style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:#f8f8f8;border:1px solid #e4e4e4;border-radius:4px;margin-bottom:4px">'
-        + '<span style="font-size:18px">📄</span>'
+      var isScanner = !!pd.is_scanner;
+      var bg = isScanner ? '#fff4cc' : '#f8f8f8';
+      var border = isScanner ? '#e0b800' : '#e4e4e4';
+      var icon = isScanner ? '🔍' : '📄';
+      var label = isScanner ? 'Informe escáner' : (pd.name || ('Documento ' + (idx+1)));
+      html += '<div style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:' + bg + ';border:1px solid ' + border + ';border-radius:4px;margin-bottom:4px">'
+        + '<span style="font-size:18px">' + icon + '</span>'
         + '<div style="flex:1;min-width:0">'
-        +   '<div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(pd.name || ('Documento ' + (idx+1))) + '</div>'
-        +   '<div style="font-size:10px;color:#888">' + sizeLbl + '</div>'
+        +   '<div style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(label) + '</div>'
+        +   '<div style="font-size:10px;color:#888">' + sizeLbl
+        +     (isScanner ? ' · <span style="color:#a07000;font-weight:700">escáner DTC</span>' : (pd.name ? (' · ' + escapeHtml(pd.name)) : ''))
+        +   '</div>'
         + '</div>'
         + '<button class="btn-sm" style="border-color:#c00;color:#c00;font-size:11px" onclick="removeInformePdf(' + idx + ')">Quitar</button>'
         + '</div>';
@@ -24391,9 +24554,13 @@ function renderInformeEditorBody() {
   } else {
     html += '<div style="font-size:11px;color:#aaa;font-style:italic;padding:4px 0 8px 0">Sin documentos PDF anexos.</div>';
   }
-  html += '<input type="file" id="inf-edit-pdf-input" accept="application/pdf,.pdf" style="display:none" />'
-    + '<button class="btn-sm" style="font-size:11px;border-color:var(--red);color:var(--red)" onclick="document.getElementById(\'inf-edit-pdf-input\').click()">+ Adjuntar PDF</button>'
-    + '<span id="inf-edit-pdf-status" style="margin-left:8px;font-size:10px;color:#888"></span>'
+  html += '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">'
+    +   '<input type="file" id="inf-edit-scanner-input" accept="application/pdf,image/*,.pdf" capture="environment" style="display:none" />'
+    +   '<button class="btn-sm" style="font-size:11px;border-color:#e0b800;color:#a07000;background:#fff8dd;font-weight:700" onclick="document.getElementById(\'inf-edit-scanner-input\').click()">🔍 Adjuntar informe escáner</button>'
+    +   '<input type="file" id="inf-edit-pdf-input" accept="application/pdf,.pdf" style="display:none" />'
+    +   '<button class="btn-sm" style="font-size:11px;border-color:var(--red);color:var(--red)" onclick="document.getElementById(\'inf-edit-pdf-input\').click()">+ Adjuntar otro PDF</button>'
+    +   '<span id="inf-edit-pdf-status" style="margin-left:4px;font-size:10px;color:#888"></span>'
+    + '</div>'
     + '</div>';
 
   // 5) Botones acción
@@ -24411,6 +24578,9 @@ function renderInformeEditorBody() {
   if (imgInput) imgInput.onchange = handleInformeImageInput;
   var pdfInput = document.getElementById('inf-edit-pdf-input');
   if (pdfInput) pdfInput.onchange = handleInformePdfInput;
+  // FRENTE 9.8: hook del nuevo input dedicado al escáner.
+  var scInput = document.getElementById('inf-edit-scanner-input');
+  if (scInput) scInput.onchange = handleInformeScannerInput;
 
   // Sincronizar textarea de observaciones cuando se modifica
   var obsTa = document.getElementById('inf-edit-obs');
@@ -24525,6 +24695,52 @@ function removeInformePdf(idx) {
   _INFORME_EDITOR_STATE.extras.pdfs.splice(idx, 1);
   renderInformeEditorBody();
 }
+
+// FRENTE 9.8 (2026-05-15): handler dedicado al botón "Adjuntar informe escáner".
+// Acepta PDF o imagen (el técnico puede sacar foto del scanner físico desde
+// el celular). El archivo se guarda en cd.report_extras.pdfs[] con flag
+// is_scanner: true para diferenciarlo de adjuntos generales.
+async function handleInformeScannerInput(e) {
+  if (!_INFORME_EDITOR_STATE) return;
+  var files = e.target.files;
+  if (!files || !files.length) return;
+  var file = files[0];
+  var status = document.getElementById('inf-edit-pdf-status');
+  if (status) { status.textContent = 'Leyendo escáner...'; status.style.color = '#888'; }
+  try {
+    var entry;
+    if (file.type === 'application/pdf' || /\.pdf$/i.test(file.name)) {
+      entry = await readPdfAsDataUrl(file);
+    } else if (file.type && file.type.indexOf('image/') === 0) {
+      // Convertir imagen a entry compatible con el array de pdfs[].
+      // compressImageFile redimensiona + compress JPEG para evitar payloads
+      // gigantes (un escáner fotografiado puede pesar 8-12 MB raw).
+      var imgRes = await compressImageFile(file);
+      entry = {
+        dataUrl: imgRes.dataUrl,
+        name: file.name || 'escaner.jpg',
+        size: imgRes.dataUrl.length, // tamaño aprox post-compresión
+        mime: 'image/jpeg',
+        is_image: true
+      };
+    } else {
+      throw new Error('Tipo de archivo no soportado. Adjunta PDF o imagen.');
+    }
+    entry.is_scanner = true; // FLAG clave para validación + render
+    entry.attached_at = new Date().toISOString();
+    _INFORME_EDITOR_STATE.extras.pdfs.push(entry);
+    if (status) { status.textContent = '✓ Escáner adjuntado.'; status.style.color = '#2a7a2a'; }
+    logR('INFORME_SCANNER_ATTACHED', {wo: _INFORME_EDITOR_STATE.woId, name: entry.name, is_image: !!entry.is_image});
+  } catch(err) {
+    if (status) {
+      status.textContent = err.message || 'Error';
+      status.style.color = '#c00';
+    }
+  }
+  e.target.value = '';
+  renderInformeEditorBody();
+}
+window.handleInformeScannerInput = handleInformeScannerInput;
 
 function closeInformeEditor() {
   var m = document.getElementById('m-inf-editor');
