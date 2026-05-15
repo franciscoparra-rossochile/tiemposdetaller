@@ -12999,8 +12999,9 @@ function renderBugReports(body) {
     + '</div>'
 
     // Título / qué pasó
-    + '<div class="lbl">' + (isMejora ? '¿Qué te gustaría que cambie o mejore?' : '¿Qué pasó?') + ' <span style="color:var(--red)">*</span></div>'
+    + '<div class="lbl" data-toggle-text="title-label">' + (isMejora ? '¿Qué te gustaría que cambie o mejore?' : '¿Qué pasó?') + ' <span style="color:var(--red)">*</span></div>'
     + '<input type="text" class="inp" id="bug-title" maxlength="120" '
+    + 'data-toggle-placeholder="title" '
     + 'placeholder="' + (isMejora ? 'Ej: poder duplicar OTs desde el historial' : 'Ej: el botón finalizar no responde') + '" autocomplete="off" data-no-upper '
     + 'value="' + escapeHtml(_bugForm.title) + '"/>'
 
@@ -13015,7 +13016,7 @@ function renderBugReports(body) {
     + '</select>'
 
     // Severidad / prioridad (botones grandes) — labels distintos según tipo
-    + '<div class="lbl" style="margin-top:6px">' + (isMejora ? '¿Qué prioridad le darías?' : '¿Qué tan grave es?') + ' <span style="color:var(--red)">*</span></div>'
+    + '<div class="lbl" style="margin-top:6px" data-toggle-text="severity-label">' + (isMejora ? '¿Qué prioridad le darías?' : '¿Qué tan grave es?') + ' <span style="color:var(--red)">*</span></div>'
     + '<div id="bug-sev-row" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:8px">'
     +   BUG_SEVERITIES.map(function(s){
           var on = _bugForm.severity === s.key ? 'on' : '';
@@ -13029,9 +13030,10 @@ function renderBugReports(body) {
     + '</div>'
 
     // Pasos / descripción
-    + '<div class="lbl" style="margin-top:4px">' + (isMejora ? '¿Por qué te ayudaría?' : '¿Cómo lo reproduzco?') + ' <span style="color:var(--wh4);font-weight:500;text-transform:none;letter-spacing:0">(opcional pero ayuda mucho)</span></div>'
+    + '<div class="lbl" style="margin-top:4px" data-toggle-text="steps-label">' + (isMejora ? '¿Por qué te ayudaría?' : '¿Cómo lo reproduzco?') + ' <span style="color:var(--wh4);font-weight:500;text-transform:none;letter-spacing:0">(opcional pero ayuda mucho)</span></div>'
     + '<textarea class="inp" id="bug-steps" rows="3" maxlength="800" data-no-upper '
-    + 'placeholder="' + (isMejora ? 'Ej: ahorrarí­a 5 minutos en cada ingreso de cliente recurrente' : 'Ej: 1) abrí la OT 234, 2) toqué Finalizar, 3) salió error rojo') + '">' + escapeHtml(_bugForm.steps) + '</textarea>'
+    + 'data-toggle-placeholder="steps" '
+    + 'placeholder="' + (isMejora ? 'Ej: ahorraría 5 minutos en cada ingreso de cliente recurrente' : 'Ej: 1) abrí la OT 234, 2) toqué Finalizar, 3) salió error rojo') + '">' + escapeHtml(_bugForm.steps) + '</textarea>'
 
     // Aviso de captura automática
     + '<div style="font-size:10px;color:var(--wh4);margin:4px 0 10px;font-family:var(--mono);line-height:1.4">'
@@ -13060,16 +13062,64 @@ function renderBugReports(body) {
 // pintaba dos veces. Ahora hacemos toggle in-place — solo cambian las
 // clases CSS de los dos botones del row, igual que pickBugSeverity. Los
 // placeholders se mantienen (son solo hints), y entry_type queda en memoria.
+//
+// FRENTE 9.8 rev 2 (2026-05-15): también actualizamos in-place los labels
+// y placeholders de los campos para que reflejen el tipo elegido. Los
+// nodos están marcados con `data-toggle-text` y `data-toggle-placeholder`.
+// Sigue siendo toggle in-place (sin re-render) — sin efectos colaterales.
 function pickBugEntryType(type) {
   if (type !== 'error' && type !== 'mejora') return;
   _bugForm.entry_type = type;
+  var isMejora = (type === 'mejora');
+
   // Toggle visual: marcar el botón clickeado, desmarcar el otro.
   document.querySelectorAll('#bug-type-row [data-bug-type]').forEach(function(b){
     b.classList.toggle('on', b.dataset.bugType === type);
   });
-  // Actualizar el label del botón "Enviar" para que refleje el tipo elegido.
+
+  // Mapa de textos según tipo. El asterisco rojo y el hint en gris del
+  // último label se preservan porque solo tocamos el texto principal.
+  var labelMap = {
+    error:  {title: '¿Qué pasó?',                   sev: '¿Qué tan grave es?',  steps: '¿Cómo lo reproduzco?'},
+    mejora: {title: '¿Qué te gustaría que cambie o mejore?', sev: '¿Qué prioridad le darías?', steps: '¿Por qué te ayudaría?'}
+  };
+  var placeholderMap = {
+    error:  {title: 'Ej: el botón finalizar no responde', steps: 'Ej: 1) abrí la OT 234, 2) toqué Finalizar, 3) salió error rojo'},
+    mejora: {title: 'Ej: poder duplicar OTs desde el historial', steps: 'Ej: ahorraría 5 minutos en cada ingreso de cliente recurrente'}
+  };
+  var L = labelMap[type], P = placeholderMap[type];
+
+  // Actualizar labels. Cada div .lbl tiene la estructura:
+  //   "TEXTO <span>*</span>"  o  "TEXTO <span>(opcional...)</span>"
+  // Reemplazamos solo el primer text node para conservar el <span>.
+  function setLabelText(selector, text) {
+    var el = document.querySelector(selector);
+    if (!el) return;
+    // Buscar el primer text node hijo y reemplazar su contenido.
+    for (var i = 0; i < el.childNodes.length; i++) {
+      var n = el.childNodes[i];
+      if (n.nodeType === 3 && n.textContent.trim()) {
+        // Preservar el espacio final antes del <span> que sigue.
+        n.textContent = text + ' ';
+        return;
+      }
+    }
+    // Fallback: si no encontró text node, sobreescribir el label entero.
+    el.textContent = text;
+  }
+  setLabelText('[data-toggle-text="title-label"]',    L.title);
+  setLabelText('[data-toggle-text="severity-label"]', L.sev);
+  setLabelText('[data-toggle-text="steps-label"]',    L.steps);
+
+  // Actualizar placeholders.
+  var titleInp = document.querySelector('[data-toggle-placeholder="title"]');
+  if (titleInp) titleInp.placeholder = P.title;
+  var stepsInp = document.querySelector('[data-toggle-placeholder="steps"]');
+  if (stepsInp) stepsInp.placeholder = P.steps;
+
+  // Actualizar el label del botón "Enviar".
   var btn = document.getElementById('bug-send-btn');
-  if (btn) btn.textContent = (type === 'mejora') ? 'Enviar sugerencia' : 'Enviar reporte';
+  if (btn) btn.textContent = isMejora ? 'Enviar sugerencia' : 'Enviar reporte';
 }
 window.pickBugEntryType = pickBugEntryType;
 
