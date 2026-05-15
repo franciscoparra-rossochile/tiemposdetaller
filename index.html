@@ -21989,41 +21989,61 @@ function generatePDFGestion() {
 // logo en algunos visores. Solución: pre-procesamos el PNG dibujándolo
 // sobre un canvas con fondo blanco (mismo color del informe) y exportamos
 // como JPEG. Resultado: el logo se ve limpio sin "caja" detrás.
+// FRENTE 9.7 (2026-05-15): el archivo del logo debe estar en el repo de
+// deploy (Netlify). Antes el fetch fallaba con 404 porque buscaba un nombre
+// distinto al del archivo subido. Ahora intentamos múltiples paths en
+// orden de preferencia hasta encontrar uno que cargue. Si todos fallan,
+// el PDF se genera sin logo (no rompe el informe).
 var INFORME_LOGO_DATA_URL = null;
+var INFORME_LOGO_CANDIDATES = [
+  'LOGONtransparente.png',           // nombre actual en el repo
+  'LOGO-N-transparente.png',         // nombre del archivo reprocesado por Claude
+  'rosso_logo_transparent_600w.png', // legacy
+  'rosso_logo.png',
+  'logo.png'
+];
+
 async function getInformeLogoDataUrl() {
   if (INFORME_LOGO_DATA_URL) return INFORME_LOGO_DATA_URL;
-  try {
-    var resp = await fetch('rosso_logo_transparent_600w.png');
-    if (!resp.ok) return null;
-    var blob = await resp.blob();
-    // Cargar la imagen en memoria para poder pintarla en un canvas
-    var rawDataUrl = await new Promise(function(resolve, reject){
-      var rd = new FileReader();
-      rd.onloadend = function(){ resolve(rd.result); };
-      rd.onerror = reject;
-      rd.readAsDataURL(blob);
-    });
-    var img = await new Promise(function(resolve, reject){
-      var im = new Image();
-      im.onload = function(){ resolve(im); };
-      im.onerror = reject;
-      im.src = rawDataUrl;
-    });
-    // Canvas con fondo blanco — aplana el alpha contra el papel del informe
-    var canvas = document.createElement('canvas');
-    canvas.width = img.naturalWidth;
-    canvas.height = img.naturalHeight;
-    var ctx = canvas.getContext('2d');
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(img, 0, 0);
-    // JPEG calidad alta → archivo pequeño y sin canal alfa "fantasma"
-    INFORME_LOGO_DATA_URL = canvas.toDataURL('image/jpeg', 0.92);
-    return INFORME_LOGO_DATA_URL;
-  } catch(e) {
-    console.error('[INFORME_LOGO_ERR]', e);
-    return null;
+  for (var i = 0; i < INFORME_LOGO_CANDIDATES.length; i++) {
+    var path = INFORME_LOGO_CANDIDATES[i];
+    try {
+      var resp = await fetch(path);
+      if (!resp.ok) {
+        logR('INFORME_LOGO_TRY_FAIL', {path: path, status: resp.status}, 'warn');
+        continue;
+      }
+      var blob = await resp.blob();
+      var rawDataUrl = await new Promise(function(resolve, reject){
+        var rd = new FileReader();
+        rd.onloadend = function(){ resolve(rd.result); };
+        rd.onerror = reject;
+        rd.readAsDataURL(blob);
+      });
+      var img = await new Promise(function(resolve, reject){
+        var im = new Image();
+        im.onload = function(){ resolve(im); };
+        im.onerror = reject;
+        im.src = rawDataUrl;
+      });
+      // Canvas con fondo blanco — aplana el alpha contra el papel del informe
+      var canvas = document.createElement('canvas');
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      var ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0);
+      INFORME_LOGO_DATA_URL = canvas.toDataURL('image/jpeg', 0.92);
+      logR('INFORME_LOGO_LOADED', {path: path, w: img.naturalWidth, h: img.naturalHeight});
+      return INFORME_LOGO_DATA_URL;
+    } catch(e) {
+      logR('INFORME_LOGO_TRY_ERR', {path: path, msg: e.message}, 'warn');
+      // continuar al siguiente candidato
+    }
   }
+  console.error('[INFORME_LOGO_ERR] Ningún archivo de logo se pudo cargar. Sube el logo al repo de deploy con uno de estos nombres: ' + INFORME_LOGO_CANDIDATES.join(', '));
+  return null;
 }
 
 // Helper: convertir valor crudo del checklist a etiqueta legible
@@ -22230,9 +22250,12 @@ function renderPautaV2InPdf(doc, pautaData, startY, pageW, pageH, marginX, conte
 
   var programaRows = [
     ['Tipo de servicio', def.label],
-    ['Intervalo recomendado', def.intervalo_recomendado || '—'],
-    ['Tiempo objetivo', def.tiempo_objetivo_min + ' min'],
-    ['Completitud', (pautaData.completitud_pct != null ? pautaData.completitud_pct : 0) + '%']
+    // FRENTE 9.7 (2026-05-15): el cliente externo no necesita ver tiempo
+    // objetivo (es métrica interna de eficiencia) ni completitud (puede
+    // generar confusión sobre el estado del servicio). Se eliminan del PDF
+    // pero se mantienen en el editor interno para gestión.
+    // Intervalo recomendado fijado a 10.000 km como estándar comercial.
+    ['Intervalo recomendado', '10.000 km']
   ];
   if (pautaData.tecnico_name) programaRows.push(['Técnico', pautaData.tecnico_name]);
   doc.autoTable({
@@ -22556,14 +22579,24 @@ async function generateInformePdf(woId, serviceReportId) {
     try {
       var logoUrl = await getInformeLogoDataUrl();
       if (logoUrl) {
-        // Logo Rosso 600x143 px → ratio ~4.2:1. Renderizamos a 36mm
-        // de ancho manteniendo proporción para que no se vea estirado.
-        var logoW = 36, logoH = logoW * (143/600); // ≈ 8.6mm
+        // FRENTE 9.7 (2026-05-15): detectar ratio del logo dinámicamente
+        // en vez de asumir 600x143. Si el archivo es LOGONtransparente.png
+        // (2984x920, ratio ~3.24:1) o cualquier otro, se ajusta automático.
+        var imgProbe = new Image();
+        var ratio = await new Promise(function(resolve){
+          imgProbe.onload = function(){
+            resolve(imgProbe.naturalWidth / imgProbe.naturalHeight);
+          };
+          imgProbe.onerror = function(){ resolve(4.2); /* fallback */ };
+          imgProbe.src = logoUrl;
+        });
+        var logoW = 36;
+        var logoH = logoW / (ratio || 4.2);
         // 'JPEG' porque getInformeLogoDataUrl ya lo aplanó sobre fondo
         // blanco — esto evita que jsPDF dibuje un cuadro gris detrás.
         doc.addImage(logoUrl, 'JPEG', marginX, y, logoW, logoH, undefined, 'FAST');
       }
-    } catch(e) { /* si falla, seguimos sin logo */ }
+    } catch(e) { logR('INFORME_LOGO_RENDER_ERR', {msg: e.message}, 'warn'); /* si falla, seguimos sin logo */ }
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(16);
     doc.setTextColor(20, 20, 20);
@@ -22731,20 +22764,25 @@ async function generateInformePdf(woId, serviceReportId) {
       y += 8;
     }
 
-    // 6) Resumen Técnico — FIX 2026-05-04
-    // Lógica de 3 niveles, en orden de prioridad:
-    //   1. Si hay textareas con contenido sustantivo (diag_resultado,
-    //      diag_recomendaciones, observaciones, etc.) → mostrarlos como
-    //      base del resumen. Lo escrito por el técnico es la fuente de
-    //      verdad sobre el estado del vehículo.
-    //   2. Si no hay textareas pero sí hay concerns automáticos
-    //      (bool=false sin motivo, select crítico) → listarlos.
-    //   3. Solo si NO hay nada → el texto fijo "todo conforme".
-    // Esto resuelve el bug donde el resumen contradecía el cuerpo del
-    // informe: el técnico escribía hallazgos serios en los textareas y el
-    // sistema imprimía "todo conforme" igual porque solo miraba bool/select.
+    // 6) Resumen Técnico — FRENTE 9.7 (2026-05-15): texto contextualizado.
+    // Antes: texto genérico "El vehículo se entrega en condiciones operativas
+    // conformes..." salía SIEMPRE — incluso en informes con hallazgos críticos
+    // (caso Benjamin SKXS56: 2 discos críticos pero el resumen decía "todo
+    // conforme"). Esto contradecía abiertamente el cuerpo del informe.
+    //
+    // Ahora: el resumen se construye dinámicamente desde los hallazgos
+    // reales. Si hay críticos → menciona los componentes específicos y
+    // recomienda acción. Si solo hay alertas → indica monitoreo. Si todo
+    // está OK → mensaje de conformidad.
     var resumenSources = informeCollectResumenSources(techDef, tc);
     var concerns = informeCollectConcerns(techDef, tc);
+    // Severidad desde pauta v2 (si aplica) — esta es la fuente más precisa.
+    var pautaV2ForResumen = tc.pauta_v2;
+    var sevForResumen = null;
+    if (pautaV2ForResumen && CHECKLISTS_TECH_PAUTAS_V2[pautaV2ForResumen.service] && typeof _pautaSeverityCounts === 'function') {
+      sevForResumen = _pautaSeverityCounts(pautaV2ForResumen, CHECKLISTS_TECH_PAUTAS_V2[pautaV2ForResumen.service]);
+    }
+
     if (y > pageH - 60) { doc.addPage(); y = 18; }
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(12);
@@ -22811,9 +22849,70 @@ async function generateInformePdf(woId, serviceReportId) {
           y += 1;
         });
       }
+    } else if (sevForResumen && (sevForResumen.critico + sevForResumen.alerta + sevForResumen.ok > 0)) {
+      // Nivel 2 (NUEVO): resumen contextualizado desde pauta v2.
+      // Construimos un párrafo que refleja el estado real del vehículo.
+      var crit = sevForResumen.items.filter(function(x){ return x.severity === 'critico'; });
+      var alert = sevForResumen.items.filter(function(x){ return x.severity === 'alerta'; });
+      var paragraphs = [];
+
+      if (crit.length > 0) {
+        // Hay hallazgos críticos — mencionar los componentes específicos.
+        var critLabels = crit.map(function(x){
+          var lbl = x.label.toLowerCase();
+          if (x.value && x.unit) lbl += ' (' + x.value + ' ' + x.unit + ')';
+          return lbl;
+        });
+        var critTxt = 'Durante la inspección se detectaron ' + crit.length + ' hallazgo' +
+          (crit.length > 1 ? 's' : '') + ' que requiere' + (crit.length > 1 ? 'n' : '') +
+          ' atención prioritaria: ' + critLabels.join(', ') + '. ' +
+          'Se recomienda programar la intervención correspondiente en el corto plazo para evitar deterioro mayor o riesgos de seguridad.';
+        paragraphs.push(critTxt);
+      }
+
+      if (alert.length > 0) {
+        var alertLabels = alert.map(function(x){
+          var lbl = x.label.toLowerCase();
+          if (x.value && x.unit) lbl += ' (' + x.value + ' ' + x.unit + ')';
+          return lbl;
+        });
+        var alertTxt = 'Adicionalmente, ' + alert.length + ' componente' +
+          (alert.length > 1 ? 's presentan' : ' presenta') + ' desgaste dentro de rangos preventivos: ' +
+          alertLabels.join(', ') + '. ' +
+          'Se sugiere monitoreo en próximos mantenimientos programados.';
+        paragraphs.push(alertTxt);
+      }
+
+      if (crit.length === 0 && alert.length === 0 && sevForResumen.ok > 0) {
+        paragraphs.push(
+          'El vehículo se entrega en condiciones operativas conformes. ' +
+          'Los ' + sevForResumen.ok + ' puntos de inspección revisados se encuentran dentro de parámetros normales. ' +
+          'No se detectaron hallazgos que requieran atención inmediata durante este servicio.'
+        );
+      } else if (crit.length === 0 && alert.length > 0) {
+        // Solo alertas, sin críticos — agregar contexto positivo si lo hay
+        if (sevForResumen.ok > 0) {
+          paragraphs.push('Los demás ' + sevForResumen.ok + ' puntos de inspección revisados se encuentran dentro de parámetros normales.');
+        }
+      } else if (crit.length > 0 && sevForResumen.ok > 0) {
+        // Hay críticos y también puntos OK — contextualizar
+        paragraphs.push('Los demás ' + sevForResumen.ok + ' puntos de inspección revisados se encuentran dentro de parámetros normales.');
+      }
+
+      paragraphs.forEach(function(p, idx){
+        if (y > pageH - 22) { doc.addPage(); y = 18; }
+        doc.splitTextToSize(p, contentW).forEach(function(ln){
+          if (y > pageH - 18) { doc.addPage(); y = 18; }
+          doc.text(ln, marginX, y);
+          y += 5;
+        });
+        if (idx < paragraphs.length - 1) y += 2;
+      });
     } else if (concerns.length > 0) {
-      // Nivel 2: solo concerns automáticos (sin textareas con contenido)
-      var introText = 'Durante el servicio se detectaron ' + concerns.length + ' punto(s) que requieren atención:';
+      // Nivel 3 legacy: solo concerns automáticos del checklist viejo
+      var introText = 'Se detectaron ' + concerns.length + ' hallazgo' +
+                      (concerns.length === 1 ? '' : 's') +
+                      ' durante la inspección que requieren atención:';
       doc.splitTextToSize(introText, contentW).forEach(function(ln){
         if (y > pageH - 20) { doc.addPage(); y = 18; }
         doc.text(ln, marginX, y);
@@ -22834,8 +22933,8 @@ async function generateInformePdf(woId, serviceReportId) {
         if (co.value !== false && co.value !== true) {
           doc.setFont('helvetica', 'italic');
           doc.setTextColor(60, 60, 60);
-          var detTxt = '   Estado: ' + String(co.value);
-          doc.splitTextToSize(detTxt, contentW - 4).forEach(function(ln){
+          var detTxt2 = '   Estado: ' + String(co.value);
+          doc.splitTextToSize(detTxt2, contentW - 4).forEach(function(ln){
             if (y > pageH - 20) { doc.addPage(); y = 18; }
             doc.text(ln, marginX + 4, y);
             y += 4;
@@ -22844,7 +22943,7 @@ async function generateInformePdf(woId, serviceReportId) {
         y += 1;
       });
     } else {
-      // Nivel 3: nada que reportar — texto fijo "todo conforme"
+      // Nivel 4: nada que reportar — texto de conformidad
       var okText = 'El vehículo se entrega en condiciones operativas conformes según los puntos de inspección revisados. No se detectaron hallazgos que requieran atención inmediata durante este servicio.';
       doc.splitTextToSize(okText, contentW).forEach(function(ln){
         if (y > pageH - 20) { doc.addPage(); y = 18; }
