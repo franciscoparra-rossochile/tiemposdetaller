@@ -13020,11 +13020,22 @@ function renderBugReports(body) {
     + '<div id="bug-sev-row" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:8px">'
     +   BUG_SEVERITIES.map(function(s){
           var on = _bugForm.severity === s.key ? 'on' : '';
+          // FRENTE 9.8 rev 3 (2026-05-15): labels y descripciones cambian
+          // según entry_type. Las KEYS internas se mantienen ('bajo'/'medio'/'alto')
+          // para no romper reportes ya guardados.
+          var labels = isMejora
+            ? {bajo: 'Sería lindo',     medio: 'Me ayudaría bastante', alto: 'Es importante'}
+            : {bajo: 'Molesto',          medio: 'Me bloquea a veces',   alto: 'No puedo trabajar'};
+          var descs = isMejora
+            ? {bajo: 'Cuando puedan',    medio: 'Mejoraría mi flujo',   alto: 'Pierdo tiempo todos los días'}
+            : {bajo: 'Funciona, pero algo está raro', medio: 'A veces no puedo seguir', alto: 'Está roto, urgente'};
+          var visibleLabel = labels[s.key] || s.label;
+          var visibleDesc  = descs[s.key]  || s.desc;
           return '<button type="button" class="sel-btn ' + on + '" data-bug-sev="' + s.key + '" '
             + 'onclick="pickBugSeverity(\'' + s.key + '\')" '
             + 'style="min-height:54px;line-height:1.25">'
-            + '<span style="font-weight:700;font-size:12px">' + escapeHtml(s.label) + '</span>'
-            + '<span style="font-size:10px;color:var(--wh3);text-transform:none;font-weight:500;letter-spacing:0">' + escapeHtml(s.desc) + '</span>'
+            + '<span class="sev-label" style="font-weight:700;font-size:12px">' + escapeHtml(visibleLabel) + '</span>'
+            + '<span class="sev-desc" style="font-size:10px;color:var(--wh3);text-transform:none;font-weight:500;letter-spacing:0">' + escapeHtml(visibleDesc) + '</span>'
             + '</button>';
         }).join('')
     + '</div>'
@@ -13116,6 +13127,25 @@ function pickBugEntryType(type) {
   if (titleInp) titleInp.placeholder = P.title;
   var stepsInp = document.querySelector('[data-toggle-placeholder="steps"]');
   if (stepsInp) stepsInp.placeholder = P.steps;
+
+  // FRENTE 9.8 rev 3: actualizar los 3 botones de severidad (label + desc).
+  // Las keys internas (bajo/medio/alto) se mantienen — solo cambia el texto
+  // visible. Esto mantiene consistencia con reportes ya guardados y permite
+  // que un mismo registro se muestre con el lenguaje correcto si después
+  // alguien lo abre desde el panel admin.
+  var sevLabels = isMejora
+    ? {bajo: 'Sería lindo',  medio: 'Me ayudaría bastante', alto: 'Es importante'}
+    : {bajo: 'Molesto',      medio: 'Me bloquea a veces',   alto: 'No puedo trabajar'};
+  var sevDescs = isMejora
+    ? {bajo: 'Cuando puedan', medio: 'Mejoraría mi flujo',  alto: 'Pierdo tiempo todos los días'}
+    : {bajo: 'Funciona, pero algo está raro', medio: 'A veces no puedo seguir', alto: 'Está roto, urgente'};
+  document.querySelectorAll('#bug-sev-row [data-bug-sev]').forEach(function(b){
+    var k = b.dataset.bugSev;
+    var lblEl  = b.querySelector('.sev-label');
+    var descEl = b.querySelector('.sev-desc');
+    if (lblEl  && sevLabels[k]) lblEl.textContent = sevLabels[k];
+    if (descEl && sevDescs[k])  descEl.textContent = sevDescs[k];
+  });
 
   // Actualizar el label del botón "Enviar".
   var btn = document.getElementById('bug-send-btn');
