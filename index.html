@@ -14691,9 +14691,11 @@ window.waSummaryByOT = waSummaryByOT;
 // waActiveOTs()
 //   Lista de OTs candidatas a recibir destinaciones (no cerradas/canceladas).
 //   Útil para el dropdown del modal "Nueva destinación".
+//   IMPORTANTE: work_orders NO tiene columna 'plate' (está en vehicles vía vehicle_id).
+//   Usamos la VIEW work_orders_with_plate que ya resuelve el JOIN.
 async function waActiveOTs() {
   try {
-    var r = await sb.from('work_orders')
+    var r = await sb.from('work_orders_with_plate')
       .select('id, ot_number, plate, service_classification, status, responsible_user_id, blocked_waiting_parts, created_at')
       .in('status', ['open', 'assigned', 'in_progress', 'paused'])
       .order('ot_number', { ascending: false })
