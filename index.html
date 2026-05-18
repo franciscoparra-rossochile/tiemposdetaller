@@ -1013,6 +1013,64 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
   </div>
 </div>
 
+<!-- ═══════════════════════════════════════════════════════════
+     SMART PLANNER v2 — Modal "Nueva destinación" (FASE 2.A)
+     Permite asignar 1 técnico × 1 día × 1 OT con N objetivos.
+     ═══════════════════════════════════════════════════════════ -->
+<div class="overlay" id="m-wa-new" style="display:none">
+  <div class="modal" style="max-width:560px;max-height:92vh;overflow-y:auto">
+    <div class="modal-t">Nueva destinación</div>
+    <div class="modal-s" id="wa-new-sub">Asignar trabajo a un técnico</div>
+
+    <div class="lbl" style="margin-top:10px">OT / Orden de trabajo</div>
+    <select class="inp" id="wa-new-ot" onchange="_waOnOTChange()">
+      <option value="">Selecciona una OT activa…</option>
+    </select>
+    <div id="wa-new-ot-info" style="display:none;font-size:11px;color:var(--wh3);margin-bottom:8px;padding:6px 8px;background:#fafafa;border-left:3px solid #ddd;border-radius:3px"></div>
+
+    <div style="display:flex;gap:8px">
+      <div style="flex:1">
+        <div class="lbl">Técnico</div>
+        <select class="inp" id="wa-new-tech" onchange="_waOnTechChange()">
+          <option value="">Selecciona…</option>
+        </select>
+      </div>
+      <div style="flex:1">
+        <div class="lbl">Fecha</div>
+        <input class="inp" type="date" id="wa-new-date"/>
+      </div>
+    </div>
+
+    <div class="lbl">Rol del técnico en esta OT</div>
+    <select class="inp" id="wa-new-role" onchange="_waOnRoleChange()">
+      <option value="responsible">Responsable (cierra el servicio)</option>
+      <option value="support_technical">Apoyo técnico</option>
+      <option value="support_logistics">Apoyo logístico</option>
+    </select>
+    <div id="wa-new-role-hint" style="font-size:11px;color:var(--wh3);margin-bottom:8px;font-style:italic"></div>
+
+    <div id="wa-new-support-row" style="display:none">
+      <div class="lbl">Descripción del apoyo</div>
+      <input class="inp" type="text" id="wa-new-support-desc" placeholder="Ej: lavado + traslado, ayuda en armado..." maxlength="200"/>
+    </div>
+
+    <div style="margin-top:14px;padding-top:10px;border-top:1px solid #eee">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <div style="font-weight:700;font-family:'Rajdhani',sans-serif;text-transform:uppercase;font-size:13px;letter-spacing:.04em;color:#111">Objetivos del día</div>
+        <button class="btn btn-out" onclick="_waAddRow()" style="padding:4px 10px;font-size:11px">+ Agregar objetivo</button>
+      </div>
+      <div id="wa-new-rows"></div>
+    </div>
+
+    <div id="wa-new-err" style="display:none;color:var(--red);font-size:12px;margin-top:8px;font-weight:600;padding:8px;background:var(--red4);border-radius:4px"></div>
+
+    <div style="display:flex;gap:8px;margin-top:14px">
+      <button class="btn btn-red" id="wa-new-submit" onclick="_waSubmit()" style="flex:2">Crear destinación</button>
+      <button class="btn btn-out" onclick="closeModal('m-wa-new')" style="flex:1">Cancelar</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // ═══════════════════════════════════════════════
 // CONFIG & DEBUG
@@ -10915,8 +10973,9 @@ function _planOpenCellDetail(techId, dateISO) {
     + '</div>'
     + (isUnassigned
         ? '<button class="btn btn-out" onclick="closeModal(\'m-plan-cell\')" style="margin-top:12px;width:100%">Cerrar</button>'
-        : '<div style="display:flex;gap:8px;margin-top:12px">'
-        +   '<button class="btn btn-red" onclick="closeModal(\'m-plan-cell\');_planNewServiceFromSlot(\'' + techId + '\', \'' + dateISO + '\')" style="flex:1">+ Agregar servicio</button>'
+        : '<div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">'
+        +   '<button class="btn btn-red" onclick="closeModal(\'m-plan-cell\');openNewAssignmentModal({techId:\'' + techId + '\', dateISO:\'' + dateISO + '\'})" style="flex:1 1 100%;min-width:200px">+ Nueva destinación</button>'
+        +   '<button class="btn btn-out" onclick="closeModal(\'m-plan-cell\');_planNewServiceFromSlot(\'' + techId + '\', \'' + dateISO + '\')" style="flex:1">+ Agendar (calendario)</button>'
         +   '<button class="btn btn-out" onclick="closeModal(\'m-plan-cell\')" style="flex:1">Cerrar</button>'
         + '</div>'
       );
@@ -10941,6 +11000,337 @@ function _planOpenCellDetail(techId, dateISO) {
   openModal('m-plan-cell');
 }
 window._planOpenCellDetail = _planOpenCellDetail;
+
+// ═══════════════════════════════════════════════════════════════
+// SMART PLANNER v2 — Lógica del modal "Nueva destinación" (FASE 2.A)
+// ═══════════════════════════════════════════════════════════════
+// Estado interno del modal mientras está abierto. Se resetea en cada apertura.
+var _waModalState = {
+  rowCounter: 0,
+  activeOTs: [],
+  techs: [],
+  preselect: null  // { otId, techId, dateISO }
+};
+
+// openNewAssignmentModal(opts)
+//   opts opcional: { otId, techId, dateISO } para precarga desde un slot.
+async function openNewAssignmentModal(opts) {
+  opts = opts || {};
+  _waModalState.rowCounter = 0;
+  _waModalState.preselect = opts;
+
+  // Reset visual
+  document.getElementById('wa-new-err').style.display = 'none';
+  document.getElementById('wa-new-ot-info').style.display = 'none';
+  document.getElementById('wa-new-support-row').style.display = 'none';
+  document.getElementById('wa-new-support-desc').value = '';
+  document.getElementById('wa-new-role').value = 'responsible';
+  document.getElementById('wa-new-rows').innerHTML = '';
+  document.getElementById('wa-new-sub').textContent = 'Asignar trabajo a un técnico para un día específico';
+
+  // Fecha por defecto: hoy o la pasada por preselect
+  var dateEl = document.getElementById('wa-new-date');
+  if (opts.dateISO) {
+    dateEl.value = opts.dateISO.slice(0, 10);
+  } else {
+    var today = new Date();
+    var pad = function(n){ return String(n).padStart(2,'0'); };
+    dateEl.value = today.getFullYear() + '-' + pad(today.getMonth()+1) + '-' + pad(today.getDate());
+  }
+
+  openModal('m-wa-new');
+
+  // Cargar OTs activas y técnicos en paralelo
+  var otSel = document.getElementById('wa-new-ot');
+  var techSel = document.getElementById('wa-new-tech');
+  otSel.innerHTML = '<option value="">Cargando OTs…</option>';
+  techSel.innerHTML = '<option value="">Cargando técnicos…</option>';
+
+  try {
+    var results = await Promise.all([ waActiveOTs(), getAssignableTechs() ]);
+    _waModalState.activeOTs = results[0] || [];
+    _waModalState.techs = results[1] || [];
+
+    // Poblar OTs
+    var otOpts = '<option value="">Selecciona una OT activa…</option>';
+    _waModalState.activeOTs.forEach(function(ot) {
+      var label = 'OT-' + ot.ot_number + ' · ' + (ot.plate || 's/patente') + ' · ' + (ot.service_classification || '?');
+      if (ot.blocked_waiting_parts) label += ' 🔧';
+      otOpts += '<option value="' + ot.id + '">' + escapeHtml(label) + '</option>';
+    });
+    otSel.innerHTML = otOpts;
+    if (opts.otId) {
+      otSel.value = opts.otId;
+      _waOnOTChange();
+    }
+
+    // Poblar técnicos
+    var techOpts = '<option value="">Selecciona…</option>';
+    _waModalState.techs.forEach(function(t) {
+      techOpts += '<option value="' + t.id + '">' + escapeHtml(t.name || t.username) + '</option>';
+    });
+    techSel.innerHTML = techOpts;
+    if (opts.techId && opts.techId !== '__none__') {
+      techSel.value = opts.techId;
+      _waOnTechChange();
+    }
+
+    // Primera fila de objetivo por defecto
+    _waAddRow();
+  } catch(e) {
+    logR('WA_MODAL_OPEN_ERR', { msg: e.message }, 'err');
+    document.getElementById('wa-new-err').textContent = 'Error cargando datos: ' + e.message;
+    document.getElementById('wa-new-err').style.display = 'block';
+  }
+}
+window.openNewAssignmentModal = openNewAssignmentModal;
+
+// Al cambiar la OT: mostrar info contextual + ajustar rol disponible
+function _waOnOTChange() {
+  var otId = document.getElementById('wa-new-ot').value;
+  var infoEl = document.getElementById('wa-new-ot-info');
+  if (!otId) {
+    infoEl.style.display = 'none';
+    return;
+  }
+  var ot = _waModalState.activeOTs.find(function(o){ return o.id === otId; });
+  if (!ot) { infoEl.style.display = 'none'; return; }
+
+  var lines = [];
+  if (ot.responsible_user_id) {
+    var resp = _waModalState.techs.find(function(t){ return t.id === ot.responsible_user_id; });
+    lines.push('<b>Responsable actual:</b> ' + escapeHtml(resp ? (resp.name || resp.username) : 'usuario desconocido'));
+  } else {
+    lines.push('<b style="color:var(--red)">Esta OT no tiene Responsable asignado.</b>');
+  }
+  if (ot.blocked_waiting_parts) {
+    lines.push('<span style="color:var(--gold);font-weight:600">🔧 OT con espera de repuesto</span>');
+  }
+  infoEl.innerHTML = lines.join('<br/>');
+  infoEl.style.display = 'block';
+
+  // Si el técnico ya está seleccionado, re-evaluar disponibilidad del rol "Responsable"
+  _waOnTechChange();
+}
+window._waOnOTChange = _waOnOTChange;
+
+// Al cambiar el técnico: si la OT tiene Responsable y el técnico NO es ese,
+// deshabilitar la opción "Responsable" del select.
+function _waOnTechChange() {
+  var otId = document.getElementById('wa-new-ot').value;
+  var techId = document.getElementById('wa-new-tech').value;
+  var roleSel = document.getElementById('wa-new-role');
+  var responsibleOpt = roleSel.querySelector('option[value="responsible"]');
+
+  if (!otId || !techId) {
+    responsibleOpt.disabled = false;
+    responsibleOpt.textContent = 'Responsable (cierra el servicio)';
+    _waOnRoleChange();
+    return;
+  }
+  var ot = _waModalState.activeOTs.find(function(o){ return o.id === otId; });
+  if (!ot) return;
+
+  if (ot.responsible_user_id && ot.responsible_user_id !== techId) {
+    responsibleOpt.disabled = true;
+    responsibleOpt.textContent = 'Responsable (ya asignado a otro técnico)';
+    // Si estaba seleccionado responsible, cambiarlo a apoyo técnico
+    if (roleSel.value === 'responsible') roleSel.value = 'support_technical';
+  } else {
+    responsibleOpt.disabled = false;
+    responsibleOpt.textContent = 'Responsable (cierra el servicio)';
+  }
+  _waOnRoleChange();
+}
+window._waOnTechChange = _waOnTechChange;
+
+// Al cambiar el rol: mostrar/ocultar campo de descripción de apoyo + hint
+function _waOnRoleChange() {
+  var role = document.getElementById('wa-new-role').value;
+  var hintEl = document.getElementById('wa-new-role-hint');
+  var supportRow = document.getElementById('wa-new-support-row');
+  var meta = waRoleMeta(role);
+  hintEl.textContent = meta.hint || '';
+  supportRow.style.display = (role === 'responsible') ? 'none' : 'block';
+}
+window._waOnRoleChange = _waOnRoleChange;
+
+// Agregar una fila de objetivo al modal
+function _waAddRow(presetObjective, presetMinutes) {
+  _waModalState.rowCounter++;
+  var idx = _waModalState.rowCounter;
+  var rowsEl = document.getElementById('wa-new-rows');
+
+  var objOpts = WA_OBJECTIVES
+    .filter(function(o){ return o.key !== 'legacy'; })
+    .map(function(o) {
+      var sel = (presetObjective === o.key) ? ' selected' : '';
+      return '<option value="' + o.key + '"' + sel + '>' + o.label + '</option>';
+    })
+    .join('');
+
+  var minutesDefault = presetMinutes || 60;
+  var minutesOpts = '';
+  for (var m = 30; m <= 480; m += 30) {
+    var hh = Math.floor(m / 60);
+    var mm = m % 60;
+    var lbl = (hh ? hh + 'h' : '') + (mm ? (hh ? ' ' : '') + mm + 'min' : '');
+    var sel = (m === minutesDefault) ? ' selected' : '';
+    minutesOpts += '<option value="' + m + '"' + sel + '>' + lbl + '</option>';
+  }
+
+  var rowHTML = '<div class="wa-row" data-row="' + idx + '" style="background:#fafafa;border:1px solid #eee;border-radius:4px;padding:8px;margin-bottom:8px">'
+    + '<div style="display:flex;gap:6px;align-items:flex-end">'
+    +   '<div style="flex:2">'
+    +     '<div class="lbl" style="margin:0 0 3px 0">Objetivo</div>'
+    +     '<select class="inp" data-wa-objective="' + idx + '" onchange="_waOnObjectiveChange(' + idx + ')" style="margin-bottom:0">' + objOpts + '</select>'
+    +   '</div>'
+    +   '<div style="flex:1">'
+    +     '<div class="lbl" style="margin:0 0 3px 0">Tiempo</div>'
+    +     '<select class="inp" data-wa-minutes="' + idx + '" style="margin-bottom:0">' + minutesOpts + '</select>'
+    +   '</div>'
+    +   '<button class="btn btn-out" onclick="_waRemoveRow(' + idx + ')" title="Eliminar este objetivo" style="padding:6px 10px;font-size:14px;margin-bottom:0">×</button>'
+    + '</div>'
+    + '<div data-wa-other-row="' + idx + '" style="display:none;margin-top:6px">'
+    +   '<input class="inp" type="text" data-wa-other="' + idx + '" placeholder="Describe el objetivo (obligatorio si elegiste \'Otro\')" maxlength="200" style="margin-bottom:0"/>'
+    + '</div>'
+    + '<div style="margin-top:6px">'
+    +   '<input class="inp" type="text" data-wa-notes="' + idx + '" placeholder="Notas (opcional)" maxlength="300" style="margin-bottom:0;font-size:11px"/>'
+    + '</div>'
+    + '</div>';
+
+  rowsEl.insertAdjacentHTML('beforeend', rowHTML);
+}
+window._waAddRow = _waAddRow;
+
+function _waRemoveRow(idx) {
+  var rowsEl = document.getElementById('wa-new-rows');
+  var row = rowsEl.querySelector('[data-row="' + idx + '"]');
+  if (row) row.remove();
+  // Si no queda ninguna, agregar una vacía (siempre debe haber al menos 1)
+  if (rowsEl.children.length === 0) _waAddRow();
+}
+window._waRemoveRow = _waRemoveRow;
+
+function _waOnObjectiveChange(idx) {
+  var sel = document.querySelector('[data-wa-objective="' + idx + '"]');
+  var otherRow = document.querySelector('[data-wa-other-row="' + idx + '"]');
+  if (!sel || !otherRow) return;
+  otherRow.style.display = (sel.value === 'otro') ? 'block' : 'none';
+}
+window._waOnObjectiveChange = _waOnObjectiveChange;
+
+// Submit: validar y hacer bulk insert
+async function _waSubmit() {
+  var errEl = document.getElementById('wa-new-err');
+  errEl.style.display = 'none';
+
+  var otId = document.getElementById('wa-new-ot').value;
+  var techId = document.getElementById('wa-new-tech').value;
+  var dateVal = document.getElementById('wa-new-date').value;
+  var role = document.getElementById('wa-new-role').value;
+  var supportDesc = document.getElementById('wa-new-support-desc').value.trim();
+
+  // Validaciones de cabecera
+  if (!otId) return _waShowErr('Selecciona una OT.');
+  if (!techId) return _waShowErr('Selecciona un técnico.');
+  if (!dateVal) return _waShowErr('Selecciona una fecha.');
+  if (!role) return _waShowErr('Selecciona un rol.');
+  if (role !== 'responsible' && !supportDesc) {
+    return _waShowErr('Describe brevemente el apoyo que prestará el técnico.');
+  }
+
+  var ot = _waModalState.activeOTs.find(function(o){ return o.id === otId; });
+  if (!ot) return _waShowErr('OT no encontrada. Recarga el modal.');
+
+  // Si rol = responsible y la OT ya tiene OTRO Responsable: bloquear con mensaje claro.
+  if (role === 'responsible' && ot.responsible_user_id && ot.responsible_user_id !== techId) {
+    return _waShowErr('La OT ya tiene Responsable. Para cambiarlo, solicita una transferencia de responsabilidad al admin.');
+  }
+
+  // Recolectar filas de objetivos
+  var rowEls = document.querySelectorAll('#wa-new-rows .wa-row');
+  if (rowEls.length === 0) return _waShowErr('Agrega al menos un objetivo.');
+
+  var payloads = [];
+  for (var i = 0; i < rowEls.length; i++) {
+    var idx = rowEls[i].getAttribute('data-row');
+    var objective = document.querySelector('[data-wa-objective="' + idx + '"]').value;
+    var minutes = parseInt(document.querySelector('[data-wa-minutes="' + idx + '"]').value, 10);
+    var notes = document.querySelector('[data-wa-notes="' + idx + '"]').value.trim();
+    var otherText = '';
+    var otherEl = document.querySelector('[data-wa-other="' + idx + '"]');
+    if (otherEl) otherText = otherEl.value.trim();
+
+    if (!objective) return _waShowErr('Fila ' + (i+1) + ': falta objetivo.');
+    if (!minutes || minutes < 30 || (minutes % 30) !== 0) {
+      return _waShowErr('Fila ' + (i+1) + ': tiempo inválido (debe ser múltiplo de 30 min).');
+    }
+    if (objective === 'otro' && !otherText) {
+      return _waShowErr('Fila ' + (i+1) + ': describe el objetivo "Otro".');
+    }
+
+    payloads.push({
+      work_order_id: otId,
+      ot_number: ot.ot_number,
+      assigned_user_id: techId,
+      role: role,
+      assignment_date: dateVal,
+      objective: objective,
+      objective_other_text: objective === 'otro' ? otherText : null,
+      support_description: role !== 'responsible' ? supportDesc : null,
+      planned_minutes: minutes,
+      status: 'planned',
+      notes: notes || null
+    });
+  }
+
+  // UI: bloquear botón mientras envía
+  var btn = document.getElementById('wa-new-submit');
+  var originalBtn = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin"></span> Guardando…';
+
+  var res = await waCreate(payloads);
+
+  if (!res.ok) {
+    btn.disabled = false;
+    btn.innerHTML = originalBtn;
+    return _waShowErr('No se pudo guardar: ' + (res.error || 'error desconocido'));
+  }
+
+  // Si el rol era Responsable y la OT no tenía uno, settearlo ahora.
+  if (role === 'responsible' && !ot.responsible_user_id) {
+    try {
+      await sb.from('work_orders').update({ responsible_user_id: techId }).eq('id', otId);
+      logR('WA_SET_RESPONSIBLE', { ot: ot.ot_number, user_id: techId });
+    } catch(e) {
+      logR('WA_SET_RESPONSIBLE_ERR', { msg: e.message }, 'warn');
+    }
+  }
+
+  btn.disabled = false;
+  btn.innerHTML = originalBtn;
+  closeModal('m-wa-new');
+
+  var techName = (_waModalState.techs.find(function(t){ return t.id === techId; }) || {}).name || 'técnico';
+  showGlobalError('✓ ' + payloads.length + ' destinación' + (payloads.length !== 1 ? 'es' : '') + ' creada' + (payloads.length !== 1 ? 's' : '') + ' para ' + techName + ' en OT-' + ot.ot_number, 4000);
+
+  // Refrescar planner si está visible
+  if (typeof renderBossPlan === 'function') {
+    var bodyEl = document.getElementById('boss-body');
+    if (bodyEl && typeof curBossTab !== 'undefined' && curBossTab === 'b-plan') {
+      try { renderBossPlan(bodyEl); } catch(_){}
+    }
+  }
+}
+window._waSubmit = _waSubmit;
+
+function _waShowErr(msg) {
+  var errEl = document.getElementById('wa-new-err');
+  errEl.textContent = msg;
+  errEl.style.display = 'block';
+}
 
 // ═══════════════════════════════════════════════════════════════
 // _planOpenFreeSlotPicker — modal de asignación rápida a slot libre
@@ -14142,6 +14532,180 @@ function escapeHtml(s) {
     return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
   });
 }
+
+// ═══════════════════════════════════════════════════════════════
+// SMART PLANNER v2 — DESTINACIONES (work_assignments)
+// FASE 2.A (2026-05-18): catálogo de objetivos + helpers de datos.
+//
+// Modelo conceptual:
+//   - work_orders = OT abierta al ingreso (clasificación fija).
+//   - work_assignments = destinación diaria de un técnico contra una OT,
+//     con un objetivo específico (diagnóstico, reparación, etc) y
+//     minutos planificados.
+//   - Una OT puede tener N destinaciones en N días con N técnicos.
+//   - Roles: Responsable (único por OT, único que cierra) /
+//     Apoyo Técnico / Apoyo Logístico (lavador, mover, etc).
+//
+// Esta capa CONVIVE con scheduled_services (calendario comercial)
+// sin reemplazarlo. El cronómetro y el cálculo de carga del semáforo
+// vendrán en Fase 3.
+// ═══════════════════════════════════════════════════════════════
+
+// Catálogo de objetivos. ORDEN = orden visual en el dropdown.
+// El campo 'oilDependent' se reservará para Fase 3 (validación DC).
+var WA_OBJECTIVES = [
+  { key: 'evaluacion',   label: 'Evaluación',    color: 'var(--blue)',  short: 'EVAL' },
+  { key: 'diagnostico',  label: 'Diagnóstico',   color: 'var(--gold)',  short: 'DIAG' },
+  { key: 'desarme',      label: 'Desarme',       color: 'var(--wh3)',   short: 'DESARM' },
+  { key: 'reparacion',   label: 'Reparación',    color: 'var(--red)',   short: 'REPAR' },
+  { key: 'armado',       label: 'Armado',        color: 'var(--wh3)',   short: 'ARMADO' },
+  { key: 'pruebas',      label: 'Pruebas',       color: 'var(--gold)',  short: 'PRUEBAS' },
+  { key: 'lavado',       label: 'Lavado',        color: 'var(--blue)',  short: 'LAVADO' },
+  { key: 'finalizacion', label: 'Finalización',  color: 'var(--green)', short: 'FINAL' },
+  { key: 'apoyo',        label: 'Apoyo',         color: 'var(--wh3)',   short: 'APOYO' },
+  { key: 'otro',         label: 'Otro',          color: 'var(--wh3)',   short: 'OTRO' }
+];
+
+var WA_ROLES = [
+  { key: 'responsible',       label: 'Responsable',       hint: 'Único por OT. Cierra el servicio y firma informe.' },
+  { key: 'support_technical', label: 'Apoyo técnico',     hint: 'Ayuda al Responsable. Suma horas a la OT.' },
+  { key: 'support_logistics', label: 'Apoyo logístico',   hint: 'Lavado, traslado, tareas no técnicas.' }
+];
+
+function waObjectiveMeta(key) {
+  for (var i = 0; i < WA_OBJECTIVES.length; i++) {
+    if (WA_OBJECTIVES[i].key === key) return WA_OBJECTIVES[i];
+  }
+  return { key: key, label: key, color: 'var(--wh3)', short: (key || '').toUpperCase() };
+}
+
+function waRoleMeta(key) {
+  for (var i = 0; i < WA_ROLES.length; i++) {
+    if (WA_ROLES[i].key === key) return WA_ROLES[i];
+  }
+  return { key: key, label: key, hint: '' };
+}
+
+// ─── Helpers de datos ────────────────────────────────────────────
+
+// waCreate(rows)
+//   rows: array de payloads. Cada payload debe incluir:
+//     work_order_id, ot_number, assigned_user_id, role, assignment_date,
+//     objective, planned_minutes
+//   Opcional: objective_other_text, support_description, notes
+//   Devuelve: {ok, inserted, error}
+async function waCreate(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return { ok: false, error: 'Lista de destinaciones vacía' };
+  }
+  // Inyectar created_by automáticamente
+  var prepared = rows.map(function(r) {
+    var p = Object.assign({}, r);
+    p.created_by = CU ? CU.id : null;
+    // sanitizar opcionales
+    if (p.objective !== 'otro') p.objective_other_text = null;
+    if (p.role === 'responsible') p.support_description = null;
+    return p;
+  });
+  try {
+    var r = await sb.from('work_assignments').insert(prepared).select('id, work_order_id, ot_number, objective, planned_minutes');
+    if (r.error) {
+      logR('WA_CREATE_ERR', { msg: r.error.message, count: rows.length }, 'err');
+      return { ok: false, error: r.error.message };
+    }
+    logR('WA_CREATE_OK', { count: (r.data || []).length });
+    return { ok: true, inserted: r.data || [] };
+  } catch(e) {
+    logR('WA_CREATE_EXC', { msg: e.message }, 'err');
+    return { ok: false, error: e.message };
+  }
+}
+window.waCreate = waCreate;
+
+// waListByTechDay(techId, dateISO)
+//   Devuelve destinaciones de un técnico en un día específico,
+//   con datos de la OT (ot_number, service_classification, responsible_user_id).
+async function waListByTechDay(techId, dateISO) {
+  if (!techId || !dateISO) return [];
+  try {
+    var r = await sb.from('work_assignments')
+      .select('*, work_orders!inner(id, ot_number, service_classification, status, responsible_user_id, blocked_waiting_parts, blocked_reason)')
+      .eq('assigned_user_id', techId)
+      .eq('assignment_date', dateISO)
+      .neq('status', 'cancelled')
+      .neq('objective', 'legacy')
+      .order('created_at');
+    if (r.error) {
+      logR('WA_LIST_TECHDAY_ERR', { msg: r.error.message }, 'warn');
+      return [];
+    }
+    return r.data || [];
+  } catch(e) {
+    logR('WA_LIST_TECHDAY_EXC', { msg: e.message }, 'warn');
+    return [];
+  }
+}
+window.waListByTechDay = waListByTechDay;
+
+// waListByOT(workOrderId)
+//   Devuelve TODAS las destinaciones (incluyendo legacy) de una OT.
+async function waListByOT(workOrderId) {
+  if (!workOrderId) return [];
+  try {
+    var r = await sb.from('work_assignments')
+      .select('*')
+      .eq('work_order_id', workOrderId)
+      .order('assignment_date')
+      .order('created_at');
+    if (r.error) {
+      logR('WA_LIST_OT_ERR', { msg: r.error.message }, 'warn');
+      return [];
+    }
+    return r.data || [];
+  } catch(e) {
+    return [];
+  }
+}
+window.waListByOT = waListByOT;
+
+// waSummaryByOT(workOrderId)
+//   Devuelve { total_planned_minutes, real_minutes_estimate, assignments_count }
+//   Usa la VIEW work_orders_summary creada en Fase 1.
+async function waSummaryByOT(workOrderId) {
+  if (!workOrderId) return null;
+  try {
+    var r = await sb.from('work_orders_summary')
+      .select('*')
+      .eq('work_order_id', workOrderId)
+      .maybeSingle();
+    if (r.error || !r.data) return null;
+    return r.data;
+  } catch(e) {
+    return null;
+  }
+}
+window.waSummaryByOT = waSummaryByOT;
+
+// waActiveOTs()
+//   Lista de OTs candidatas a recibir destinaciones (no cerradas/canceladas).
+//   Útil para el dropdown del modal "Nueva destinación".
+async function waActiveOTs() {
+  try {
+    var r = await sb.from('work_orders')
+      .select('id, ot_number, plate, service_classification, status, responsible_user_id, blocked_waiting_parts, created_at')
+      .in('status', ['open', 'assigned', 'in_progress', 'paused'])
+      .order('ot_number', { ascending: false })
+      .limit(100);
+    if (r.error) {
+      logR('WA_ACTIVE_OTS_ERR', { msg: r.error.message }, 'warn');
+      return [];
+    }
+    return r.data || [];
+  } catch(e) {
+    return [];
+  }
+}
+window.waActiveOTs = waActiveOTs;
 
 async function openClientModal(cid, forceVehicleId) {
   if (!hasPerm(CU, 'can_ingresar_clientes')) {
