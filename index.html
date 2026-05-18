@@ -10930,13 +10930,125 @@ function _planOpenCellDetail(techId, dateISO) {
   var cache = window._planCache || {};
   var key = (techId || '__none__') + '|' + dateISO;
   var cellData = cache[key];
-  if (!cellData || !cellData.events || !cellData.events.length) return;
+  // FASE 2.B: la celda puede tener destinaciones aunque no haya scheduled_services.
+  var hasEvents = cellData && cellData.events && cellData.events.length > 0;
+  var hasAssignments = cellData && cellData.assignments && cellData.assignments.length > 0;
+  if (!cellData || (!hasEvents && !hasAssignments)) return;
   var techName = cellData.techName || 'Sin asignar';
   var dateLbl = new Date(dateISO).toLocaleDateString('es-CL', {weekday:'long', day:'2-digit', month:'long'});
   var isUnassigned = (techId === '__none__');
+  var totalItems = (cellData.events ? cellData.events.length : 0) + (cellData.assignments ? cellData.assignments.length : 0);
+
+  // ─── Construir HTML de destinaciones agrupadas por OT (FASE 2.B) ─────
+  var assignmentsHTML = '';
+  if (hasAssignments) {
+    // Agrupar por work_order_id
+    var byOT = {};
+    cellData.assignments.forEach(function(a){
+      var k = a.work_order_id;
+      if (!byOT[k]) byOT[k] = { ot_number: a.ot_number, meta: a._woMeta, items: [], totalMin: 0 };
+      byOT[k].items.push(a);
+      byOT[k].totalMin += (a.planned_minutes || 0);
+    });
+
+    assignmentsHTML += '<div style="margin-top:14px">'
+      + '<div style="font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.05em;color:var(--red);margin-bottom:6px;font-family:\'Rajdhani\',sans-serif">Destinaciones planificadas (' + cellData.assignments.length + ')</div>';
+
+    Object.keys(byOT).forEach(function(woId){
+      var grp = byOT[woId];
+      var meta = grp.meta || {};
+      var plate = meta._plate || 's/patente';
+      var srvLabel = waServiceLabel(meta.service_classification);
+      var roleKey = (grp.items[0] && grp.items[0].role) || 'responsible';
+      var roleLabelShort = roleKey === 'responsible' ? 'RESP.' : roleKey === 'support_technical' ? 'APOYO TÉC.' : 'APOYO LOG.';
+      var roleColor = roleKey === 'responsible' ? 'var(--red)' : 'var(--wh3)';
+      var blockedBadge = meta.blocked_waiting_parts
+        ? '<span style="font-size:9px;font-weight:700;color:var(--gold3);background:#fff8e6;padding:2px 6px;border-radius:2px;text-transform:uppercase;margin-left:6px">🔧 Espera repuesto</span>'
+        : '';
+
+      assignmentsHTML += '<div style="background:#fff;border:1px solid #eee;border-left:4px solid ' + roleColor + ';border-radius:3px;padding:10px;margin-bottom:8px">'
+        // Header OT
+        + '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:8px">'
+        +   '<div style="flex:1;min-width:0">'
+        +     '<div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111">'
+        +       'OT-' + grp.ot_number + ' · ' + escapeHtml(srvLabel)
+        +     '</div>'
+        +     '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:3px">'
+        +       '<span class="plate-tag">' + escapeHtml(plate) + '</span>'
+        +       blockedBadge
+        +     '</div>'
+        +   '</div>'
+        +   '<span style="font-size:9px;font-weight:700;color:#fff;background:' + roleColor + ';padding:3px 7px;border-radius:2px;text-transform:uppercase;flex-shrink:0">' + roleLabelShort + '</span>'
+        + '</div>'
+        // Sub-líneas de objetivos
+        + '<div style="display:flex;flex-direction:column;gap:4px">';
+
+      grp.items.forEach(function(a){
+        var objMeta = waObjectiveMeta(a.objective);
+        var objLabel = a.objective === 'otro' && a.objective_other_text ? a.objective_other_text : objMeta.label;
+        var hh = Math.floor(a.planned_minutes / 60);
+        var mm = a.planned_minutes % 60;
+        var timeLbl = (hh ? hh + 'h' : '') + (mm ? (hh ? ' ' : '') + mm + 'min' : '');
+        var statusBadge = '';
+        if (a.status === 'completed') statusBadge = '<span style="font-size:9px;color:var(--green);font-weight:700;margin-left:6px">✓ COMPLETADA</span>';
+        else if (a.status === 'in_progress') statusBadge = '<span style="font-size:9px;color:var(--green);font-weight:700;margin-left:6px">▶ EN CURSO</span>';
+        else if (a.status === 'paused') statusBadge = '<span style="font-size:9px;color:var(--gold);font-weight:700;margin-left:6px">⏸ PAUSADA</span>';
+
+        assignmentsHTML += '<div onclick="closeModal(\'m-plan-cell\');_waOpenAssignmentDetail(\'' + a.id + '\')" style="display:flex;justify-content:space-between;align-items:center;padding:6px 8px;background:#fafafa;border-radius:3px;cursor:pointer;border-left:3px solid ' + objMeta.color + '">'
+          + '<div style="font-size:11px">'
+          +   '<span style="font-weight:600;color:#111">' + escapeHtml(objLabel) + '</span>'
+          +   statusBadge
+          + '</div>'
+          + '<span style="font-size:11px;font-weight:700;color:var(--wh3);font-family:var(--mono)">' + timeLbl + '</span>'
+          + '</div>';
+      });
+
+      assignmentsHTML += '</div>'
+        // Footer con totales del día en esa OT
+        + '<div style="margin-top:8px;padding-top:6px;border-top:1px dashed #e0e0e0;display:flex;justify-content:space-between;font-size:10px;color:var(--wh3)">'
+        +   '<span>Total día en esta OT</span>'
+        +   '<span style="font-weight:700;color:#111;font-family:var(--mono)">' + Math.round(grp.totalMin/60*10)/10 + 'h</span>'
+        + '</div>'
+        + '</div>';
+    });
+
+    assignmentsHTML += '</div>';
+  }
+
+  // ─── HTML de scheduled_services existentes (legacy, solo si quedan tras dedupe) ───
+  var scheduledHTML = '';
+  if (hasEvents) {
+    scheduledHTML = '<div style="margin-top:14px">'
+      + '<div style="font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.05em;color:var(--wh3);margin-bottom:6px;font-family:\'Rajdhani\',sans-serif">Agendados (calendario)</div>'
+      + '<div style="display:flex;flex-direction:column;gap:6px">'
+      + cellData.events.map(function(e){
+          var hh = new Date(e.scheduled_at).toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'});
+          var bm = e.plate ? plateBrandModel(e.plate) : null;
+          var stLabel = e._statusLabel || (e.status || 'pendiente').toUpperCase();
+          var stColor = e._statusColor || 'var(--wh3)';
+          var estMin = e._estimatedMin || (e.goal_minutes || 120);
+          return '<div onclick="closeModal(\'m-plan-cell\');openEditEvent(\'' + e.id + '\')" style="background:#fff;border:1px solid #eee;border-left:4px solid ' + stColor + ';border-radius:3px;padding:9px;cursor:pointer">'
+            + '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">'
+            +   '<div style="flex:1;min-width:0">'
+            +     '<div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111">' + escapeHtml(e.service || '?') + '</div>'
+            +     '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:3px">'
+            +       (e.plate ? '<span class="plate-tag">' + escapeHtml(e.plate) + '</span>' : '')
+            +       (bm ? '<span style="font-size:10px;color:var(--wh3);font-weight:600;text-transform:uppercase">' + escapeHtml(bm) + '</span>' : '')
+            +       '<span style="font-size:10px;color:#666;font-family:var(--mono)">' + hh + '</span>'
+            +       '<span style="font-size:10px;color:#888">~' + Math.round(estMin/60*10)/10 + 'h</span>'
+            +     '</div>'
+            +   '</div>'
+            +   '<div style="text-align:right;flex-shrink:0">'
+            +     '<span style="font-size:9px;font-weight:700;color:#fff;background:' + stColor + ';padding:2px 6px;border-radius:2px;text-transform:uppercase">' + stLabel + '</span>'
+            +   '</div>'
+            + '</div>'
+            + '</div>';
+        }).join('')
+      + '</div></div>';
+  }
 
   var detailHTML = '<div class="modal-t">' + escapeHtml(techName) + '</div>'
-    + '<div class="modal-s">' + dateLbl + ' · ' + cellData.events.length + ' servicio' + (cellData.events.length !== 1 ? 's' : '') + '</div>'
+    + '<div class="modal-s">' + dateLbl + ' · ' + totalItems + ' ítem' + (totalItems !== 1 ? 's' : '') + '</div>'
     + (isUnassigned
         ? '<div style="margin-top:10px;padding:8px;background:#fff8f8;border-left:3px solid var(--red);border-radius:3px;font-size:11px;line-height:1.5">'
         +   '<b style="color:var(--red)">Sin técnico asignado.</b> Estos servicios requieren designación antes del ingreso al taller. Toca cada uno para asignar.'
@@ -10946,31 +11058,12 @@ function _planOpenCellDetail(techId, dateISO) {
         +   '<b>Carga estimada:</b> ' + Math.round(cellData.loadMin/60*10)/10 + 'h <span style="color:var(--wh3)">(' + cellData.pct + '%)</span>'
         + '</div>'
       )
-    + '<div style="margin-top:12px;display:flex;flex-direction:column;gap:6px;max-height:60vh;overflow-y:auto">'
-    + cellData.events.map(function(e){
-        var hh = new Date(e.scheduled_at).toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'});
-        var bm = e.plate ? plateBrandModel(e.plate) : null;
-        var stLabel = e._statusLabel || (e.status || 'pendiente').toUpperCase();
-        var stColor = e._statusColor || 'var(--wh3)';
-        var estMin = e._estimatedMin || (e.goal_minutes || 120);
-        return '<div onclick="closeModal(\'m-plan-cell\');openEditEvent(\'' + e.id + '\')" style="background:#fff;border:1px solid #eee;border-left:4px solid ' + stColor + ';border-radius:3px;padding:9px;cursor:pointer">'
-          + '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">'
-          +   '<div style="flex:1;min-width:0">'
-          +     '<div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111">' + escapeHtml(e.service || '?') + '</div>'
-          +     '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:3px">'
-          +       (e.plate ? '<span class="plate-tag">' + escapeHtml(e.plate) + '</span>' : '')
-          +       (bm ? '<span style="font-size:10px;color:var(--wh3);font-weight:600;text-transform:uppercase">' + escapeHtml(bm) + '</span>' : '')
-          +       '<span style="font-size:10px;color:#666;font-family:var(--mono)">' + hh + '</span>'
-          +       '<span style="font-size:10px;color:#888">~' + Math.round(estMin/60*10)/10 + 'h</span>'
-          +     '</div>'
-          +   '</div>'
-          +   '<div style="text-align:right;flex-shrink:0">'
-          +     '<span style="font-size:9px;font-weight:700;color:#fff;background:' + stColor + ';padding:2px 6px;border-radius:2px;text-transform:uppercase">' + stLabel + '</span>'
-          +   '</div>'
-          + '</div>'
-          + '</div>';
-      }).join('')
-    + '</div>'
+    + '<div style="max-height:60vh;overflow-y:auto">'
+    + assignmentsHTML
+    + scheduledHTML
+    + '</div>';
+
+  detailHTML = detailHTML
     + (isUnassigned
         ? '<button class="btn btn-out" onclick="closeModal(\'m-plan-cell\')" style="margin-top:12px;width:100%">Cerrar</button>'
         : '<div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">'
@@ -11054,7 +11147,7 @@ async function openNewAssignmentModal(opts) {
     // Poblar OTs
     var otOpts = '<option value="">Selecciona una OT activa…</option>';
     _waModalState.activeOTs.forEach(function(ot) {
-      var label = 'OT-' + ot.ot_number + ' · ' + (ot.plate || 's/patente') + ' · ' + (ot.service_classification || '?');
+      var label = 'OT-' + ot.ot_number + ' · ' + (ot.plate || 's/patente') + ' · ' + waServiceLabel(ot.service_classification);
       if (ot.blocked_waiting_parts) label += ' 🔧';
       otOpts += '<option value="' + ot.id + '">' + escapeHtml(label) + '</option>';
     });
@@ -11187,17 +11280,22 @@ function _waAddRow(presetObjective, presetMinutes) {
     minutesOpts += '<option value="' + m + '"' + sel + '>' + lbl + '</option>';
   }
 
-  var rowHTML = '<div class="wa-row" data-row="' + idx + '" style="background:#fafafa;border:1px solid #eee;border-radius:4px;padding:8px;margin-bottom:8px">'
-    + '<div style="display:flex;gap:6px;align-items:flex-end">'
-    +   '<div style="flex:2">'
+  // Layout: selects con ancho mínimo legible (flex-basis), botón × pequeño
+  // alineado a la derecha, con title que explique su función.
+  var rowHTML = '<div class="wa-row" data-row="' + idx + '" style="background:#fafafa;border:1px solid #eee;border-radius:4px;padding:10px;margin-bottom:8px;position:relative">'
+    + '<button onclick="_waRemoveRow(' + idx + ')" title="Eliminar este objetivo" '
+    +   'style="position:absolute;top:6px;right:6px;width:22px;height:22px;padding:0;border:1px solid #ddd;background:#fff;border-radius:50%;cursor:pointer;font-size:13px;line-height:1;color:var(--wh3);display:flex;align-items:center;justify-content:center"'
+    +   ' onmouseover="this.style.background=\'var(--red4)\';this.style.color=\'var(--red)\';this.style.borderColor=\'var(--red)\'"'
+    +   ' onmouseout="this.style.background=\'#fff\';this.style.color=\'var(--wh3)\';this.style.borderColor=\'#ddd\'">×</button>'
+    + '<div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;padding-right:28px">'
+    +   '<div style="flex:1 1 200px;min-width:140px">'
     +     '<div class="lbl" style="margin:0 0 3px 0">Objetivo</div>'
     +     '<select class="inp" data-wa-objective="' + idx + '" onchange="_waOnObjectiveChange(' + idx + ')" style="margin-bottom:0">' + objOpts + '</select>'
     +   '</div>'
-    +   '<div style="flex:1">'
+    +   '<div style="flex:0 0 110px">'
     +     '<div class="lbl" style="margin:0 0 3px 0">Tiempo</div>'
     +     '<select class="inp" data-wa-minutes="' + idx + '" style="margin-bottom:0">' + minutesOpts + '</select>'
     +   '</div>'
-    +   '<button class="btn btn-out" onclick="_waRemoveRow(' + idx + ')" title="Eliminar este objetivo" style="padding:6px 10px;font-size:14px;margin-bottom:0">×</button>'
     + '</div>'
     + '<div data-wa-other-row="' + idx + '" style="display:none;margin-top:6px">'
     +   '<input class="inp" type="text" data-wa-other="' + idx + '" placeholder="Describe el objetivo (obligatorio si elegiste \'Otro\')" maxlength="200" style="margin-bottom:0"/>'
@@ -11214,8 +11312,24 @@ window._waAddRow = _waAddRow;
 function _waRemoveRow(idx) {
   var rowsEl = document.getElementById('wa-new-rows');
   var row = rowsEl.querySelector('[data-row="' + idx + '"]');
-  if (row) row.remove();
-  // Si no queda ninguna, agregar una vacía (siempre debe haber al menos 1)
+  if (!row) return;
+
+  // Protección: si la fila tiene contenido (objetivo distinto a default O texto en notas/otro),
+  // confirmar antes de eliminar.
+  var objSel = document.querySelector('[data-wa-objective="' + idx + '"]');
+  var notesEl = document.querySelector('[data-wa-notes="' + idx + '"]');
+  var otherEl = document.querySelector('[data-wa-other="' + idx + '"]');
+  var hasData = false;
+  if (objSel && objSel.selectedIndex > 0) hasData = true;
+  if (notesEl && notesEl.value.trim()) hasData = true;
+  if (otherEl && otherEl.value.trim()) hasData = true;
+
+  if (hasData) {
+    if (!confirm('¿Eliminar este objetivo? Se perderán los datos ingresados.')) return;
+  }
+
+  row.remove();
+  // Si no queda ninguna, agregar una vacía (siempre debe haber al menos 1).
   if (rowsEl.children.length === 0) _waAddRow();
 }
 window._waRemoveRow = _waRemoveRow;
@@ -11339,6 +11453,125 @@ function _waShowErr(msg) {
   errEl.textContent = msg;
   errEl.style.display = 'block';
 }
+
+// ═══════════════════════════════════════════════════════════════
+// _waOpenAssignmentDetail — detalle de una destinación específica
+// ═══════════════════════════════════════════════════════════════
+// Muestra info de la destinación + acción de cancelar (Fase 2.B).
+// Acciones de Iniciar/Pausar/Completar vendrán en Fase 3 cuando
+// integremos con el cronómetro.
+async function _waOpenAssignmentDetail(assignmentId) {
+  if (!assignmentId) return;
+
+  // Fetch fresco de la destinación para tener estado actualizado.
+  var r = await sb.from('work_assignments')
+    .select('*')
+    .eq('id', assignmentId)
+    .maybeSingle();
+  if (r.error || !r.data) {
+    showGlobalError('No se pudo cargar la destinación: ' + (r.error ? r.error.message : 'no encontrada'), 4000);
+    return;
+  }
+  var a = r.data;
+
+  // Hidratar metadatos de OT y técnico.
+  var woMeta = null, techMeta = null, plateLabel = 's/patente';
+  try {
+    var rWO = await sb.from('work_orders').select('id, ot_number, service_classification, vehicle_id').eq('id', a.work_order_id).maybeSingle();
+    if (rWO && rWO.data) {
+      woMeta = rWO.data;
+      if (woMeta.vehicle_id) {
+        var rV = await sb.from('client_vehicles').select('plate').eq('id', woMeta.vehicle_id).maybeSingle();
+        if (rV && rV.data && rV.data.plate) plateLabel = rV.data.plate;
+      }
+    }
+    var rU = await sb.from('users').select('id, name, username').eq('id', a.assigned_user_id).maybeSingle();
+    if (rU && rU.data) techMeta = rU.data;
+  } catch(_){}
+
+  var objMeta = waObjectiveMeta(a.objective);
+  var roleMeta = waRoleMeta(a.role);
+  var objLabel = a.objective === 'otro' && a.objective_other_text ? a.objective_other_text : objMeta.label;
+  var hh = Math.floor(a.planned_minutes / 60);
+  var mm = a.planned_minutes % 60;
+  var timeLbl = (hh ? hh + 'h' : '') + (mm ? (hh ? ' ' : '') + mm + 'min' : '');
+  var dateLbl = new Date(a.assignment_date + 'T00:00:00').toLocaleDateString('es-CL', {weekday:'long', day:'2-digit', month:'long'});
+  var statusLbl = (a.status || 'planned').toUpperCase();
+  var statusColor = a.status === 'completed' ? 'var(--green)'
+                  : a.status === 'in_progress' ? 'var(--green)'
+                  : a.status === 'paused' ? 'var(--gold)'
+                  : a.status === 'cancelled' ? 'var(--red)'
+                  : 'var(--wh3)';
+
+  var canCancel = (a.status === 'planned' || a.status === 'paused');
+
+  var detailHTML = '<div class="modal-t">Destinación</div>'
+    + '<div class="modal-s">' + escapeHtml(objLabel) + ' · ' + timeLbl + '</div>'
+    + '<div style="margin-top:10px;padding:10px;background:#fafafa;border-left:3px solid ' + objMeta.color + ';border-radius:3px;font-size:12px;line-height:1.7">'
+    +   '<div><b>Estado:</b> <span style="color:' + statusColor + ';font-weight:700">' + statusLbl + '</span></div>'
+    +   '<div><b>OT:</b> ' + (woMeta ? 'OT-' + woMeta.ot_number + ' · ' + escapeHtml(plateLabel) + ' · ' + escapeHtml(waServiceLabel(woMeta.service_classification)) : 's/datos') + '</div>'
+    +   '<div><b>Técnico:</b> ' + escapeHtml((techMeta ? (techMeta.name || techMeta.username) : 's/técnico')) + '</div>'
+    +   '<div><b>Rol:</b> ' + escapeHtml(roleMeta.label) + '</div>'
+    +   '<div><b>Fecha:</b> ' + dateLbl + '</div>'
+    +   '<div><b>Tiempo planificado:</b> ' + timeLbl + '</div>'
+    +   (a.support_description ? '<div><b>Descripción:</b> ' + escapeHtml(a.support_description) + '</div>' : '')
+    +   (a.notes ? '<div><b>Notas:</b> ' + escapeHtml(a.notes) + '</div>' : '')
+    + '</div>'
+    + '<div style="margin-top:8px;font-size:10px;color:var(--wh3);font-style:italic">Las acciones de iniciar/pausar/completar estarán disponibles en Fase 3 (integración con cronómetro).</div>'
+    + '<div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">'
+    +   (canCancel
+        ? '<button class="btn btn-out" onclick="_waCancelAssignment(\'' + a.id + '\')" style="flex:1;color:var(--red);border-color:var(--red)">Cancelar destinación</button>'
+        : '')
+    +   '<button class="btn btn-out" onclick="closeModal(\'m-wa-detail\')" style="flex:1">Cerrar</button>'
+    + '</div>';
+
+  // Reutilizar overlay existente o crearlo.
+  var overlay = document.getElementById('m-wa-detail');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'm-wa-detail';
+    overlay.className = 'overlay';
+    overlay.style.display = 'none';
+    var modalDiv = document.createElement('div');
+    modalDiv.className = 'modal';
+    modalDiv.id = 'm-wa-detail-body';
+    overlay.appendChild(modalDiv);
+    document.body.appendChild(overlay);
+  }
+  var bodyEl = document.getElementById('m-wa-detail-body');
+  if (bodyEl) bodyEl.innerHTML = detailHTML;
+  openModal('m-wa-detail');
+}
+window._waOpenAssignmentDetail = _waOpenAssignmentDetail;
+
+// Cancelar una destinación (soft-delete: marca status=cancelled).
+async function _waCancelAssignment(assignmentId) {
+  if (!assignmentId) return;
+  if (!confirm('¿Cancelar esta destinación? Quedará registrada como cancelada en el historial.')) return;
+
+  try {
+    var r = await sb.from('work_assignments').update({
+      status: 'cancelled',
+      cancelled_at: new Date().toISOString(),
+      cancelled_by: CU ? CU.id : null
+    }).eq('id', assignmentId);
+    if (r.error) {
+      showGlobalError('No se pudo cancelar: ' + r.error.message, 5000);
+      return;
+    }
+    logR('WA_CANCEL_OK', { id: assignmentId });
+    closeModal('m-wa-detail');
+    showGlobalError('✓ Destinación cancelada', 3000);
+    // Refrescar planner si está visible.
+    if (typeof renderBossPlan === 'function' && typeof curBossTab !== 'undefined' && curBossTab === 'b-plan') {
+      var bodyEl = document.getElementById('boss-body');
+      if (bodyEl) { try { renderBossPlan(bodyEl); } catch(_){} }
+    }
+  } catch(e) {
+    showGlobalError('Error: ' + e.message, 5000);
+  }
+}
+window._waCancelAssignment = _waCancelAssignment;
 
 // ═══════════════════════════════════════════════════════════════
 // _planOpenFreeSlotPicker — modal de asignación rápida a slot libre
@@ -11750,6 +11983,138 @@ async function renderBossPlan(body) {
     var c = cache[k];
     c.pct = c.capacityMin > 0 ? Math.round((c.loadMin / c.capacityMin) * 100) : 0;
   });
+
+  // ───────────────────────────────────────────────────────────────
+  // 5.5) SMART PLANNER v2 — Integración de work_assignments
+  // ───────────────────────────────────────────────────────────────
+  // Carga las destinaciones del rango y las suma al cache por celda.
+  // Regla anti-doble conteo: si una OT tiene ≥1 work_assignment para un
+  // técnico/día, los scheduled_services de la misma OT/técnico/día se
+  // descuentan del loadMin para no contarlos dos veces. Las destinaciones
+  // se guardan en cache[key].assignments para que _planOpenCellDetail
+  // pueda mostrarlas agrupadas por OT.
+  try {
+    var rangeFromISO = rangeFrom.toISOString().slice(0, 10);
+    var rangeToISO = rangeTo.toISOString().slice(0, 10);
+    var rWA = await sb.from('work_assignments')
+      .select('id, work_order_id, ot_number, assigned_user_id, role, assignment_date, objective, objective_other_text, support_description, planned_minutes, status, notes, started_at, completed_at')
+      .gte('assignment_date', rangeFromISO)
+      .lte('assignment_date', rangeToISO)
+      .neq('status', 'cancelled')
+      .neq('objective', 'legacy')
+      .order('assignment_date');
+
+    var assignments = (rWA && rWA.data) || [];
+
+    // Lookup de service_classification y plate por work_order_id (para mostrar en tarjetas).
+    var woIds = Array.from(new Set(assignments.map(function(a){ return a.work_order_id; }).filter(Boolean)));
+    var woMetaById = {};
+    if (woIds.length) {
+      try {
+        var rWO = await sb.from('work_orders')
+          .select('id, ot_number, service_classification, status, responsible_user_id, blocked_waiting_parts, vehicle_id')
+          .in('id', woIds);
+        if (rWO && rWO.data) {
+          rWO.data.forEach(function(w){ woMetaById[w.id] = w; });
+        }
+        // Plates
+        var vehIds = Array.from(new Set(Object.values(woMetaById).map(function(w){ return w.vehicle_id; }).filter(Boolean)));
+        if (vehIds.length) {
+          var rV = await sb.from('client_vehicles').select('id, plate, brand, model').in('id', vehIds);
+          if (rV && rV.data) {
+            var byVid = {};
+            rV.data.forEach(function(v){ byVid[v.id] = v; });
+            Object.keys(woMetaById).forEach(function(woId){
+              var w = woMetaById[woId];
+              var v = byVid[w.vehicle_id];
+              if (v) { w._plate = v.plate; w._brand = v.brand; w._model = v.model; }
+            });
+          }
+        }
+      } catch(_){ /* metadatos opcionales */ }
+    }
+
+    // Indexar destinaciones por (techId, dateISO) y por (techId, dateISO, work_order_id)
+    // para la regla anti-doble-conteo.
+    var waByCell = {};            // techId|dateISO  → [assignments]
+    var waOTsByCell = {};          // techId|dateISO  → Set<work_order_id>
+    assignments.forEach(function(a){
+      if (!a.assigned_user_id || !a.assignment_date) return;
+      // Buscar el dayMatch real en rangeDays (mismo ISO date)
+      var dayMatch = rangeDays.find(function(d){ return d.toISOString().slice(0,10) === a.assignment_date; });
+      if (!dayMatch) return;
+      var key = a.assigned_user_id + '|' + dayMatch.toISOString();
+      if (!waByCell[key]) waByCell[key] = [];
+      waByCell[key].push(a);
+      if (!waOTsByCell[key]) waOTsByCell[key] = new Set();
+      if (a.work_order_id) waOTsByCell[key].add(a.work_order_id);
+    });
+
+    // Aplicar al cache: descontar scheduled de OTs cubiertas, luego sumar destinaciones.
+    Object.keys(waByCell).forEach(function(key){
+      var waList = waByCell[key];
+      var coveredOTs = waOTsByCell[key];
+      var parts = key.split('|');
+      var tid = parts[0];
+      var dayISO = parts[1];
+      var dayMatch = rangeDays.find(function(d){ return d.toISOString() === dayISO; });
+      if (!dayMatch) return;
+
+      // Asegurar que la celda exista en cache (puede no haber scheduled).
+      if (!cache[key]) {
+        cache[key] = {
+          techId: tid,
+          techName: (waList[0] && waList[0].assigned_user_name) || 'Técnico',
+          date: dayMatch,
+          events: [],
+          loadMin: 0,
+          capacityMin: _planCapacityMinForDate(dayMatch),
+          pct: 0
+        };
+      }
+
+      // Descontar scheduled de OTs que ahora tienen destinación (anti-doble-conteo).
+      // Filtramos events que pertenezcan a OTs cubiertas.
+      var c = cache[key];
+      var keepEvents = [];
+      var deducted = 0;
+      c.events.forEach(function(ev){
+        // Un scheduled_service "pertenece" a una OT si su work_order_id coincide
+        // con alguna OT que tiene destinaciones para este técnico/día.
+        var evWO = ev.work_order_id;
+        if (evWO && coveredOTs.has(evWO)) {
+          // Restar minutos imputados de este evento en este día.
+          var loadByDay = _planServiceLoadByDay(ev, ev._liveSess, ev._histRow, rangeDays);
+          var mins = loadByDay[dayISO] || 0;
+          deducted += mins;
+        } else {
+          keepEvents.push(ev);
+        }
+      });
+      if (deducted > 0) {
+        c.events = keepEvents;
+        c.loadMin = Math.max(0, c.loadMin - deducted);
+      }
+
+      // Sumar destinaciones del día. Solo cuentan las que NO están cancelled o completed
+      // si quieres carga "futura"; pero como el usuario quiere ver lo PLANIFICADO del día,
+      // sumamos planned + in_progress + paused. Las completed también se cuentan (ya se hicieron).
+      var assignmentsMin = 0;
+      waList.forEach(function(a){
+        assignmentsMin += (a.planned_minutes || 0);
+        // Adjuntar metadatos de la OT para uso en _planOpenCellDetail.
+        a._woMeta = woMetaById[a.work_order_id] || null;
+      });
+      c.loadMin += assignmentsMin;
+      c.assignments = waList;
+
+      // Recalcular %
+      c.pct = c.capacityMin > 0 ? Math.round((c.loadMin / c.capacityMin) * 100) : 0;
+    });
+  } catch(eWA) {
+    logR('PLAN_WA_INTEGRATION_ERR', { msg: eWA.message }, 'warn');
+  }
+
   window._planCache = cache;
 
   // 6) Lista de técnicos a mostrar como filas de la grilla.
@@ -11917,7 +12282,10 @@ async function renderBossPlan(body) {
       }
 
       // Técnico real
-      if (!cell || cell.events.length === 0) {
+      // FASE 2.B: una celda está "libre" solo si NO tiene ni events ni destinaciones.
+      var hasAssignmentsCell = cell && cell.assignments && cell.assignments.length > 0;
+      var hasEventsCell = cell && cell.events && cell.events.length > 0;
+      if (!cell || (!hasEventsCell && !hasAssignmentsCell)) {
         // Día libre — clickeable para abrir picker de asignación rápida.
         // Filosofía Apple: el "+" hace obvio que esto es accionable.
         tableHTML += '<td onclick="_planOpenFreeSlotPicker(\'' + row.techId + '\', \'' + iso + '\')" style="padding:8px;border-right:1px solid #f5f5f5;vertical-align:middle;cursor:pointer">'
@@ -11935,7 +12303,8 @@ async function renderBossPlan(body) {
       var pct = cell.pct;
       var col = _planLoadColor(pct);
       var barPct = Math.min(100, pct); // visual cap a 100%
-      var srvCount = cell.events.length;
+      // FASE 2.B: contar tanto scheduled_services como destinaciones.
+      var srvCount = (cell.events ? cell.events.length : 0) + (cell.assignments ? cell.assignments.length : 0);
       var loadH = Math.round(cell.loadMin / 60 * 10) / 10;
       var capH = Math.round(capMin / 60 * 10) / 10;
       var alertTag = '';
@@ -14595,6 +14964,23 @@ function waRoleMeta(key) {
   }
   return { key: key, label: key, hint: '' };
 }
+
+// waServiceLabel(classification) → "Reparaciones generales" en vez de "REPAR_GENERALES".
+// Usa SERVICES_INGRESO como source-of-truth (mismo catálogo del catastro).
+function waServiceLabel(classification) {
+  if (!classification) return 's/clasificación';
+  if (typeof SERVICES_INGRESO !== 'undefined' && Array.isArray(SERVICES_INGRESO)) {
+    for (var i = 0; i < SERVICES_INGRESO.length; i++) {
+      if (SERVICES_INGRESO[i].key === classification) {
+        // Recortar "(indicar)" o "(selección múltiple)" para que quepa en tarjetas.
+        return SERVICES_INGRESO[i].label.replace(/\s*\([^)]+\)\s*$/, '').trim();
+      }
+    }
+  }
+  // Fallback: capitalizar y quitar guiones bajos.
+  return String(classification).toLowerCase().replace(/_/g, ' ').replace(/\b\w/g, function(c){ return c.toUpperCase(); });
+}
+window.waServiceLabel = waServiceLabel;
 
 // ─── Helpers de datos ────────────────────────────────────────────
 
