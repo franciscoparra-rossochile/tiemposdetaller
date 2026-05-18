@@ -11505,6 +11505,30 @@ async function _waOpenAssignmentDetail(assignmentId) {
 
   var canCancel = (a.status === 'planned' || a.status === 'paused');
 
+  // FASE 2.C: indicador y toggle de "espera repuesto" en la OT.
+  // Cualquier usuario operativo puede marcarlo (no requiere ser responsable),
+  // porque cuando llega/sale un repuesto cualquier técnico del equipo lo sabe.
+  var isBlocked = !!(woMeta && woMeta.blocked_waiting_parts);
+  var blockedSection = '';
+  if (woMeta && woMeta.id) {
+    blockedSection = '<div style="margin-top:10px;padding:10px;border-radius:3px;'
+      + (isBlocked
+          ? 'background:#fff8e6;border-left:3px solid var(--gold3)'
+          : 'background:#fafafa;border-left:3px solid #ddd')
+      + '">'
+      + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px">'
+      +   '<div style="font-size:12px;line-height:1.4">'
+      +     (isBlocked
+          ? '<b style="color:var(--gold3)">🔧 Esta OT está esperando repuesto</b>'
+          : '<b style="color:#666">¿Esta OT está esperando un repuesto?</b>')
+      +   '</div>'
+      +   '<button class="btn btn-out" onclick="_waToggleBlockedParts(\'' + woMeta.id + '\', ' + (!isBlocked) + ', \'' + a.id + '\')" style="flex-shrink:0;font-size:11px;padding:6px 10px">'
+      +     (isBlocked ? 'Marcar como recibido' : 'Marcar en espera')
+      +   '</button>'
+      + '</div>'
+      + '</div>';
+  }
+
   var detailHTML = '<div class="modal-t">Destinación</div>'
     + '<div class="modal-s">' + escapeHtml(objLabel) + ' · ' + timeLbl + '</div>'
     + '<div style="margin-top:10px;padding:10px;background:#fafafa;border-left:3px solid ' + objMeta.color + ';border-radius:3px;font-size:12px;line-height:1.7">'
@@ -11517,6 +11541,7 @@ async function _waOpenAssignmentDetail(assignmentId) {
     +   (a.support_description ? '<div><b>Descripción:</b> ' + escapeHtml(a.support_description) + '</div>' : '')
     +   (a.notes ? '<div><b>Notas:</b> ' + escapeHtml(a.notes) + '</div>' : '')
     + '</div>'
+    + blockedSection
     + '<div style="margin-top:8px;font-size:10px;color:var(--wh3);font-style:italic">Las acciones de iniciar/pausar/completar estarán disponibles en Fase 3 (integración con cronómetro).</div>'
     + '<div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">'
     +   (canCancel
@@ -11572,6 +11597,42 @@ async function _waCancelAssignment(assignmentId) {
   }
 }
 window._waCancelAssignment = _waCancelAssignment;
+
+// Marcar/desmarcar una OT como "esperando repuesto".
+// Cualquier usuario operativo puede tocar esto; no requiere ser Responsable.
+async function _waToggleBlockedParts(workOrderId, newBlockedState, currentAssignmentId) {
+  if (!workOrderId) return;
+  var actionLbl = newBlockedState ? 'marcar como esperando repuesto' : 'marcar como repuesto recibido';
+  if (!confirm('¿Confirmar ' + actionLbl + ' esta OT?')) return;
+
+  try {
+    var payload = {
+      blocked_waiting_parts: newBlockedState,
+      blocked_at: newBlockedState ? new Date().toISOString() : null,
+      blocked_by: newBlockedState ? (CU ? CU.id : null) : null
+    };
+    var r = await sb.from('work_orders').update(payload).eq('id', workOrderId);
+    if (r.error) {
+      showGlobalError('No se pudo actualizar: ' + r.error.message, 5000);
+      return;
+    }
+    logR('WA_TOGGLE_BLOCKED_OK', { otId: workOrderId, blocked: newBlockedState });
+    showGlobalError(newBlockedState ? '🔧 OT marcada en espera de repuesto' : '✓ OT marcada como recibido', 3000);
+    // Recargar el modal de detalle para reflejar el cambio.
+    closeModal('m-wa-detail');
+    if (currentAssignmentId) {
+      setTimeout(function(){ _waOpenAssignmentDetail(currentAssignmentId); }, 100);
+    }
+    // Refrescar planner si está visible.
+    if (typeof renderBossPlan === 'function' && typeof curBossTab !== 'undefined' && curBossTab === 'b-plan') {
+      var bodyEl = document.getElementById('boss-body');
+      if (bodyEl) { try { renderBossPlan(bodyEl); } catch(_){} }
+    }
+  } catch(e) {
+    showGlobalError('Error: ' + e.message, 5000);
+  }
+}
+window._waToggleBlockedParts = _waToggleBlockedParts;
 
 // ═══════════════════════════════════════════════════════════════
 // _planOpenFreeSlotPicker — modal de asignación rápida a slot libre
@@ -12304,12 +12365,32 @@ async function renderBossPlan(body) {
       var col = _planLoadColor(pct);
       var barPct = Math.min(100, pct); // visual cap a 100%
       // FASE 2.B: contar tanto scheduled_services como destinaciones.
-      var srvCount = (cell.events ? cell.events.length : 0) + (cell.assignments ? cell.assignments.length : 0);
+      var evCount = cell.events ? cell.events.length : 0;
+      var waCount = cell.assignments ? cell.assignments.length : 0;
+      var srvCount = evCount + waCount;
+      // Etiqueta inteligente: si hay solo destinaciones, decir "destinación".
+      // Si hay solo eventos, "servicio". Si hay mezcla, "ítem".
+      var itemNoun;
+      if (evCount > 0 && waCount === 0) itemNoun = 'servicio';
+      else if (waCount > 0 && evCount === 0) itemNoun = 'destinación';
+      else itemNoun = 'ítem';
+      var itemNounPlural = itemNoun === 'destinación' ? 'destinaciones' : itemNoun + 's';
       var loadH = Math.round(cell.loadMin / 60 * 10) / 10;
       var capH = Math.round(capMin / 60 * 10) / 10;
       var alertTag = '';
       if (pct > 100) alertTag = '<span style="font-size:8px;font-weight:800;color:#fff;background:var(--red);padding:1px 4px;border-radius:2px;margin-left:4px;text-transform:uppercase">⚠ Sobrecarga</span>';
       else if (pct > 95) alertTag = '<span style="font-size:8px;font-weight:800;color:#fff;background:#ff9800;padding:1px 4px;border-radius:2px;margin-left:4px;text-transform:uppercase">Al tope</span>';
+
+      // FASE 2.C: badge "Espera repuesto" si alguna destinación apunta a OT bloqueada.
+      var blockedBadge = '';
+      if (cell.assignments && cell.assignments.length) {
+        var hasBlocked = cell.assignments.some(function(a){
+          return a._woMeta && a._woMeta.blocked_waiting_parts === true;
+        });
+        if (hasBlocked) {
+          blockedBadge = '<div style="font-size:8px;font-weight:700;color:var(--gold3);background:#fff8e6;padding:2px 5px;border-radius:2px;margin-top:3px;text-align:center;text-transform:uppercase;letter-spacing:.03em;border:1px solid #f0d878">🔧 Espera repuesto</div>';
+        }
+      }
 
       tableHTML += '<td onclick="_planOpenCellDetail(\'' + row.techId + '\', \'' + iso + '\')" style="padding:8px;cursor:pointer;border-right:1px solid #f5f5f5;vertical-align:middle">'
         + '<div style="background:' + col.bg + ';border:1px solid ' + col.border + ';border-radius:4px;padding:8px">'
@@ -12321,9 +12402,10 @@ async function renderBossPlan(body) {
         +     '<div style="font-size:9px;font-weight:700;color:' + col.label + '">' + pct + '%</div>'
         +   '</div>'
         +   '<div style="font-size:9px;color:' + col.label + ';margin-top:2px;font-weight:600">'
-        +     srvCount + ' servicio' + (srvCount !== 1 ? 's' : '')
+        +     srvCount + ' ' + (srvCount !== 1 ? itemNounPlural : itemNoun)
         +     alertTag
         +   '</div>'
+        +   blockedBadge
         + '</div>'
         + '</td>';
     });
