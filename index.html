@@ -10744,6 +10744,55 @@ function _planCapacityMinForDate(date) {
   return total;
 }
 
+// ═══════════════════════════════════════════════════════════════
+// FRENTE 9.6 (2026-05-18): MÉTRICA EN TIEMPO REAL
+// ═══════════════════════════════════════════════════════════════
+// El % de carga clásico es ex-ante: compara carga total del día vs jornada
+// total. A media jornada eso miente: si Jose tiene 10.5h destinadas y ya
+// trabajó 7h productivas a las 16:00, le quedan 3.5h en 3h restantes — eso
+// es 117% real, no muy distinto del 116% planificado. Pero si Cristóbal
+// tiene 1.9h destinadas y aún no toca nada a las 16:00, va a quedar 1.9h
+// en 3h → 63% real, no el 21% verde que muestra el grid.
+// Estos helpers calculan capacidad y minutos transcurridos LABORALES (no
+// reloj). Si NOW cae en almuerzo, no se cuentan esos minutos como elapsed.
+
+// _planMinutesElapsedInWorkDay(date) → minutos LABORALES transcurridos del
+// día calendario hasta NOW. Si date no es hoy: 0 si futuro, capacidad
+// completa si pasado.
+function _planMinutesElapsedInWorkDay(date) {
+  var now = new Date();
+  var dayStart = _localStartOfDay(date);
+  var dayEnd = new Date(dayStart.getTime() + 24*60*60*1000);
+  if (now.getTime() >= dayEnd.getTime()) return _planCapacityMinForDate(date);
+  if (now.getTime() < dayStart.getTime()) return 0;
+  var intervals = getWorkingIntervals(date);
+  var elapsed = 0;
+  var nowMs = now.getTime();
+  intervals.forEach(function(interval){
+    var start = interval[0], end = interval[1];
+    if (start >= nowMs) return; // bloque aún no empieza
+    var effectiveEnd = Math.min(end, nowMs);
+    elapsed += Math.round((effectiveEnd - start) / 60000);
+  });
+  return elapsed;
+}
+
+// _planRemainingCapacityMin(date) → minutos laborales que aún quedan en
+// el día desde NOW.
+function _planRemainingCapacityMin(date) {
+  var totalCap = _planCapacityMinForDate(date);
+  var elapsed = _planMinutesElapsedInWorkDay(date);
+  return Math.max(0, totalCap - elapsed);
+}
+
+// _planIsToday(date) → true si date corresponde al día calendario actual
+function _planIsToday(date) {
+  var now = new Date();
+  return date.getFullYear() === now.getFullYear()
+      && date.getMonth() === now.getMonth()
+      && date.getDate() === now.getDate();
+}
+
 // _planServiceEstimatedMin(event, liveSession, history) → minutos totales
 // estimados del servicio (usado en el modal de detalle como "~Xh"). Es un
 // número ÚNICO independiente del día, útil para mostrar la "magnitud" del
@@ -10799,10 +10848,31 @@ function _planServiceEstimatedMin(event, liveSession, historyEntry) {
 //
 // Retorna: {dayISO → minutes}. Días sin carga no aparecen.
 function _planServiceLoadByDay(event, liveSession, historyEntry, rangeDays) {
+  // FRENTE 9.6 (2026-05-18): este wrapper mantiene compatibilidad con
+  // consumidores existentes (dedupe anti-doble-conteo de paso 5.5) que
+  // esperan {dayISO → minutos totales}. Internamente delega al detailed
+  // que separa productivo de pendiente, requerido para el cálculo de
+  // % tiempo real en celdas de hoy.
+  var detailed = _planServiceLoadByDayDetailed(event, liveSession, historyEntry, rangeDays);
+  var byDay = {};
+  Object.keys(detailed).forEach(function(k){
+    byDay[k] = detailed[k].productive + detailed[k].pending;
+  });
+  return byDay;
+}
+
+// _planServiceLoadByDayDetailed → versión rica que retorna por día:
+//   {productive: minutos ya trabajados, pending: minutos reservados pendientes}
+// - Caso A (history cerrado): todo es productive (ya se hizo)
+// - Caso B (sesión activa o pausada): prorrateado al día = productive,
+//   y la reserva del slot pendiente (si está agendado para hoy) = pending
+// - Caso C (no iniciado): todo es pending (planificado)
+function _planServiceLoadByDayDetailed(event, liveSession, historyEntry, rangeDays) {
   var byDay = {};
   if (!rangeDays || !rangeDays.length) return byDay;
+  function _ensure(k) { if (!byDay[k]) byDay[k] = {productive: 0, pending: 0}; return byDay[k]; }
 
-  // --- Caso A: history (servicio cerrado) ---
+  // --- Caso A: history (servicio cerrado) → todo productive ---
   if (historyEntry && historyEntry.seconds && historyEntry.seconds > 0) {
     var hStarted = historyEntry.started_at;
     var hEnded   = historyEntry.ended_at;
@@ -10822,18 +10892,17 @@ function _planServiceLoadByDay(event, liveSession, historyEntry, rangeDays) {
         try {
           var pr = proRateRowInRange(rowH, dayStart, dayEnd);
           if (pr && pr.productiveSec > 0) {
-            byDay[d.toISOString()] = (byDay[d.toISOString()] || 0) + Math.round(pr.productiveSec / 60);
+            _ensure(d.toISOString()).productive += Math.round(pr.productiveSec / 60);
           }
         } catch(_){}
       });
       return byDay;
     }
-    // Fallback minimal: si no logramos prorratear, asignar al día de cierre.
     var fbDate = hEnded ? new Date(hEnded) : null;
     if (fbDate) {
       var fbDayStart = new Date(fbDate.getFullYear(), fbDate.getMonth(), fbDate.getDate(), 0,0,0,0);
       var fbMatch = rangeDays.find(function(d){ return _planSameDay(d, fbDayStart); });
-      if (fbMatch) byDay[fbMatch.toISOString()] = Math.round(historyEntry.seconds / 60);
+      if (fbMatch) _ensure(fbMatch.toISOString()).productive += Math.round(historyEntry.seconds / 60);
     }
     return byDay;
   }
@@ -10861,25 +10930,13 @@ function _planServiceLoadByDay(event, liveSession, historyEntry, rangeDays) {
           var pr = proRateRowInRange(rowL, dayStart, dayEnd);
           if (pr && pr.productiveSec > 0) {
             var minDay = Math.round(pr.productiveSec / 60);
-            byDay[d.toISOString()] = (byDay[d.toISOString()] || 0) + minDay;
+            _ensure(d.toISOString()).productive += minDay;
             productiveMinTotal += minDay;
           }
         } catch(_){}
       });
-      // Reservar slot pendiente SOLO si:
-      //   1. El servicio está RUNNING o PAUSADO (no completado ni cancelado).
-      //   2. El servicio fue agendado para HOY (scheduled_at == hoy).
-      //   3. Aún hay minutos por consumir hasta goal_minutes.
-      // Esta restricción evita inflar la carga de hoy cuando un servicio
-      // arrastra desde días anteriores: para esos, el día actual solo
-      // debe reflejar el tiempo realmente trabajado hoy.
-      //
-      // FIX 2026-05-18 (FRENTE 9.5): incluir PAUSED en la reserva. Antes la
-      // condición era solo 'running', lo que producía "falso verde" en el
-      // semáforo: un técnico con 12 servicios pausados del día se veía como
-      // 8% libre y el COO le asignaba más trabajo. Un servicio agendado para
-      // hoy que está pausado sigue siendo carga reservada del día — solo se
-      // excluye si arrastra de un día anterior (no isScheduledToday).
+      // Reserva del slot pendiente: solo si está running/paused, agendado
+      // para hoy, y aún hay minutos por consumir hasta goal_minutes.
       if ((liveSession.status === 'running' || liveSession.status === 'paused')
           && event.goal_minutes && event.scheduled_at) {
         var schDate = new Date(event.scheduled_at);
@@ -10891,7 +10948,7 @@ function _planServiceLoadByDay(event, liveSession, historyEntry, rangeDays) {
           if (pendingMin > 0) {
             var todayKey = null;
             rangeDays.forEach(function(d){ if (_planSameDay(d, nowDateB)) todayKey = d.toISOString(); });
-            if (todayKey) byDay[todayKey] = (byDay[todayKey] || 0) + pendingMin;
+            if (todayKey) _ensure(todayKey).pending += pendingMin;
           }
         }
       }
@@ -10899,12 +10956,12 @@ function _planServiceLoadByDay(event, liveSession, historyEntry, rangeDays) {
     }
   }
 
-  // --- Caso C: servicio pendiente (no tocado): goal en día agendado ---
+  // --- Caso C: servicio pendiente (no tocado) → todo pending ---
   if (event.scheduled_at) {
     var dt = new Date(event.scheduled_at);
     var dayStartC = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate(), 0,0,0,0);
     var matchC = rangeDays.find(function(d){ return _planSameDay(d, dayStartC); });
-    if (matchC) byDay[matchC.toISOString()] = event.goal_minutes || 120;
+    if (matchC) _ensure(matchC.toISOString()).pending += (event.goal_minutes || 120);
   }
   return byDay;
 }
@@ -11107,7 +11164,7 @@ function _planOpenCellDetail(techId, dateISO) {
     + (isUnassigned
         ? '<button class="btn btn-out" onclick="closeModal(\'m-plan-cell\')" style="margin-top:12px;width:100%">Cerrar</button>'
         : '<div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">'
-        +   '<button class="btn btn-red" onclick="closeModal(\'m-plan-cell\');openNewAssignmentModal({techId:\'' + techId + '\', dateISO:\'' + dateISO + '\'})" style="flex:1 1 100%;min-width:200px">+ Nueva destinación</button>'
+        +   '<button class="btn btn-red" onclick="_planAssignClickGuard(\'' + techId + '\', \'' + dateISO + '\')" style="flex:1 1 100%;min-width:200px">+ Nueva destinación</button>'
         +   '<button class="btn btn-out" onclick="closeModal(\'m-plan-cell\');_planNewServiceFromSlot(\'' + techId + '\', \'' + dateISO + '\')" style="flex:1">+ Agendar (calendario)</button>'
         +   '<button class="btn btn-out" onclick="closeModal(\'m-plan-cell\')" style="flex:1">Cerrar</button>'
         + '</div>'
@@ -11133,6 +11190,28 @@ function _planOpenCellDetail(techId, dateISO) {
   openModal('m-plan-cell');
 }
 window._planOpenCellDetail = _planOpenCellDetail;
+
+// _planAssignClickGuard(techId, dateISO) → guard antes de abrir el modal de
+// nueva destinación. FRENTE 9.6 (2026-05-18): si el técnico ya está
+// sobrecargado (pct > 100), pedir confirmación explícita. Evita que el COO
+// siga cargando al ya-saturado sin darse cuenta.
+function _planAssignClickGuard(techId, dateISO) {
+  var key = techId + '|' + dateISO;
+  var cell = window._planCache && window._planCache[key];
+  var pct = (cell && cell.pct) || 0;
+  var techName = (cell && cell.techName) || 'este técnico';
+  closeModal('m-plan-cell');
+  if (pct > 100) {
+    var msg = '⚠ ' + techName + ' ya está en ' + pct + '% de carga (sobrecarga).\n\n'
+      + 'Asignar otra destinación lo empeora. Considera primero:\n'
+      + '  • Reasignar uno de sus servicios a otro técnico con capacidad\n'
+      + '  • Mover la nueva destinación a un día con espacio\n\n'
+      + '¿Asignar de todos modos?';
+    if (!confirm(msg)) return;
+  }
+  openNewAssignmentModal({techId: techId, dateISO: dateISO});
+}
+window._planAssignClickGuard = _planAssignClickGuard;
 
 // ═══════════════════════════════════════════════════════════════
 // SMART PLANNER v2 — Lógica del modal "Nueva destinación" (FASE 2.A)
@@ -12042,6 +12121,79 @@ async function renderBossPlan(body) {
                    : 'var(--wh3)';
   });
 
+  // ═══════════════════════════════════════════════════════════════
+  // 4.5) COALESCER TÉCNICOS HUÉRFANOS AL CANÓNICO
+  // ═══════════════════════════════════════════════════════════════
+  // FIX 2026-05-18 (FRENTE 9.5b): En producción se detectaron events con
+  // technician_id divergente del ID actual del mismo técnico. Caso real:
+  // Oscar Bueno aparecía como DOS filas en el grid — una con su ID
+  // canónico (en getAssignableTechs, con avatar foto) y otra con un ID
+  // huérfano (no asignable, iniciales como fallback). Los dos events
+  // tenían el MISMO plate (HRXX69) y MISMO service (Diagnostico).
+  //
+  // Causa raíz probable (NO fixeable desde el frontend):
+  //   - Un user fue dado de baja/cambió de rol y otro fue creado con el
+  //     mismo nombre, dejando scheduled_services con technician_id viejo
+  //   - O hay dos filas en `users` con el mismo nombre (data dup)
+  //   - O un reagendamiento cambió tech_id sin cancelar el anterior
+  //
+  // Solución frontend (segura, NO modifica BD):
+  // Si event.technician_id NO está entre los canónicos PERO event.technician_name
+  // matchea exactamente con un único canónico, redirigir tech_id al canónico
+  // in-memory. Esto:
+  //   1) Colapsa filas huérfanas en el grid (Oscar deja de duplicarse)
+  //   2) Permite que el dedupe (paso 5) agrupe los duplicados de la misma OT
+  //   3) Habilita avatar correcto en _planOpenCellDetail
+  //
+  // Salvaguarda contra homónimos reales: si DOS canónicos tienen el mismo
+  // nombre exacto, NO se hace coalescing (ambos quedan separados).
+  //
+  // Cleanup de BD pendiente: identificar y limpiar los technician_id
+  // huérfanos en scheduled_services con UPDATE SQL — tarea de backend.
+  var assignablesForRows = [];
+  try {
+    assignablesForRows = (await getAssignableTechs()) || [];
+  } catch(_) {}
+  var canonicalIds = {};      // id → true (set de IDs canónicos)
+  var nameToCanonical = {};   // nombre_norm → canonical_id (solo si es único)
+  var nameSeenCount = {};     // nombre_norm → cuántos canónicos lo comparten
+  function _normalizeName(n) {
+    return String(n || '').trim().toUpperCase().replace(/\s+/g, ' ');
+  }
+  assignablesForRows.forEach(function(u){
+    canonicalIds[u.id] = true;
+    var nn = _normalizeName(u.name);
+    if (!nn) return;
+    nameSeenCount[nn] = (nameSeenCount[nn] || 0) + 1;
+    if (nameSeenCount[nn] === 1) nameToCanonical[nn] = u.id;
+  });
+  // Si un nombre se repite en canónicos (homónimos reales), removerlo del
+  // mapping — no podemos discriminar a ciegas.
+  Object.keys(nameSeenCount).forEach(function(nn){
+    if (nameSeenCount[nn] > 1) delete nameToCanonical[nn];
+  });
+
+  var coalescedEvents = 0;
+  events.forEach(function(e){
+    if (!e.technician_id) return;
+    if (canonicalIds[e.technician_id]) return; // ya es canónico
+    var nn = _normalizeName(e.technician_name);
+    var canonicalId = nameToCanonical[nn];
+    if (canonicalId) {
+      e._origTechnicianId = e.technician_id;  // auditoría
+      e.technician_id = canonicalId;
+      coalescedEvents++;
+    }
+  });
+  if (coalescedEvents > 0) {
+    try {
+      logR('PLAN_COALESCE_ORPHAN_TECH_SCHEDULED', {
+        count: coalescedEvents,
+        msg: 'In-memory normalization; BD has divergent technician_ids'
+      }, 'warn');
+    } catch(_){}
+  }
+
   // 5) Agrupar eventos por (técnico, día) — DISTRIBUCIÓN POR DÍA REAL
   // FRENTE 9.3 (2026-05-14): antes la carga se imputaba al día de scheduled_at,
   // así un servicio agendado lunes que sigue EN CURSO hoy aparecía cargado en
@@ -12050,51 +12202,73 @@ async function renderBossPlan(body) {
   // Servicios pendientes (no iniciados) siguen cayendo en su día agendado.
   // _planCache permite que _planOpenCellDetail acceda al detalle por celda.
   //
-  // FIX 2026-05-18 (FRENTE 9.5): DEDUPLICACIÓN POR OT.
+  // FIX 2026-05-18 (FRENTE 9.5): DEDUPLICACIÓN POR OT — con fallback.
   // Síntoma: Jack Medina con 12 scheduled_services pero solo ~5 OTs reales.
   // El reagendamiento por el calendario crea nuevos scheduled_services sin
   // cancelar los anteriores → la misma OT/técnico/día aparece N veces y
   // cada copia imputaba goal_minutes a la carga (3× inflación para una
   // Ford Ranger con 3 entradas idénticas).
-  // Solución: agrupar events por (work_order_id, technician_id, día_local
-  // de scheduled_at) y elegir un "ganador" (el más reciente por
-  // scheduled_at). Solo el ganador imputa carga; los duplicados se marcan
-  // _isDupOfWO=true y siguen apareciendo en cache[key].events para que el
-  // modal pueda mostrarlos como evidencia del problema de datos.
-  // Eventos sin work_order_id no se deduplican (no hay key estable).
+  //
+  // Iteración 2: la mayoría de scheduled_services legacy NO tienen
+  // work_order_id poblado (~74% en producción). Agrupar solo por
+  // work_order_id deja 0 duplicados detectados en celdas reales. Por eso
+  // usamos una key compuesta con fallback:
+  //   - Si event.work_order_id existe → key = 'wo:' + woId + '|' + tid + '|' + dayKey
+  //   - Si NO existe                  → key = 'ps:' + plate + '|' + service + '|' + tid + '|' + dayKey
+  // La fallback agrupa "RLKX91 + MANTENIMIENTO COMPLETO + Jack + lunes" en
+  // un solo grupo, pero NO mete a "SKX556 LAVADO" con "SKX556 DIAGNOSTICO"
+  // (distinto service) en el mismo grupo.
+  //
+  // El "ganador" del grupo es el de scheduled_at más reciente (asumimos
+  // que el último reagendamiento es el válido). Los perdedores se marcan
+  // _isDupOfWO=true → no imputan carga pero siguen visibles en el modal.
   var dedupeWinnerById = {};  // event.id → true si es ganador
   (function dedupeScheduled(){
-    var winners = {};  // woId|tid|dayKey → {event, ts}
-    var orphanIds = []; // sin work_order_id → siempre ganadores
+    var winners = {};  // groupKey → {event, ts}
+    var noGroupIds = []; // sin info suficiente para agrupar → siempre ganadores
     events.forEach(function(e){
       if (!e.scheduled_at) return;
-      if (!e.work_order_id) { orphanIds.push(e.id); return; }
       var tid = e.technician_id || '__none__';
-      // dayKey en hora local (no UTC) para evitar cruce de día por zona horaria
       var dt = new Date(e.scheduled_at);
+      // dayKey en hora local (no UTC) para evitar cruce de día por zona horaria
       var dayKey = dt.getFullYear() + '-' + (dt.getMonth()+1) + '-' + dt.getDate();
       var ts = dt.getTime();
-      var key = e.work_order_id + '|' + tid + '|' + dayKey;
+      var key = null;
+      if (e.work_order_id) {
+        key = 'wo:' + e.work_order_id + '|' + tid + '|' + dayKey;
+      } else if (e.plate && e.service) {
+        // Normalizar plate y service para evitar variaciones cosméticas
+        var plateNorm = String(e.plate).toUpperCase().replace(/[^A-Z0-9]/g, '');
+        var serviceNorm = String(e.service).toUpperCase().trim();
+        key = 'ps:' + plateNorm + '|' + serviceNorm + '|' + tid + '|' + dayKey;
+      } else {
+        // Sin plate ni service ni WO: no podemos agrupar, siempre cuenta.
+        noGroupIds.push(e.id);
+        return;
+      }
       if (!winners[key] || ts > winners[key].ts) {
         winners[key] = { event: e, ts: ts };
       }
     });
     Object.keys(winners).forEach(function(k){ dedupeWinnerById[winners[k].event.id] = true; });
-    orphanIds.forEach(function(id){ dedupeWinnerById[id] = true; });
+    noGroupIds.forEach(function(id){ dedupeWinnerById[id] = true; });
   })();
   // Marcar duplicados (no-ganadores) para que el modal pueda distinguirlos.
+  // Aplica a cualquier event con scheduled_at que NO sea el ganador de su grupo.
   events.forEach(function(e){
-    if (e.id && !dedupeWinnerById[e.id] && e.work_order_id) e._isDupOfWO = true;
+    if (e.id && e.scheduled_at && !dedupeWinnerById[e.id]) e._isDupOfWO = true;
   });
 
   var cache = {};
   events.forEach(function(e){
     if (!e.scheduled_at) return;
     var tid = e.technician_id || '__none__';
-    var loadByDay = _planServiceLoadByDay(e, e._liveSess, e._histRow, rangeDays);
+    // FRENTE 9.6: usar detailed para separar productive vs pending por día
+    var loadByDay = _planServiceLoadByDayDetailed(e, e._liveSess, e._histRow, rangeDays);
     // Para cada día con carga, agregar a la celda correspondiente
     Object.keys(loadByDay).forEach(function(dayISO){
-      var minutes = loadByDay[dayISO];
+      var entry = loadByDay[dayISO];
+      var minutes = (entry.productive || 0) + (entry.pending || 0);
       if (!minutes || minutes <= 0) return;
       var dayMatch = rangeDays.find(function(d){ return d.toISOString() === dayISO; });
       if (!dayMatch) return;
@@ -12106,6 +12280,9 @@ async function renderBossPlan(body) {
           date: dayMatch,
           events: [],
           loadMin: 0,
+          // FRENTE 9.6: descomposición para % tiempo real
+          productiveMin: 0,
+          pendingMin: 0,
           capacityMin: _planCapacityMinForDate(dayMatch),
           pct: 0
         };
@@ -12119,7 +12296,9 @@ async function renderBossPlan(body) {
       // duplicados de la misma OT no suman al loadMin para evitar 3×
       // inflación en celdas con scheduled_services huérfanos.
       if (!e._isDupOfWO) {
-        cache[key].loadMin += minutes;
+        cache[key].productiveMin += (entry.productive || 0);
+        cache[key].pendingMin    += (entry.pending || 0);
+        cache[key].loadMin       += minutes;
       }
     });
   });
@@ -12213,6 +12392,9 @@ async function renderBossPlan(body) {
           date: dayMatch,
           events: [],
           loadMin: 0,
+          // FRENTE 9.6: descomposición para % tiempo real
+          productiveMin: 0,
+          pendingMin: 0,
           capacityMin: _planCapacityMinForDate(dayMatch),
           pct: 0
         };
@@ -12222,34 +12404,46 @@ async function renderBossPlan(body) {
       // Filtramos events que pertenezcan a OTs cubiertas.
       var c = cache[key];
       var keepEvents = [];
-      var deducted = 0;
+      var deductedProd = 0;
+      var deductedPend = 0;
       c.events.forEach(function(ev){
         // Un scheduled_service "pertenece" a una OT si su work_order_id coincide
         // con alguna OT que tiene destinaciones para este técnico/día.
         var evWO = ev.work_order_id;
         if (evWO && coveredOTs.has(evWO)) {
-          // Restar minutos imputados de este evento en este día.
-          var loadByDay = _planServiceLoadByDay(ev, ev._liveSess, ev._histRow, rangeDays);
-          var mins = loadByDay[dayISO] || 0;
-          deducted += mins;
+          // Restar minutos imputados de este evento en este día (productivo y pendiente por separado).
+          var det = _planServiceLoadByDayDetailed(ev, ev._liveSess, ev._histRow, rangeDays);
+          var d = det[dayISO] || {productive:0, pending:0};
+          deductedProd += d.productive || 0;
+          deductedPend += d.pending || 0;
         } else {
           keepEvents.push(ev);
         }
       });
-      if (deducted > 0) {
+      if (deductedProd > 0 || deductedPend > 0) {
         c.events = keepEvents;
-        c.loadMin = Math.max(0, c.loadMin - deducted);
+        c.productiveMin = Math.max(0, c.productiveMin - deductedProd);
+        c.pendingMin    = Math.max(0, c.pendingMin    - deductedPend);
+        c.loadMin       = Math.max(0, c.loadMin       - deductedProd - deductedPend);
       }
 
-      // Sumar destinaciones del día. Solo cuentan las que NO están cancelled o completed
-      // si quieres carga "futura"; pero como el usuario quiere ver lo PLANIFICADO del día,
-      // sumamos planned + in_progress + paused. Las completed también se cuentan (ya se hicieron).
-      var assignmentsMin = 0;
+      // Sumar destinaciones del día. FRENTE 9.6: distinguir completed (productive)
+      // de planned/in_progress/paused (pending) para % tiempo real correcto.
+      var assignmentsProd = 0;
+      var assignmentsPend = 0;
       waList.forEach(function(a){
-        assignmentsMin += (a.planned_minutes || 0);
+        var mins = a.planned_minutes || 0;
+        if (a.status === 'completed') {
+          assignmentsProd += mins;
+        } else {
+          assignmentsPend += mins;
+        }
         // Adjuntar metadatos de la OT para uso en _planOpenCellDetail.
         a._woMeta = woMetaById[a.work_order_id] || null;
       });
+      var assignmentsMin = assignmentsProd + assignmentsPend;
+      c.productiveMin += assignmentsProd;
+      c.pendingMin    += assignmentsPend;
       c.loadMin += assignmentsMin;
       c.assignments = waList;
 
@@ -12281,12 +12475,11 @@ async function renderBossPlan(body) {
   // mostramos para no romper la representación del trabajo agendado.
   var techIdsInRange = {};
   // 6a) Sembrar con todos los técnicos asignables (aunque tengan 0 eventos)
-  try {
-    var assignables = await getAssignableTechs();
-    (assignables || []).forEach(function(u) {
-      techIdsInRange[u.id] = u.name;
-    });
-  } catch(_){}
+  // FIX 2026-05-18 (FRENTE 9.5b): reutilizar assignablesForRows ya cargado
+  // en paso 4.5 para evitar fetch redundante a la tabla users.
+  (assignablesForRows || []).forEach(function(u) {
+    techIdsInRange[u.id] = u.name;
+  });
   // 6b) Agregar técnicos huérfanos: los que aparecen en eventos pero no
   // están en la lista canónica (ex-empleados, roles cambiados). Plus el
   // sentinel "__none__" para eventos sin asignar.
@@ -12476,10 +12669,50 @@ async function renderBossPlan(body) {
         }
       }
 
+      // ─── FRENTE 9.6: MÉTRICA TIEMPO REAL (solo en celdas de HOY) ───
+      // - Línea vertical "ahora" en la barra (posición = elapsed/capMin)
+      // - Pill secundario debajo del % planificado con % real-time:
+      //     pendiente / jornada restante
+      // Lecturas distintas que el COO necesita para reasignar dinámicamente.
+      var isTodayCell = _planIsToday(d);
+      var realTimeHTML = '';
+      var nowMarkerHTML = '';
+      if (isTodayCell) {
+        var remainingCap = _planRemainingCapacityMin(d);
+        var pendH = Math.round((cell.pendingMin || 0) / 60 * 10) / 10;
+        var remainH = Math.round(remainingCap / 60 * 10) / 10;
+        if (remainingCap > 0) {
+          var pctReal = Math.round((cell.pendingMin / remainingCap) * 100);
+          var rtCol = _planLoadColor(pctReal);
+          // Solo mostrar si hay pendiente real o si la jornada aún corre
+          realTimeHTML = '<div style="display:flex;justify-content:space-between;align-items:center;gap:4px;margin-top:3px;padding-top:3px;border-top:1px dashed rgba(0,0,0,.08)">'
+            +   '<div style="font-size:9px;color:' + col.label + ';font-family:var(--mono);opacity:.85"><b>Ahora:</b> ' + pendH + ' pend / ' + remainH + 'h rest</div>'
+            +   '<div style="font-size:9px;font-weight:800;color:' + rtCol.label + ';background:' + rtCol.bg + ';border:1px solid ' + rtCol.border + ';border-radius:2px;padding:0 4px">' + pctReal + '%</div>'
+            + '</div>';
+        } else if ((cell.pendingMin || 0) > 0) {
+          // Jornada terminó pero queda trabajo pendiente: alerta máxima.
+          realTimeHTML = '<div style="display:flex;justify-content:space-between;align-items:center;gap:4px;margin-top:3px;padding-top:3px;border-top:1px dashed rgba(0,0,0,.08)">'
+            +   '<div style="font-size:9px;color:var(--red);font-family:var(--mono)"><b>Ahora:</b> ' + pendH + 'h sin jornada</div>'
+            +   '<div style="font-size:9px;font-weight:800;color:#fff;background:var(--red);border-radius:2px;padding:0 4px">FUERA</div>'
+            + '</div>';
+        }
+        // Posición del marker de "ahora" en la barra (0..100%)
+        var totalCap = capMin;
+        var elapsed = _planMinutesElapsedInWorkDay(d);
+        if (totalCap > 0 && elapsed >= 0 && elapsed <= totalCap) {
+          var nowPosPct = Math.round((elapsed / totalCap) * 100);
+          // Línea vertical sutil. Se desborda un poco arriba/abajo (-2/+2) para mejor visibilidad.
+          nowMarkerHTML = '<div style="position:absolute;top:-2px;bottom:-2px;left:' + nowPosPct + '%;width:1px;background:#000;opacity:.55" title="Ahora"></div>'
+            // Pequeño triángulo encima para que se note
+            + '<div style="position:absolute;top:-5px;left:calc(' + nowPosPct + '% - 3px);width:0;height:0;border-left:3px solid transparent;border-right:3px solid transparent;border-top:4px solid #000;opacity:.55"></div>';
+        }
+      }
+
       tableHTML += '<td onclick="_planOpenCellDetail(\'' + row.techId + '\', \'' + iso + '\')" style="padding:8px;cursor:pointer;border-right:1px solid #f5f5f5;vertical-align:middle">'
         + '<div style="background:' + col.bg + ';border:1px solid ' + col.border + ';border-radius:4px;padding:8px">'
-        +   '<div style="height:8px;background:#fff;border-radius:2px;overflow:hidden;margin-bottom:6px">'
-        +     '<div style="height:100%;width:' + barPct + '%;background:' + col.border + ';transition:width 0.3s ease"></div>'
+        +   '<div style="height:8px;background:#fff;border-radius:2px;overflow:visible;margin-bottom:6px;position:relative">'
+        +     '<div style="height:100%;width:' + barPct + '%;background:' + col.border + ';transition:width 0.3s ease;border-radius:2px"></div>'
+        +     nowMarkerHTML
         +   '</div>'
         +   '<div style="display:flex;justify-content:space-between;align-items:center;gap:4px">'
         +     '<div style="font-size:11px;font-weight:800;color:' + col.label + ';font-family:var(--mono)">' + loadH + ' / ' + capH + 'h</div>'
@@ -12489,6 +12722,7 @@ async function renderBossPlan(body) {
         +     srvCount + ' ' + (srvCount !== 1 ? itemNounPlural : itemNoun)
         +     alertTag
         +   '</div>'
+        +   realTimeHTML
         +   blockedBadge
         + '</div>'
         + '</td>';
