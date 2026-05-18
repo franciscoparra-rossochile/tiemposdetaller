@@ -10867,13 +10867,21 @@ function _planServiceLoadByDay(event, liveSession, historyEntry, rangeDays) {
         } catch(_){}
       });
       // Reservar slot pendiente SOLO si:
-      //   1. El servicio está RUNNING (no pausado).
+      //   1. El servicio está RUNNING o PAUSADO (no completado ni cancelado).
       //   2. El servicio fue agendado para HOY (scheduled_at == hoy).
       //   3. Aún hay minutos por consumir hasta goal_minutes.
       // Esta restricción evita inflar la carga de hoy cuando un servicio
       // arrastra desde días anteriores: para esos, el día actual solo
       // debe reflejar el tiempo realmente trabajado hoy.
-      if (liveSession.status === 'running' && event.goal_minutes && event.scheduled_at) {
+      //
+      // FIX 2026-05-18 (FRENTE 9.5): incluir PAUSED en la reserva. Antes la
+      // condición era solo 'running', lo que producía "falso verde" en el
+      // semáforo: un técnico con 12 servicios pausados del día se veía como
+      // 8% libre y el COO le asignaba más trabajo. Un servicio agendado para
+      // hoy que está pausado sigue siendo carga reservada del día — solo se
+      // excluye si arrastra de un día anterior (no isScheduledToday).
+      if ((liveSession.status === 'running' || liveSession.status === 'paused')
+          && event.goal_minutes && event.scheduled_at) {
         var schDate = new Date(event.scheduled_at);
         var isScheduledToday = (schDate.getFullYear() === nowDateB.getFullYear()
           && schDate.getMonth() === nowDateB.getMonth()
@@ -11016,10 +11024,35 @@ function _planOpenCellDetail(techId, dateISO) {
   }
 
   // ─── HTML de scheduled_services existentes (legacy, solo si quedan tras dedupe) ───
+  //
+  // FIX 2026-05-18 (FRENTE 9.5): si hay duplicados de OT, mostrar contador
+  // "N agendamientos para M OTs reales" + warning, y marcar cada duplicado
+  // con badge "DUPLICADO · no suma carga". Esto hace VISIBLE el problema de
+  // datos (reagendamiento que crea nuevos scheduled_services sin cancelar
+  // los anteriores) en vez de esconderlo.
   var scheduledHTML = '';
   if (hasEvents) {
+    var uniqueWOs = {};
+    var dupCount = 0;
+    cellData.events.forEach(function(e){
+      var k = e.work_order_id || ('orphan:' + e.id);
+      uniqueWOs[k] = true;
+      if (e._isDupOfWO) dupCount++;
+    });
+    var uniqueWOCount = Object.keys(uniqueWOs).length;
+    var hdrSuffix = (dupCount > 0)
+      ? ' <span style="color:var(--red);font-weight:700">(' + cellData.events.length + ' agendamientos · ' + uniqueWOCount + ' OTs reales · ' + dupCount + ' duplicado' + (dupCount !== 1 ? 's' : '') + ')</span>'
+      : ' <span style="color:var(--wh3);font-weight:500">(' + cellData.events.length + ')</span>';
+    var dupWarning = (dupCount > 0)
+      ? '<div style="margin-bottom:8px;padding:6px 8px;background:#fff5f5;border-left:3px solid var(--red);border-radius:3px;font-size:10px;line-height:1.4;color:#5c0a0a">'
+        + '<b>⚠ ' + dupCount + ' agendamiento' + (dupCount !== 1 ? 's' : '') + ' duplicado' + (dupCount !== 1 ? 's' : '') + '</b> de OTs ya planificadas. '
+        + 'Probablemente vienen de reagendamientos previos que no se cancelaron. '
+        + 'No suman carga, pero conviene depurarlos desde el calendario.'
+        + '</div>'
+      : '';
     scheduledHTML = '<div style="margin-top:14px">'
-      + '<div style="font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.05em;color:var(--wh3);margin-bottom:6px;font-family:\'Rajdhani\',sans-serif">Agendados (calendario)</div>'
+      + '<div style="font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.05em;color:var(--wh3);margin-bottom:6px;font-family:\'Rajdhani\',sans-serif">Agendados (calendario)' + hdrSuffix + '</div>'
+      + dupWarning
       + '<div style="display:flex;flex-direction:column;gap:6px">'
       + cellData.events.map(function(e){
           var hh = new Date(e.scheduled_at).toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'});
@@ -11027,7 +11060,13 @@ function _planOpenCellDetail(techId, dateISO) {
           var stLabel = e._statusLabel || (e.status || 'pendiente').toUpperCase();
           var stColor = e._statusColor || 'var(--wh3)';
           var estMin = e._estimatedMin || (e.goal_minutes || 120);
-          return '<div onclick="closeModal(\'m-plan-cell\');openEditEvent(\'' + e.id + '\')" style="background:#fff;border:1px solid #eee;border-left:4px solid ' + stColor + ';border-radius:3px;padding:9px;cursor:pointer">'
+          var isDup = !!e._isDupOfWO;
+          var cardBg = isDup ? '#fafafa' : '#fff';
+          var cardOpacity = isDup ? '0.7' : '1';
+          var dupBadge = isDup
+            ? '<span style="font-size:9px;font-weight:700;color:var(--red);background:#fff;border:1px solid var(--red);padding:2px 6px;border-radius:2px;text-transform:uppercase;margin-right:6px">⚠ DUPLICADO</span>'
+            : '';
+          return '<div onclick="closeModal(\'m-plan-cell\');openEditEvent(\'' + e.id + '\')" style="background:' + cardBg + ';opacity:' + cardOpacity + ';border:1px solid #eee;border-left:4px solid ' + stColor + ';border-radius:3px;padding:9px;cursor:pointer">'
             + '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">'
             +   '<div style="flex:1;min-width:0">'
             +     '<div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;color:#111">' + escapeHtml(e.service || '?') + '</div>'
@@ -11038,7 +11077,8 @@ function _planOpenCellDetail(techId, dateISO) {
             +       '<span style="font-size:10px;color:#888">~' + Math.round(estMin/60*10)/10 + 'h</span>'
             +     '</div>'
             +   '</div>'
-            +   '<div style="text-align:right;flex-shrink:0">'
+            +   '<div style="text-align:right;flex-shrink:0;display:flex;flex-direction:column;align-items:flex-end;gap:4px">'
+            +     (isDup ? dupBadge : '')
             +     '<span style="font-size:9px;font-weight:700;color:#fff;background:' + stColor + ';padding:2px 6px;border-radius:2px;text-transform:uppercase">' + stLabel + '</span>'
             +   '</div>'
             + '</div>'
@@ -12009,6 +12049,44 @@ async function renderBossPlan(body) {
   // día calendario donde el técnico realmente trabajó (vía proRateRowInRange).
   // Servicios pendientes (no iniciados) siguen cayendo en su día agendado.
   // _planCache permite que _planOpenCellDetail acceda al detalle por celda.
+  //
+  // FIX 2026-05-18 (FRENTE 9.5): DEDUPLICACIÓN POR OT.
+  // Síntoma: Jack Medina con 12 scheduled_services pero solo ~5 OTs reales.
+  // El reagendamiento por el calendario crea nuevos scheduled_services sin
+  // cancelar los anteriores → la misma OT/técnico/día aparece N veces y
+  // cada copia imputaba goal_minutes a la carga (3× inflación para una
+  // Ford Ranger con 3 entradas idénticas).
+  // Solución: agrupar events por (work_order_id, technician_id, día_local
+  // de scheduled_at) y elegir un "ganador" (el más reciente por
+  // scheduled_at). Solo el ganador imputa carga; los duplicados se marcan
+  // _isDupOfWO=true y siguen apareciendo en cache[key].events para que el
+  // modal pueda mostrarlos como evidencia del problema de datos.
+  // Eventos sin work_order_id no se deduplican (no hay key estable).
+  var dedupeWinnerById = {};  // event.id → true si es ganador
+  (function dedupeScheduled(){
+    var winners = {};  // woId|tid|dayKey → {event, ts}
+    var orphanIds = []; // sin work_order_id → siempre ganadores
+    events.forEach(function(e){
+      if (!e.scheduled_at) return;
+      if (!e.work_order_id) { orphanIds.push(e.id); return; }
+      var tid = e.technician_id || '__none__';
+      // dayKey en hora local (no UTC) para evitar cruce de día por zona horaria
+      var dt = new Date(e.scheduled_at);
+      var dayKey = dt.getFullYear() + '-' + (dt.getMonth()+1) + '-' + dt.getDate();
+      var ts = dt.getTime();
+      var key = e.work_order_id + '|' + tid + '|' + dayKey;
+      if (!winners[key] || ts > winners[key].ts) {
+        winners[key] = { event: e, ts: ts };
+      }
+    });
+    Object.keys(winners).forEach(function(k){ dedupeWinnerById[winners[k].event.id] = true; });
+    orphanIds.forEach(function(id){ dedupeWinnerById[id] = true; });
+  })();
+  // Marcar duplicados (no-ganadores) para que el modal pueda distinguirlos.
+  events.forEach(function(e){
+    if (e.id && !dedupeWinnerById[e.id] && e.work_order_id) e._isDupOfWO = true;
+  });
+
   var cache = {};
   events.forEach(function(e){
     if (!e.scheduled_at) return;
@@ -12036,7 +12114,13 @@ async function renderBossPlan(body) {
       if (!cache[key].events.some(function(ev){ return ev.id === e.id; })) {
         cache[key].events.push(e);
       }
-      cache[key].loadMin += minutes;
+      // FIX 2026-05-18: solo imputar carga si este event es el ganador del
+      // dedupe (la OT más recientemente reagendada para esta cell). Los
+      // duplicados de la misma OT no suman al loadMin para evitar 3×
+      // inflación en celdas con scheduled_services huérfanos.
+      if (!e._isDupOfWO) {
+        cache[key].loadMin += minutes;
+      }
     });
   });
   // Calcular %
