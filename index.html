@@ -12454,6 +12454,54 @@ async function renderBossPlan(body) {
     logR('PLAN_WA_INTEGRATION_ERR', { msg: eWA.message }, 'warn');
   }
 
+  // ═══════════════════════════════════════════════════════════════
+  // 5.6) CAP DEFENSIVO DE productiveMin POR CELDA
+  // ═══════════════════════════════════════════════════════════════
+  // FRENTE 9.6b (2026-05-18): la invariante "productiveMin ≤ minutos laborales
+  // del rango" se respeta a nivel de sesión individual (proRateRowInRange),
+  // pero el cache suma N sesiones por técnico/día. Cuando un técnico tiene N
+  // sesiones overlapping (caso real observado: Cristóbal con 6 EN PROCESO al
+  // mismo tiempo, Jack con 11 PAUSADAS), cada una se cap correctamente al
+  // techo individual pero la SUMA puede llegar a N × techo. Resultado:
+  // productiveMin "imposible" — Cristóbal aparece con 3.9h trabajadas a las
+  // 11:18 AM cuando solo han transcurrido 3h17m de jornada hábil.
+  //
+  // Causa raíz operacional (NO se arregla aquí): los técnicos no están
+  // pausando antes de cambiar de OT; el sistema permite N sesiones running
+  // simultáneas. Mientras eso se resuelve operacionalmente, el cap defensivo
+  // evita que el Smart Planner reporte números físicamente imposibles.
+  //
+  // Cap por celda:
+  //   - Día = hoy:    productive ≤ minutos hábiles transcurridos hasta NOW
+  //   - Día < hoy:    productive ≤ capacidad total del día
+  //   - Día > hoy:    productive = 0 (no se puede haber trabajado en futuro)
+  // El faltante se queda en pendingMin (el trabajo "duplicado" no desaparece,
+  // se reinterpreta como pendiente — más conservador que descartarlo).
+  Object.keys(cache).forEach(function(k){
+    var c = cache[k];
+    var maxProdMin;
+    var now = new Date();
+    var dayStart = new Date(c.date.getFullYear(), c.date.getMonth(), c.date.getDate(), 0,0,0,0);
+    if (_planIsToday(c.date)) {
+      maxProdMin = _planMinutesElapsedInWorkDay(c.date);
+    } else if (dayStart.getTime() < now.getTime()) {
+      maxProdMin = _planCapacityMinForDate(c.date);
+    } else {
+      maxProdMin = 0;
+    }
+    if (c.productiveMin > maxProdMin) {
+      var overflow = c.productiveMin - maxProdMin;
+      c.productiveMin = maxProdMin;
+      // No descartamos el overflow: lo movemos a pending (work pendiente
+      // que el técnico arrastra por overlap de sesiones)
+      c.pendingMin += overflow;
+      c.loadMin = c.productiveMin + c.pendingMin;
+      c._capApplied = overflow; // marca de auditoría
+    }
+    // Recalcular % con valores finales
+    c.pct = c.capacityMin > 0 ? Math.round((c.loadMin / c.capacityMin) * 100) : 0;
+  });
+
   window._planCache = cache;
 
   // 6) Lista de técnicos a mostrar como filas de la grilla.
