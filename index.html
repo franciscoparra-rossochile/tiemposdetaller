@@ -11489,7 +11489,7 @@ async function _planOpenFreeSlotPicker(techId, dateISO) {
       var dColor = d == null ? 'var(--wh4)' : d >= 7 ? 'var(--red)' : d >= 3 ? 'var(--gold3)' : 'var(--green)';
       var dLbl = d == null ? '—' : (d === 0 ? 'hoy' : d + 'd en taller');
       var dIcon = d == null ? '' : d >= 7 ? '🔴' : d >= 3 ? '🟡' : '🟢';
-      html += '<div onclick="_planScheduleFromOT(\'' + v.ot.id + '\', \'' + techId + '\', \'' + dateISO + '\')" '
+      html += '<div onclick="closeModal(\'m-plan-freeslot\');openNewAssignmentModal({otId:\'' + v.ot.id + '\', techId:\'' + techId + '\', dateISO:\'' + dateISO + '\'})" '
         +    'style="background:#fff;border:1px solid #eee;border-left:3px solid ' + dColor + ';border-radius:3px;padding:8px;cursor:pointer">'
         + '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px">'
         +   '<div style="flex:1;min-width:0">'
@@ -14720,11 +14720,13 @@ async function waActiveOTs() {
     if (ots.length === 0) return [];
 
     // Lookup de patentes por vehicle_id (segunda query).
+    // IMPORTANTE: la tabla se llama 'client_vehicles', no 'vehicles' (verificado
+    // en todo el resto del código del proyecto).
     var vehicleIds = ots.map(function(o){ return o.vehicle_id; }).filter(Boolean);
     var platesById = {};
     if (vehicleIds.length) {
       try {
-        var rv = await sb.from('vehicles').select('id, plate').in('id', vehicleIds);
+        var rv = await sb.from('client_vehicles').select('id, plate').in('id', vehicleIds);
         if (!rv.error && rv.data) {
           rv.data.forEach(function(v){ platesById[v.id] = v.plate; });
         } else if (rv.error) {
