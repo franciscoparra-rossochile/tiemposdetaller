@@ -11506,9 +11506,11 @@ async function _planOpenFreeSlotPicker(techId, dateISO) {
       + '</div>';
   }
 
-  // SECCIÓN 3: Botón agendar servicio nuevo
+  // SECCIÓN 3: Acciones — Nueva destinación (modelo v2) y Agendar calendario (legacy)
   html += '<div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">'
-    + '<button class="btn btn-red" onclick="_planNewServiceFromSlot(\'' + techId + '\', \'' + dateISO + '\')" style="width:100%">+ Agendar servicio nuevo</button>'
+    + '<button class="btn btn-red" onclick="closeModal(\'m-plan-freeslot\');openNewAssignmentModal({techId:\'' + techId + '\', dateISO:\'' + dateISO + '\'})" style="width:100%">+ Nueva destinación</button>'
+    + '<div style="font-size:10px;color:var(--wh3);text-align:center;margin-top:4px;line-height:1.4">Asigna a este técnico un objetivo de trabajo (diagnóstico, reparación, etc) en una OT activa.</div>'
+    + '<button class="btn btn-out" onclick="_planNewServiceFromSlot(\'' + techId + '\', \'' + dateISO + '\')" style="width:100%;margin-top:8px">+ Agendar servicio (calendario)</button>'
     + '<button class="btn btn-out" onclick="closeModal(\'m-plan-freeslot\')" style="width:100%;margin-top:6px">Cancelar</button>'
     + '</div>';
 
