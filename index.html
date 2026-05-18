@@ -11059,6 +11059,14 @@ async function openNewAssignmentModal(opts) {
       otOpts += '<option value="' + ot.id + '">' + escapeHtml(label) + '</option>';
     });
     otSel.innerHTML = otOpts;
+    // Si no hay OTs activas, mostrar mensaje explícito en lugar de dropdown vacío silencioso.
+    if (_waModalState.activeOTs.length === 0) {
+      var errEl = document.getElementById('wa-new-err');
+      errEl.innerHTML = '<b>No se cargaron OTs activas.</b><br/>'
+        + 'Si esperabas ver OTs aquí, abre la consola (Cmd+Opt+I) y pégame el error en rojo. '
+        + 'O ingresa al menos 1 vehículo en Catastro para tener una OT contra la que destinar.';
+      errEl.style.display = 'block';
+    }
     if (opts.otId) {
       otSel.value = opts.otId;
       _waOnOTChange();
@@ -11510,7 +11518,7 @@ async function _planOpenFreeSlotPicker(techId, dateISO) {
   html += '<div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">'
     + '<button class="btn btn-red" onclick="closeModal(\'m-plan-freeslot\');openNewAssignmentModal({techId:\'' + techId + '\', dateISO:\'' + dateISO + '\'})" style="width:100%">+ Nueva destinación</button>'
     + '<div style="font-size:10px;color:var(--wh3);text-align:center;margin-top:4px;line-height:1.4">Asigna a este técnico un objetivo de trabajo (diagnóstico, reparación, etc) en una OT activa.</div>'
-    + '<button class="btn btn-out" onclick="_planNewServiceFromSlot(\'' + techId + '\', \'' + dateISO + '\')" style="width:100%;margin-top:8px">+ Agendar servicio (calendario)</button>'
+    + '<button class="btn btn-out" onclick="_planNewServiceFromSlot(\'' + techId + '\', \'' + dateISO + '\')" style="width:100%;margin-top:8px;opacity:.85">+ Agendar servicio (modelo anterior)</button>'
     + '<button class="btn btn-out" onclick="closeModal(\'m-plan-freeslot\')" style="width:100%;margin-top:6px">Cancelar</button>'
     + '</div>';
 
@@ -14692,15 +14700,15 @@ window.waSummaryByOT = waSummaryByOT;
 //   Lista de OTs candidatas a recibir destinaciones (no cerradas/canceladas).
 //   Útil para el dropdown del modal "Nueva destinación".
 //
-//   IMPORTANTE: work_orders NO tiene columna 'plate' (está en vehicles vía vehicle_id).
-//   Tampoco usamos work_orders_with_plate VIEW porque NO expone las columnas nuevas
-//   (responsible_user_id, blocked_waiting_parts) que agregué en Fase 1: las VIEWs
-//   son snapshots del schema al momento de su creación.
-//   Solución: JOIN manual con vehicles(plate) vía la FK work_orders.vehicle_id.
+//   IMPORTANTE: estrategia de "dos queries + merge en JS".
+//   - work_orders NO tiene columna 'plate' (está en vehicles vía vehicle_id).
+//   - La VIEW work_orders_with_plate no expone columnas nuevas de Fase 1.
+//   - El JOIN automático vehicles(plate) falla por schema cache de PostgREST.
+//   Solución robusta: 1 query a work_orders + 1 query a vehicles, merge por id.
 async function waActiveOTs() {
   try {
     var r = await sb.from('work_orders')
-      .select('id, ot_number, service_classification, status, responsible_user_id, blocked_waiting_parts, created_at, vehicle_id, vehicles(plate)')
+      .select('id, ot_number, service_classification, status, responsible_user_id, blocked_waiting_parts, created_at, vehicle_id')
       .in('status', ['open', 'assigned', 'in_progress', 'paused'])
       .order('ot_number', { ascending: false })
       .limit(100);
@@ -14708,13 +14716,26 @@ async function waActiveOTs() {
       logR('WA_ACTIVE_OTS_ERR', { msg: r.error.message }, 'warn');
       return [];
     }
-    // Aplanar: extraer plate del objeto vehicles anidado.
-    var data = (r.data || []).map(function(ot) {
-      ot.plate = (ot.vehicles && ot.vehicles.plate) ? ot.vehicles.plate : null;
-      delete ot.vehicles;
-      return ot;
-    });
-    return data;
+    var ots = r.data || [];
+    if (ots.length === 0) return [];
+
+    // Lookup de patentes por vehicle_id (segunda query).
+    var vehicleIds = ots.map(function(o){ return o.vehicle_id; }).filter(Boolean);
+    var platesById = {};
+    if (vehicleIds.length) {
+      try {
+        var rv = await sb.from('vehicles').select('id, plate').in('id', vehicleIds);
+        if (!rv.error && rv.data) {
+          rv.data.forEach(function(v){ platesById[v.id] = v.plate; });
+        } else if (rv.error) {
+          logR('WA_VEHICLES_LOOKUP_ERR', { msg: rv.error.message }, 'warn');
+        }
+      } catch(eVeh) {
+        logR('WA_VEHICLES_LOOKUP_EXC', { msg: eVeh.message }, 'warn');
+      }
+    }
+    ots.forEach(function(o){ o.plate = platesById[o.vehicle_id] || null; });
+    return ots;
   } catch(e) {
     logR('WA_ACTIVE_OTS_EXC', { msg: e.message }, 'warn');
     return [];
