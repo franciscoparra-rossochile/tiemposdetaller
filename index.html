@@ -14033,7 +14033,13 @@ var REP = {
   dateTo: null,
   technicianId: '',      // '' = todos
   service: '',           // '' = todos
-  data: []               // filas filtradas vigentes
+  data: [],              // filas filtradas vigentes
+  techCount: 0           // BUG-FIX cap-1tec: conteo de técnicos para capacidad
+                         // del taller. Lo setea renderBossReportes (HTML) con el
+                         // mismo valor que usa para sus KPIs. Las funciones PDF
+                         // de TALLER (Gestion/Diario) lo leen para no caer al
+                         // fallback techCount=1, que aplastaba el productivo via
+                         // el cap global agregado de computeKPIs. 0 = no seteado.
 };
 
 function repRangeBounds() {
@@ -14264,6 +14270,12 @@ async function renderBossReportes(body) {
     : (techs || []).filter(function(u) {
         return u.role === 'tech' || u.can_tech === true;
       }).length || 1;
+  // BUG-FIX cap-1tec: persistir el conteo en el estado global para que
+  // generatePDFGestion / generatePDFDiario usen la MISMA capacidad de taller
+  // que esta vista HTML. Sin esto, esas funciones PDF llamaban a computeKPIs
+  // sin technicianCount → el cap global agregado asumía 1 técnico → el
+  // productivo del taller se aplastaba (ej: 356h reales → 44h en el PDF).
+  REP.techCount = techCountForCapacity;
   var kpis = computeKPIs(REP.data, {
     from: b2.from,
     to: b2.to,
@@ -24204,6 +24216,24 @@ function pdfCheckLoaded() {
   return true;
 }
 
+// BUG-FIX cap-1tec: resuelve el número de técnicos del taller para el cap
+// global de capacidad en los PDF de TALLER (Gestion/Diario). Prioridad:
+//   1) REP.techCount (lo setea la vista HTML de Reportes — fuente de verdad).
+//   2) Fallback: técnicos únicos presentes en las filas (por si se genera el
+//      PDF sin haber abierto antes la vista HTML). Menos preciso que (1)
+//      porque no distingue can_tech, pero NUNCA colapsa a 1 → no aplasta.
+// Devuelve siempre >= 1.
+function pdfResolveTechCount(rows) {
+  if (typeof REP !== 'undefined' && REP && REP.techCount > 0) return REP.techCount;
+  var seen = {};
+  (rows || []).forEach(function(r) {
+    var t = r.technician || r.username;
+    if (t) seen[t] = true;
+  });
+  var n = Object.keys(seen).length;
+  return n > 0 ? n : 1;
+}
+
 // Helper: paginar KPIs + info comun de header
 function pdfRenderHeaderBlock(doc, title, subtitle, kpis) {
   pdfDrawHeader(doc, title);
@@ -24248,7 +24278,8 @@ function generatePDFDiario() {
   // sus 16h completas al "Hoy", produciendo "44h productivas en jornada
   // de 8h" (físicamente imposible). Ahora el productivo es real.
   var rb = repRangeBounds();
-  var kpis = computeKPIs(rows, {from: rb.from, to: rb.to});
+  // BUG-FIX cap-1tec: technicianCount real del taller (igual que Gestion).
+  var kpis = computeKPIs(rows, {from: rb.from, to: rb.to, technicianCount: pdfResolveTechCount(rows)});
   var y = pdfRenderHeaderBlock(doc, 'Reporte Diario Operativo', repRangeLabel(), kpis);
 
   // Tabla: servicios del dia
@@ -24523,8 +24554,10 @@ function generatePDFGestion() {
   if (!rows.length) { showGlobalError('No hay servicios en el periodo para generar reporte.', 5000); return; }
   var doc = new window.jspdf.jsPDF({unit:'mm', format:'a4'});
   // FRENTE 9.4 (2026-05-14): pasar periodCtx (ver fix gemelo en generatePDFDiario).
+  // BUG-FIX cap-1tec: incluir technicianCount real del taller. Sin él, el cap
+  // global de computeKPIs asumía 1 técnico y aplastaba el productivo (356h→44h).
   var rbG = repRangeBounds();
-  var kpis = computeKPIs(rows, {from: rbG.from, to: rbG.to});
+  var kpis = computeKPIs(rows, {from: rbG.from, to: rbG.to, technicianCount: pdfResolveTechCount(rows)});
   var y = pdfRenderHeaderBlock(doc, 'Reporte de Gestion', repRangeLabel(), kpis);
 
 
