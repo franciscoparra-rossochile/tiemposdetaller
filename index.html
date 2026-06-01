@@ -4135,6 +4135,453 @@ function _recordUnclassified(servicio) {
   }
 }
 
+
+// =====================================================================
+// FASE 3+4 · Motor de desglose operacional y productividad técnica real
+// Capa NUEVA junto a computeKPIs (NO la modifica). Usa el catálogo de
+// actividad (Fase 2a), WORK_HOURS (jornada real) e is_support (Fase 1).
+// Produce: desglose por categoría + dos vistas de productividad técnica
+// (planta de mecánicos / capacidad total con híbridos) + panel soporte.
+// =====================================================================
+
+// Capacidad laboral (segundos) entre dos fechas, según WORK_HOURS.
+// Reutiliza la jornada real del taller (9h L-X / 8h J / 7h V).
+function _laborCapacitySecBetween(fromDate, toDate) {
+  if (!fromDate || !toDate) return 0;
+  var fromMs = fromDate.getTime();
+  var toMs = toDate.getTime();
+  if (toMs <= fromMs) return 0;
+  // Cap al "ahora" (no contar jornada futura aún no vivida)
+  var nowMs = Date.now();
+  if (toMs > nowMs) toMs = nowMs;
+  if (toMs <= fromMs) return 0;
+
+  var totalMin = 0;
+  // Iterar día por día desde fromDate hasta toDate
+  var cur = new Date(fromDate.getFullYear(), fromDate.getMonth(), fromDate.getDate());
+  var endDay = new Date(new Date(toMs).getFullYear(), new Date(toMs).getMonth(), new Date(toMs).getDate());
+  var guard = 0;
+  while (cur.getTime() <= endDay.getTime() && guard < 800) {
+    guard++;
+    var dow = cur.getDay(); // 0=Dom..6=Sab
+    var blocks = (typeof WORK_HOURS !== 'undefined' && WORK_HOURS[dow]) ? WORK_HOURS[dow] : null;
+    if (blocks) {
+      var di;
+      for (di = 0; di < blocks.length; di++) {
+        // minutos del bloque [start,end] (en minutos desde medianoche)
+        var bStartMin = blocks[di][0];
+        var bEndMin = blocks[di][1];
+        // límites del bloque ese día, en ms locales
+        var blockStart = new Date(cur.getFullYear(), cur.getMonth(), cur.getDate(), 0, bStartMin).getTime();
+        var blockEnd = new Date(cur.getFullYear(), cur.getMonth(), cur.getDate(), 0, bEndMin).getTime();
+        // intersección con [fromMs, toMs]
+        var s = Math.max(blockStart, fromMs);
+        var e = Math.min(blockEnd, toMs);
+        if (e > s) totalMin += (e - s) / 60000;
+      }
+    }
+    cur.setDate(cur.getDate() + 1);
+  }
+  return Math.round(totalMin * 60); // a segundos
+}
+
+// Desglose operacional + productividad. Recibe las mismas filas que
+// computeKPIs, el catálogo cargado, el mapa de usuarios {id|name -> {is_support, can_tech, role}}
+// y el contexto de período (from/to).
+function computeOperationalBreakdown(rows, catalog, usersMeta, periodCtx) {
+  rows = rows || [];
+  catalog = catalog || _activityCatCache || [];
+  usersMeta = usersMeta || {};
+
+  var hasRange = !!(periodCtx && periodCtx.from && periodCtx.to);
+  var fromDate = hasRange ? new Date(periodCtx.from) : null;
+  var toDate = hasRange ? new Date(periodCtx.to) : null;
+
+  // Acumuladores
+  var byCategory = {};        // categoria -> {sec, n}
+  var techWorkSec = {};       // nombre/id -> seg productivos (trabajo_unidad)
+  var supportSec = {};        // soporte: categoria -> seg (lavado/estandar/compras)
+  var supportByPerson = {};   // persona soporte -> {sec, n}
+  var coverageFirstSeen = {}; // categoria -> primera fecha vista (epoch ms)
+  var unclassifiedCount = 0;
+  // Conteo nominal: cantidad por categoria (registros y patentes unicas)
+  var catPlates = {};        // categoria -> {plateNorm: true}
+  // Agrupacion diaria: categoria -> {diaYMD: segundos} para "horas/dia"
+  var catByDay = {};         // categoria -> {ymd: sec}
+  // Estandar general por persona+dia (para el bloque "quien lo hace")
+  var estandarByPerson = {}; // who -> {sec, days:{ymd:true}}
+
+  function _secOf(r) {
+    var s = 0;
+    if (r.seconds != null) s = parseInt(r.seconds, 10) || 0;
+    else if (typeof r.duration_seconds === 'number') s = r.duration_seconds;
+    return (isNaN(s) || s < 0) ? 0 : s;
+  }
+
+  rows.forEach(function(r) {
+    var servicio = r.service || '';
+    var cls = (typeof classifyActivitySync === 'function')
+      ? classifyActivitySync(servicio, catalog)
+      : {category: 'desconocido', is_productive: false, matched: false};
+    var cat = cls.category;
+    var sec = _secOf(r);
+
+    if (!byCategory[cat]) byCategory[cat] = {sec: 0, n: 0};
+    byCategory[cat].sec += sec;
+    byCategory[cat].n += 1;
+    if (cat === 'desconocido') unclassifiedCount += 1;
+
+    // Conteo nominal: patentes unicas por categoria
+    var plateNorm = '';
+    if (r.plate) {
+      plateNorm = (typeof normalizePlate === 'function')
+        ? normalizePlate(r.plate)
+        : String(r.plate).toUpperCase().replace(/[^A-Z0-9]/g, '');
+    }
+    if (plateNorm && plateNorm !== 'LOGISTICADETALLER') {
+      if (!catPlates[cat]) catPlates[cat] = {};
+      catPlates[cat][plateNorm] = true;
+    }
+
+    // Agrupacion diaria (YYYY-MM-DD en hora local del ended_at/started_at)
+    var dms = null;
+    if (r.ended_at) dms = new Date(r.ended_at).getTime();
+    else if (r.started_at) dms = new Date(r.started_at).getTime();
+    if (dms) {
+      var dd = new Date(dms);
+      var ymd = dd.getFullYear() + '-' + ('0'+(dd.getMonth()+1)).slice(-2) + '-' + ('0'+dd.getDate()).slice(-2);
+      if (!catByDay[cat]) catByDay[cat] = {};
+      catByDay[cat][ymd] = (catByDay[cat][ymd] || 0) + sec;
+      // Estandar general: desglose por persona
+      if (cat === 'soporte' && _normService(servicio).indexOf('estandar de taller') === 0) {
+        var ew = r.technician || r.username || 'desconocido';
+        if (!estandarByPerson[ew]) estandarByPerson[ew] = {sec: 0, days: {}};
+        estandarByPerson[ew].sec += sec;
+        estandarByPerson[ew].days[ymd] = true;
+      }
+    }
+
+    // Cobertura: primera aparición de la categoría
+    var tms = null;
+    if (r.ended_at) tms = new Date(r.ended_at).getTime();
+    else if (r.started_at) tms = new Date(r.started_at).getTime();
+    if (tms && (!coverageFirstSeen[cat] || tms < coverageFirstSeen[cat])) {
+      coverageFirstSeen[cat] = tms;
+    }
+
+    // Identidad del técnico
+    var who = r.technician || '';
+    var whoUser = r.username || '';
+    var meta = (whoUser && usersMeta[whoUser]) || (who && usersMeta[who]) || null;
+    var isSupport = meta ? (meta.is_support === true) : false;
+
+    if (cls.is_productive) {
+      // Tiempo productivo sobre unidad
+      var key = who || whoUser || 'desconocido';
+      techWorkSec[key] = (techWorkSec[key] || 0) + sec;
+    }
+
+    if (cat === 'soporte' || cat === 'abastecimiento') {
+      // Actividades típicas del rol soporte (aunque las haga otro)
+      if (!supportSec[cat]) supportSec[cat] = 0;
+      supportSec[cat] += sec;
+      if (isSupport) {
+        var pk = who || whoUser || 'soporte';
+        if (!supportByPerson[pk]) supportByPerson[pk] = {sec: 0, n: 0};
+        supportByPerson[pk].sec += sec;
+        supportByPerson[pk].n += 1;
+      }
+    }
+  });
+
+  // Capacidad laboral del período (por persona)
+  var capPerPersonSec = hasRange ? _laborCapacitySecBetween(fromDate, toDate) : 0;
+
+  // Sumar horas productivas por rol
+  var plantaSec = 0, hibridoSec = 0, plantaCount = 0, hibridoCount = 0;
+  var seenPlanta = {}, seenHibrido = {};
+  Object.keys(techWorkSec).forEach(function(k) {
+    var meta = usersMeta[k] || null;
+    var isSupport = meta ? meta.is_support === true : false;
+    var canTech = meta ? meta.can_tech === true : false;
+    var role = meta ? meta.role : '';
+    if (isSupport) return; // soporte no entra a productividad técnica
+    if (role === 'tech') {
+      plantaSec += techWorkSec[k];
+      if (!seenPlanta[k]) { seenPlanta[k] = true; plantaCount++; }
+    } else if (canTech) {
+      // jefatura/admin que cronometra = híbrido
+      hibridoSec += techWorkSec[k];
+      if (!seenHibrido[k]) { seenHibrido[k] = true; hibridoCount++; }
+    }
+  });
+
+  var capPlanta = capPerPersonSec * plantaCount;
+  var capTotal = capPerPersonSec * (plantaCount + hibridoCount);
+
+  // Derivar: por categoria, cantidad nominal + promedio por unidad
+  var nominal = {};
+  Object.keys(byCategory).forEach(function(c) {
+    var b = byCategory[c];
+    var plates = catPlates[c] ? Object.keys(catPlates[c]).length : 0;
+    nominal[c] = {
+      sec: b.sec,
+      registros: b.n,
+      vehiculos: plates,
+      // promedio por registro (en minutos) — siempre visible
+      promMinPorRegistro: b.n > 0 ? Math.round(b.sec / b.n / 60) : 0,
+      promMinPorVehiculo: plates > 0 ? Math.round(b.sec / plates / 60) : 0
+    };
+  });
+
+  // Derivar: por categoria, horas por dia (costo diario recurrente)
+  var perDay = {};
+  Object.keys(catByDay).forEach(function(c) {
+    var days = catByDay[c];
+    var ks = Object.keys(days);
+    var totSec = 0, i;
+    for (i = 0; i < ks.length; i++) totSec += days[ks[i]];
+    perDay[c] = {
+      diasActivos: ks.length,
+      totalSec: totSec,
+      promSecPorDia: ks.length > 0 ? Math.round(totSec / ks.length) : 0
+    };
+  });
+
+  // Derivar: estandar general — Jack(soporte) vs mecanicos
+  var estandarSplit = { soporte: {sec: 0, days: {}}, mecanicos: {sec: 0, days: {}} };
+  Object.keys(estandarByPerson).forEach(function(who) {
+    var meta = usersMeta[who] || null;
+    var isSup = meta ? meta.is_support === true : false;
+    var bucket = isSup ? estandarSplit.soporte : estandarSplit.mecanicos;
+    bucket.sec += estandarByPerson[who].sec;
+    Object.keys(estandarByPerson[who].days).forEach(function(d){ bucket.days[d] = true; });
+  });
+  var estandarResult = {
+    soporte: {
+      sec: estandarSplit.soporte.sec,
+      dias: Object.keys(estandarSplit.soporte.days).length,
+      promSecPorDia: Object.keys(estandarSplit.soporte.days).length > 0
+        ? Math.round(estandarSplit.soporte.sec / Object.keys(estandarSplit.soporte.days).length) : 0
+    },
+    mecanicos: {
+      sec: estandarSplit.mecanicos.sec,
+      dias: Object.keys(estandarSplit.mecanicos.days).length,
+      promSecPorDia: Object.keys(estandarSplit.mecanicos.days).length > 0
+        ? Math.round(estandarSplit.mecanicos.sec / Object.keys(estandarSplit.mecanicos.days).length) : 0
+    }
+  };
+
+  return {
+    byCategory: byCategory,
+    unclassifiedCount: unclassifiedCount,
+    coverageFirstSeen: coverageFirstSeen,
+    capPerPersonSec: capPerPersonSec,
+    productividad: {
+      planta: {
+        workSec: plantaSec,
+        capSec: capPlanta,
+        techCount: plantaCount,
+        pct: capPlanta > 0 ? Math.round(100 * plantaSec / capPlanta) : null
+      },
+      total: {
+        workSec: plantaSec + hibridoSec,
+        capSec: capTotal,
+        techCount: plantaCount + hibridoCount,
+        hibridoSec: hibridoSec,
+        hibridoCount: hibridoCount,
+        pct: capTotal > 0 ? Math.round(100 * (plantaSec + hibridoSec) / capTotal) : null
+      }
+    },
+    support: {
+      byActivity: supportSec,
+      byPerson: supportByPerson
+    },
+    nominal: nominal,
+    perDay: perDay,
+    estandarSplit: estandarResult,
+    techWorkSec: techWorkSec
+  };
+}
+
+
+// =====================================================================
+// FASE 3+4 · Render del informe operacional nuevo
+// Dibuja: productividad técnica (planta / con híbridos), producción por
+// cantidad, costo diario (h/día), estándar quién-lo-hace, panel soporte.
+// Recibe el contenedor, el resultado de computeOperationalBreakdown y
+// el aviso de cobertura. Mobile-first. No reemplaza los KPIs existentes;
+// se inserta debajo de ellos.
+// =====================================================================
+function _fmtH(sec) {
+  var h = (sec || 0) / 3600;
+  return (Math.round(h * 10) / 10) + ' h';
+}
+function _fmtHM(sec) {
+  var totalMin = Math.round((sec || 0) / 60);
+  var h = Math.floor(totalMin / 60);
+  var m = totalMin % 60;
+  if (h <= 0) return m + ' min';
+  return h + ' h ' + (m > 0 ? (m + '') : '00');
+}
+function _pct(part, whole) {
+  if (!whole || whole <= 0) return 0;
+  return Math.round(100 * part / whole);
+}
+
+function renderOperationalBreakdown(container, br, coverageNote) {
+  if (!container || !br) return;
+  var wrap = mk('div', '');
+  wrap.style.cssText = 'margin-top:14px';
+
+  // ── Aviso de cobertura (si aplica) ──
+  if (coverageNote) {
+    var cov = mk('div', '');
+    cov.style.cssText = 'background:var(--color-background-warning,#FAEEDA);border-radius:8px;'
+      + 'padding:10px 12px;margin-bottom:16px;font-size:12px;color:#854F0B;line-height:1.5';
+    cov.textContent = '\u26A0 ' + coverageNote;
+    wrap.appendChild(cov);
+  }
+
+  // ── Productividad técnica (dos vistas) ──
+  var p = br.productividad || {};
+  var planta = p.planta || {}, total = p.total || {};
+  var prodTitle = mk('div', '');
+  prodTitle.style.cssText = 'font-size:13px;font-weight:600;color:var(--wh3,#666);margin:0 0 10px';
+  prodTitle.textContent = 'Productividad t\u00e9cnica';
+  wrap.appendChild(prodTitle);
+
+  var prodGrid = mk('div', '');
+  prodGrid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:8px';
+  function prodCard(lbl, pct, work, cap) {
+    var c = mk('div', '');
+    c.style.cssText = 'background:var(--color-background-secondary,#f5f5f0);border-radius:8px;padding:14px';
+    c.innerHTML = '<div style="font-size:13px;color:var(--wh3,#666);margin-bottom:6px">' + lbl + '</div>'
+      + '<div style="font-size:26px;font-weight:600;line-height:1">' + (pct == null ? '\u2014' : pct + '%') + '</div>'
+      + '<div style="font-size:12px;color:var(--wh3,#888);margin-top:6px">' + _fmtH(work) + ' / ' + _fmtH(cap) + '</div>';
+    return c;
+  }
+  prodGrid.appendChild(prodCard('Planta (' + (planta.techCount || 0) + ' mec\u00e1nicos)', planta.pct, planta.workSec, planta.capSec));
+  prodGrid.appendChild(prodCard('Con h\u00edbridos (' + (total.techCount || 0) + ')', total.pct, total.workSec, total.capSec));
+  wrap.appendChild(prodGrid);
+
+  if (total.hibridoSec > 0) {
+    var hnote = mk('div', '');
+    hnote.style.cssText = 'font-size:12px;color:var(--wh3,#888);margin:0 0 22px;line-height:1.5';
+    hnote.textContent = 'H\u00edbridos aportaron ' + _fmtH(total.hibridoSec) + ' de trabajo t\u00e9cnico.';
+    wrap.appendChild(hnote);
+  }
+
+  var nominal = br.nominal || {};
+  var perDay = br.perDay || {};
+
+  // ── Producción por cantidad ──
+  var prodSecTitle = mk('div', '');
+  prodSecTitle.style.cssText = 'font-size:13px;font-weight:600;color:var(--wh3,#666);margin:0 0 4px';
+  prodSecTitle.textContent = 'Producci\u00f3n \u00b7 por cantidad';
+  wrap.appendChild(prodSecTitle);
+  var prodSecSub = mk('div', '');
+  prodSecSub.style.cssText = 'font-size:11px;color:var(--wh3,#999);margin:0 0 10px';
+  prodSecSub.textContent = 'cu\u00e1ntas y cu\u00e1nto cada una';
+  wrap.appendChild(prodSecSub);
+
+  var qtyGrid = mk('div', '');
+  qtyGrid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:22px';
+  function qtyCard(lbl, qty, promMin, promLabel) {
+    var c = mk('div', '');
+    c.style.cssText = 'background:#fff;border:0.5px solid var(--wh5,#ddd);border-radius:8px;padding:12px';
+    c.innerHTML = '<div style="font-size:12px;color:var(--wh3,#666);margin-bottom:4px">' + lbl + '</div>'
+      + '<div style="font-size:20px;font-weight:600">' + qty + '</div>'
+      + '<div style="font-size:11px;color:var(--wh3,#999);margin-top:3px">' + promLabel + '</div>';
+    return c;
+  }
+  var tu = nominal.trabajo_unidad || {};
+  var lav = nominal.soporte || {};
+  var com = nominal.abastecimiento || {};
+  var mov = nominal.logistica || {};
+  qtyGrid.appendChild(qtyCard('Veh\u00edculos', tu.vehiculos || 0, tu.promMinPorVehiculo, 'prom ' + (Math.round((tu.promMinPorVehiculo||0)/6)/10) + ' h c/u'));
+  qtyGrid.appendChild(qtyCard('Compras', com.registros || 0, com.promMinPorRegistro, 'prom ' + (com.promMinPorRegistro||0) + ' min c/u'));
+  qtyGrid.appendChild(qtyCard('Movimientos', mov.registros || 0, mov.promMinPorRegistro, 'prom ' + (mov.promMinPorRegistro||0) + ' min c/u'));
+  qtyGrid.appendChild(qtyCard('Servicios', tu.registros || 0, 0, tu.vehiculos + ' veh\u00edculos'));
+  wrap.appendChild(qtyGrid);
+
+  // ── Costo diario (h/día) ──
+  var costTitle = mk('div', '');
+  costTitle.style.cssText = 'font-size:13px;font-weight:600;color:var(--wh3,#666);margin:0 0 4px';
+  costTitle.textContent = 'Costo diario \u00b7 horas por d\u00eda';
+  wrap.appendChild(costTitle);
+  var costSub = mk('div', '');
+  costSub.style.cssText = 'font-size:11px;color:var(--wh3,#999);margin:0 0 10px';
+  costSub.textContent = 'tiempo de equipo recurrente, no tareas';
+  wrap.appendChild(costSub);
+
+  var costCard = mk('div', '');
+  costCard.style.cssText = 'background:#fff;border:0.5px solid var(--wh5,#ddd);border-radius:12px;padding:6px 16px;margin-bottom:22px';
+  function costRow(lbl, sub, perDayObj, isLast) {
+    var sec = perDayObj ? perDayObj.promSecPorDia : 0;
+    var r = mk('div', '');
+    r.style.cssText = 'display:flex;justify-content:space-between;align-items:baseline;padding:10px 0'
+      + (isLast ? '' : ';border-bottom:0.5px solid var(--wh5,#eee)');
+    r.innerHTML = '<div><div style="font-size:13px">' + lbl + '</div>'
+      + '<div style="font-size:11px;color:var(--wh3,#999);margin-top:2px">' + sub + '</div></div>'
+      + '<div style="text-align:right"><div style="font-size:16px;font-weight:600">' + _fmtHM(sec) + '/d\u00eda</div>'
+      + '<div style="font-size:11px;color:var(--wh3,#999);margin-top:2px">de equipo</div></div>';
+    return r;
+  }
+  costCard.appendChild(costRow('Apertura', 'est\u00e1ndar inicial + reuni\u00f3n', perDay.apertura, false));
+  // Estandar general = parte de 'soporte' pero medida por dia; usamos estandarSplit total
+  var est = br.estandarSplit || {soporte:{}, mecanicos:{}};
+  var estTotalSecDia = (est.soporte.promSecPorDia || 0) + (est.mecanicos.promSecPorDia || 0);
+  costCard.appendChild(costRow('Est\u00e1ndar general', 'mantenci\u00f3n durante el d\u00eda', {promSecPorDia: estTotalSecDia}, false));
+  costCard.appendChild(costRow('Cierre de local', '\u00faltima hora del d\u00eda', perDay.cierre, true));
+  wrap.appendChild(costCard);
+
+  // ── Estándar general: quién lo hace ──
+  var egTitle = mk('div', '');
+  egTitle.style.cssText = 'font-size:13px;font-weight:600;color:var(--wh3,#666);margin:0 0 10px';
+  egTitle.textContent = 'Est\u00e1ndar general \u00b7 qui\u00e9n lo hace';
+  wrap.appendChild(egTitle);
+
+  var egCard = mk('div', '');
+  egCard.style.cssText = 'background:#fff;border:0.5px solid var(--wh5,#ddd);border-radius:12px;padding:14px 16px;margin-bottom:22px';
+  egCard.innerHTML =
+    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'
+    + '<span style="font-size:13px"><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:#1D9E75;margin-right:6px"></span>Soporte (Jack)</span>'
+    + '<span style="font-size:13px;color:var(--wh3,#666)">' + _fmtHM(est.soporte.promSecPorDia) + '/d\u00eda \u00b7 esperado</span></div>'
+    + '<div style="display:flex;justify-content:space-between;align-items:center">'
+    + '<span style="font-size:13px"><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:#BA7517;margin-right:6px"></span>Mec\u00e1nicos</span>'
+    + '<span style="font-size:13px;color:var(--wh3,#666)">' + _fmtHM(est.mecanicos.promSecPorDia) + '/d\u00eda \u00b7 revisable</span></div>'
+    + '<div style="font-size:11px;color:var(--wh3,#999);margin-top:12px;line-height:1.5">Tiempo t\u00e9cnico en limpieza: '
+    + _fmtH(est.mecanicos.sec) + ' del per\u00edodo que podr\u00eda absorber soporte.</div>';
+  wrap.appendChild(egCard);
+
+  // ── Panel de soporte ──
+  var sp = br.support || {};
+  var spByPerson = sp.byPerson || {};
+  var spKeys = Object.keys(spByPerson);
+  if (spKeys.length > 0) {
+    var spTitle = mk('div', '');
+    spTitle.style.cssText = 'font-size:13px;font-weight:600;color:var(--wh3,#666);margin:0 0 10px';
+    spTitle.textContent = 'Panel de soporte';
+    wrap.appendChild(spTitle);
+    spKeys.forEach(function(name) {
+      var d = spByPerson[name];
+      var card = mk('div', '');
+      card.style.cssText = 'background:#fff;border:0.5px solid var(--wh5,#ddd);border-radius:12px;padding:14px 16px;margin-bottom:10px';
+      var initials = name.split(' ').map(function(w){return w.charAt(0);}).slice(0,2).join('').toUpperCase();
+      card.innerHTML =
+        '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">'
+        + '<div style="width:38px;height:38px;border-radius:50%;background:var(--color-background-info,#E6F1FB);'
+        + 'display:flex;align-items:center;justify-content:center;font-weight:600;font-size:13px;color:#185FA5">' + initials + '</div>'
+        + '<div><div style="font-weight:600;font-size:14px">' + name + '</div>'
+        + '<div style="font-size:12px;color:var(--wh3,#666)">Soporte \u00b7 ' + _fmtH(d.sec) + ' en actividades</div></div></div>';
+      wrap.appendChild(card);
+    });
+  }
+
+  container.appendChild(wrap);
+}
+
 // Devuelve: array de {id, name, username, role, can_tech} o [] en error.
 async function getAssignableTechs(opts) {
   opts = opts || {};
@@ -13428,7 +13875,7 @@ async function renderBossReportes(body) {
   // o admin (ej: Benjamín Cifuentes es jefatura pero cronometra). Antes el
   // conteo de capacidad solo consideraba role='tech', subreportando 1-2
   // técnicos y haciendo que la capacidad pareciera siempre excedida.
-  var {data: techs} = await sb.from('users').select('id,name,role,can_tech').in('role',['tech','jefatura','admin']).order('name');
+  var {data: techs} = await sb.from('users').select('id,name,username,role,can_tech,is_support').in('role',['tech','jefatura','admin']).order('name');
   techs = techs || [];
 
   body.innerHTML = '';
@@ -13618,6 +14065,45 @@ async function renderBossReportes(body) {
     to: b2.to,
     technicianCount: techCountForCapacity
   });
+
+  // ── FASE 3+4: desglose operacional (productividad real, costo diario,
+  //    estándar quién-lo-hace, panel soporte). Aislado: si falla, no
+  //    rompe los KPIs clásicos de arriba.
+  try {
+    var _catalog = await loadActivityCatalog(false);
+    // usersMeta indexado por nombre Y por username (las filas usan technician=nombre)
+    var _usersMeta = {};
+    (techs || []).forEach(function(u) {
+      var meta = {role: u.role, can_tech: u.can_tech === true, is_support: u.is_support === true};
+      if (u.name) _usersMeta[u.name] = meta;
+      if (u.username) _usersMeta[u.username] = meta;
+    });
+    var _periodCtx = {from: b2.from, to: b2.to};
+    var _breakdown = computeOperationalBreakdown(REP.data, _catalog, _usersMeta, _periodCtx);
+
+    // Aviso de cobertura: categorías cuya 1a aparición es posterior al inicio del rango
+    var _coverageNote = null;
+    var _cov = _breakdown.coverageFirstSeen || {};
+    var _rangeStart = new Date(b2.from).getTime();
+    var _late = [];
+    var _catLabels = {apertura:'apertura', cierre:'cierre', logistica:'movimiento de vehículos',
+      abastecimiento:'compras', soporte:'soporte', trabajo_unidad:'trabajo sobre unidades'};
+    Object.keys(_cov).forEach(function(c) {
+      // margen de 1 día para evitar falsos positivos por borde
+      if (_cov[c] && _cov[c] > _rangeStart + 86400000) {
+        var dd = new Date(_cov[c]);
+        _late.push((_catLabels[c] || c) + ' (desde ' + dd.getDate() + '/' + (dd.getMonth()+1) + ')');
+      }
+    });
+    if (_late.length > 0) {
+      _coverageNote = 'Cobertura parcial: ' + _late.join(', ') + '. Totales antes de esas fechas pueden estar subestimados.';
+    }
+
+    renderOperationalBreakdown(body, _breakdown, _coverageNote);
+    logR('OPS_BREAKDOWN_RENDERED', {cats: Object.keys(_breakdown.byCategory || {}).length, unclassified: _breakdown.unclassifiedCount});
+  } catch(eBrk) {
+    logR('OPS_BREAKDOWN_ERR', {msg: eBrk.message}, 'warn');
+  }
 
   // Helper local: caja KPI compacta con label arriba y valor grande abajo.
   // Reemplaza el uso directo de kpiBox() para tener más control tipográfico.
