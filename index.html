@@ -4430,9 +4430,24 @@ function _pct(part, whole) {
 }
 
 function renderOperationalBreakdown(container, br, coverageNote) {
-  if (!container || !br) return;
+  if (!container) return;
   var wrap = mk('div', '');
-  wrap.style.cssText = 'margin-top:14px';
+  wrap.style.cssText = 'margin-top:14px;padding-top:14px;border-top:2px solid var(--wh5,#ddd)';
+
+  var secHd = mk('div', '');
+  secHd.style.cssText = 'font-size:14px;font-weight:700;color:var(--red,#c00);margin-bottom:12px';
+  secHd.textContent = 'Analisis operacional';
+  wrap.appendChild(secHd);
+
+  var catCount = br && br.byCategory ? Object.keys(br.byCategory).length : 0;
+  if (!br || catCount === 0) {
+    var emptyMsg = mk('div', '');
+    emptyMsg.style.cssText = 'font-size:13px;color:var(--wh3,#888);padding:12px;background:#fff;border:0.5px solid var(--wh5,#ddd);border-radius:8px';
+    emptyMsg.textContent = 'Sin datos para el desglose en este rango.';
+    wrap.appendChild(emptyMsg);
+    container.appendChild(wrap);
+    return;
+  }
 
   // ── Aviso de cobertura (si aplica) ──
   if (coverageNote) {
@@ -4580,6 +4595,173 @@ function renderOperationalBreakdown(container, br, coverageNote) {
   }
 
   container.appendChild(wrap);
+}
+
+
+// =====================================================================
+// FASE A · Saneamiento de tiempos (ROSSO OPS)
+// Aplica caps físicos por tipo de actividad para corregir cronómetros
+// olvidados, SIN borrar trabajo real multi-día (ese se prorratea aparte).
+// Devuelve {sec, capped, original, alert} — capped=true si se ajustó.
+// Reglas confirmadas con operación:
+//   Lavado .............. cap 3h
+//   Cierre de taller .... cap 2h
+//   Estándar inicial .... cap 1.5h (solo desde fecha de separación)
+//   Reunión apertura .... SIN cap, alertas a 15 y 40 min
+//   Estándar general .... sin cap (Jack hace 4-5h legítimas)
+//   Trabajo unidades .... sin cap (multi-día, se prorratea por período)
+// =====================================================================
+
+// Fecha desde la cual "estándar inicial" se registra limpio (separado del
+// estándar general). Antes de esto, un estándar inicial largo es estándar
+// general mal etiquetado → NO se capa.
+var ESTANDAR_SEP_DATE = '2026-05-14';
+
+var SANITIZE_CAPS = {
+  lavado:           3 * 3600,   // 3h
+  cierre:           2 * 3600,   // 2h
+  estandar_inicial: 1.5 * 3600  // 1.5h (condicional a fecha)
+};
+
+// Umbrales de ALERTA para reunión de apertura (no capa, solo marca)
+var REUNION_OBJETIVO_SEC = 15 * 60;
+var REUNION_ALERTA_SEC = 40 * 60;
+
+function _rowDateYMD(r) {
+  var d = null;
+  if (r.ended_at) d = new Date(r.ended_at);
+  else if (r.started_at) d = new Date(r.started_at);
+  if (!d || isNaN(d.getTime())) return null;
+  return d.getFullYear() + '-' + ('0'+(d.getMonth()+1)).slice(-2) + '-' + ('0'+d.getDate()).slice(-2);
+}
+
+// Devuelve info de saneamiento para UN registro.
+// rawSec: segundos crudos a evaluar (puede ser seconds o prorrateado).
+function sanitizeRowTime(r, rawSec) {
+  var s = (typeof rawSec === 'number') ? rawSec : (parseInt(r.seconds, 10) || 0);
+  if (s < 0) s = 0;
+  var serv = _normService(r.service || '');
+  var result = { sec: s, capped: false, original: s, alert: null };
+
+  // Lavado
+  if (serv.indexOf('lavado') === 0) {
+    if (s > SANITIZE_CAPS.lavado) {
+      result.sec = SANITIZE_CAPS.lavado; result.capped = true;
+    }
+    return result;
+  }
+  // Cierre de taller
+  if (serv.indexOf('cierre de taller') === 0) {
+    if (s > SANITIZE_CAPS.cierre) {
+      result.sec = SANITIZE_CAPS.cierre; result.capped = true;
+    }
+    return result;
+  }
+  // Estándar inicial — cap condicional a la fecha de separación
+  if (serv.indexOf('estandar inicial') === 0) {
+    var ymd = _rowDateYMD(r);
+    if (ymd && ymd >= ESTANDAR_SEP_DATE && s > SANITIZE_CAPS.estandar_inicial) {
+      result.sec = SANITIZE_CAPS.estandar_inicial; result.capped = true;
+    }
+    return result;
+  }
+  // Reunión de apertura — NO capa, marca alerta
+  if (serv.indexOf('reunion de apertura') === 0) {
+    if (s > REUNION_ALERTA_SEC) result.alert = 'larga';
+    else if (s > REUNION_OBJETIVO_SEC) result.alert = 'sobre_objetivo';
+    return result;
+  }
+  // Resto (estándar general, trabajo unidades, etc.) → sin cap
+  return result;
+}
+
+// =====================================================================
+// FASE B · Consolidación por patente
+// Agrupa registros por patente normalizada y entrega UNA fila por unidad
+// con desglose de tiempos saneados. Resuelve el problema de "una patente
+// dispersa en 5 partes del informe".
+// =====================================================================
+function consolidateByPlate(rows, catalog, periodCtx) {
+  rows = rows || [];
+  catalog = catalog || _activityCatCache || [];
+  var hasRange = !!(periodCtx && periodCtx.from && periodCtx.to);
+  var rangeFrom = hasRange ? new Date(periodCtx.from) : null;
+  var rangeTo = hasRange ? new Date(periodCtx.to) : null;
+
+  var byPlate = {};
+
+  rows.forEach(function(r) {
+    // Patente normalizada (sin guiones/espacios). Logística de taller se
+    // agrupa aparte porque no es una unidad de cliente.
+    var rawPlate = r.plate || '';
+    var pNorm = (typeof normalizePlate === 'function')
+      ? normalizePlate(rawPlate)
+      : String(rawPlate).toUpperCase().replace(/[^A-Z0-9]/g, '');
+    var isLogistica = !pNorm || pNorm === 'LOGISTICADETALLER';
+    var key = isLogistica ? '__LOGISTICA__' : pNorm;
+
+    // Tiempo del período (prorrateado si hay rango) y luego saneado
+    var baseSec;
+    if (hasRange && typeof proRateRowInRange === 'function') {
+      var pr = proRateRowInRange(r, rangeFrom, rangeTo);
+      baseSec = (pr.productiveSec || 0) + (pr.pauseSec || 0);
+    } else {
+      baseSec = parseInt(r.seconds, 10) || 0;
+    }
+    var san = sanitizeRowTime(r, baseSec);
+
+    // Clasificar actividad
+    var cls = (typeof classifyActivitySync === 'function')
+      ? classifyActivitySync(r.service, catalog)
+      : { category: 'desconocido', is_productive: false };
+
+    if (!byPlate[key]) {
+      byPlate[key] = {
+        plate: isLogistica ? 'Logística de taller' : rawPlate,
+        plateNorm: key,
+        isLogistica: isLogistica,
+        totalSec: 0,
+        trabajoSec: 0,      // trabajo sobre unidad
+        pausaSec: 0,        // tiempo en pausa
+        soporteSec: 0,      // lavado/estándar sobre esta unidad
+        otrosSec: 0,
+        registros: 0,
+        servicios: {},      // tipo servicio -> count
+        tecnicos: {},       // nombre -> sec
+        capeados: 0,        // cuántos registros se capó
+        alertas: []         // alertas (reunión larga, etc.)
+      };
+    }
+    var p = byPlate[key];
+    p.totalSec += san.sec;
+    p.registros += 1;
+    if (san.capped) p.capeados += 1;
+    if (san.alert) p.alertas.push({ service: r.service, alert: san.alert });
+
+    // Repartir por tipo
+    if (cls.category === 'trabajo_unidad') p.trabajoSec += san.sec;
+    else if (cls.category === 'soporte') p.soporteSec += san.sec;
+    else p.otrosSec += san.sec;
+
+    // Pausa: sumar tiempo de pausas del registro si está disponible
+    if (hasRange && typeof proRateRowInRange === 'function') {
+      var pr2 = proRateRowInRange(r, rangeFrom, rangeTo);
+      p.pausaSec += (pr2.pauseSec || 0);
+    }
+
+    // Tipo de servicio y técnico
+    var sv = r.service || '(sin servicio)';
+    p.servicios[sv] = (p.servicios[sv] || 0) + 1;
+    var who = r.technician || r.username || '(sin técnico)';
+    p.tecnicos[who] = (p.tecnicos[who] || 0) + san.sec;
+  });
+
+  // Convertir a array ordenado por tiempo total desc (las unidades que más
+  // tiempo consumieron arriba — lo más relevante para gestión)
+  var out = [];
+  Object.keys(byPlate).forEach(function(k) { out.push(byPlate[k]); });
+  out.sort(function(a, b) { return b.totalSec - a.totalSec; });
+  return out;
 }
 
 // Devuelve: array de {id, name, username, role, can_tech} o [] en error.
@@ -14066,45 +14248,6 @@ async function renderBossReportes(body) {
     technicianCount: techCountForCapacity
   });
 
-  // ── FASE 3+4: desglose operacional (productividad real, costo diario,
-  //    estándar quién-lo-hace, panel soporte). Aislado: si falla, no
-  //    rompe los KPIs clásicos de arriba.
-  try {
-    var _catalog = await loadActivityCatalog(false);
-    // usersMeta indexado por nombre Y por username (las filas usan technician=nombre)
-    var _usersMeta = {};
-    (techs || []).forEach(function(u) {
-      var meta = {role: u.role, can_tech: u.can_tech === true, is_support: u.is_support === true};
-      if (u.name) _usersMeta[u.name] = meta;
-      if (u.username) _usersMeta[u.username] = meta;
-    });
-    var _periodCtx = {from: b2.from, to: b2.to};
-    var _breakdown = computeOperationalBreakdown(REP.data, _catalog, _usersMeta, _periodCtx);
-
-    // Aviso de cobertura: categorías cuya 1a aparición es posterior al inicio del rango
-    var _coverageNote = null;
-    var _cov = _breakdown.coverageFirstSeen || {};
-    var _rangeStart = new Date(b2.from).getTime();
-    var _late = [];
-    var _catLabels = {apertura:'apertura', cierre:'cierre', logistica:'movimiento de vehículos',
-      abastecimiento:'compras', soporte:'soporte', trabajo_unidad:'trabajo sobre unidades'};
-    Object.keys(_cov).forEach(function(c) {
-      // margen de 1 día para evitar falsos positivos por borde
-      if (_cov[c] && _cov[c] > _rangeStart + 86400000) {
-        var dd = new Date(_cov[c]);
-        _late.push((_catLabels[c] || c) + ' (desde ' + dd.getDate() + '/' + (dd.getMonth()+1) + ')');
-      }
-    });
-    if (_late.length > 0) {
-      _coverageNote = 'Cobertura parcial: ' + _late.join(', ') + '. Totales antes de esas fechas pueden estar subestimados.';
-    }
-
-    renderOperationalBreakdown(body, _breakdown, _coverageNote);
-    logR('OPS_BREAKDOWN_RENDERED', {cats: Object.keys(_breakdown.byCategory || {}).length, unclassified: _breakdown.unclassifiedCount});
-  } catch(eBrk) {
-    logR('OPS_BREAKDOWN_ERR', {msg: eBrk.message}, 'warn');
-  }
-
   // Helper local: caja KPI compacta con label arriba y valor grande abajo.
   // Reemplaza el uso directo de kpiBox() para tener más control tipográfico.
   function repKpiCell(label, value, sub, color) {
@@ -14349,6 +14492,46 @@ async function renderBossReportes(body) {
     tblCard.appendChild(listCard);
   }
   body.appendChild(tblCard);
+
+
+  // ── FASE 3+4: desglose operacional (productividad real, costo diario,
+  //    estándar quién-lo-hace, panel soporte). Aislado: si falla, no
+  //    rompe los KPIs clásicos de arriba.
+  try {
+    var _catalog = await loadActivityCatalog(false);
+    // usersMeta indexado por nombre Y por username (las filas usan technician=nombre)
+    var _usersMeta = {};
+    (techs || []).forEach(function(u) {
+      var meta = {role: u.role, can_tech: u.can_tech === true, is_support: u.is_support === true};
+      if (u.name) _usersMeta[u.name] = meta;
+      if (u.username) _usersMeta[u.username] = meta;
+    });
+    var _periodCtx = {from: b2.from, to: b2.to};
+    var _breakdown = computeOperationalBreakdown(REP.data, _catalog, _usersMeta, _periodCtx);
+
+    // Aviso de cobertura: categorías cuya 1a aparición es posterior al inicio del rango
+    var _coverageNote = null;
+    var _cov = _breakdown.coverageFirstSeen || {};
+    var _rangeStart = new Date(b2.from).getTime();
+    var _late = [];
+    var _catLabels = {apertura:'apertura', cierre:'cierre', logistica:'movimiento de vehículos',
+      abastecimiento:'compras', soporte:'soporte', trabajo_unidad:'trabajo sobre unidades'};
+    Object.keys(_cov).forEach(function(c) {
+      // margen de 1 día para evitar falsos positivos por borde
+      if (_cov[c] && _cov[c] > _rangeStart + 86400000) {
+        var dd = new Date(_cov[c]);
+        _late.push((_catLabels[c] || c) + ' (desde ' + dd.getDate() + '/' + (dd.getMonth()+1) + ')');
+      }
+    });
+    if (_late.length > 0) {
+      _coverageNote = 'Cobertura parcial: ' + _late.join(', ') + '. Totales antes de esas fechas pueden estar subestimados.';
+    }
+
+    renderOperationalBreakdown(body, _breakdown, _coverageNote);
+    logR('OPS_BREAKDOWN_RENDERED', {cats: Object.keys(_breakdown.byCategory || {}).length, unclassified: _breakdown.unclassifiedCount});
+  } catch(eBrk) {
+    logR('OPS_BREAKDOWN_ERR', {msg: eBrk.message}, 'warn');
+  }
 }
 
 // Helper: box de KPI
@@ -24322,8 +24505,59 @@ function generatePDFGestion() {
   var kpis = computeKPIs(rows, {from: rbG.from, to: rbG.to});
   var y = pdfRenderHeaderBlock(doc, 'Reporte de Gestion', repRangeLabel(), kpis);
 
+
+  // ── FASE B: Resumen por unidad (patente) — una fila por patente con
+  //    tiempos saneados. Resuelve la dispersión de una patente en varias
+  //    partes del informe. Si falla, no rompe el resto del PDF.
+  try {
+    var _catG = (typeof _activityCatCache !== 'undefined' && _activityCatCache) ? _activityCatCache : [];
+    var _consol = consolidateByPlate(rows, _catG, {from: rbG.from, to: rbG.to});
+    // Solo unidades reales (excluir logística de taller de esta tabla)
+    var _unidades = _consol.filter(function(u){ return !u.isLogistica; });
+    if (_unidades.length > 0) {
+      y = pdfSectionTitle(doc, 1, 'Resumen por unidad (patente)', y);
+      var _plateRows = _unidades.map(function(u) {
+        var topTech = '';
+        var maxSec = 0;
+        Object.keys(u.tecnicos).forEach(function(t){
+          if (u.tecnicos[t] > maxSec) { maxSec = u.tecnicos[t]; topTech = t; }
+        });
+        var marca = u.capeados > 0 ? ' \u26A0' : '';
+        return [
+          u.plate + marca,
+          fmtHM(u.trabajoSec),
+          fmtHM(u.pausaSec),
+          fmtHM(u.totalSec),
+          topTech,
+          u.registros + ''
+        ];
+      });
+      doc.autoTable({
+        startY: y,
+        head: [['Patente','Trabajo','Pausa','Total','Tecnico principal','Reg.']],
+        body: _plateRows,
+        theme: 'plain',
+        styles: {fontSize: 8, cellPadding: 2, lineColor: PDF_COLORS.grayBorder, lineWidth: 0.1},
+        headStyles: {fillColor: PDF_COLORS.black, textColor: PDF_COLORS.white, fontStyle: 'bold'},
+        alternateRowStyles: {fillColor: PDF_COLORS.grayBg}
+      });
+      y = doc.lastAutoTable.finalY + 6;
+      // Nota de leyenda si hubo capeos
+      var _totCap = 0;
+      _unidades.forEach(function(u){ _totCap += u.capeados; });
+      if (_totCap > 0) {
+        doc.setFont('helvetica','italic'); doc.setFontSize(7);
+        doc.setTextColor.apply(doc, PDF_COLORS.grayMid);
+        doc.text('\u26A0 = incluye registros con tiempo corregido (cronometro fuera de rango fisico).', 14, y);
+        y += 6;
+      }
+    }
+  } catch(ePlate) {
+    logR('PDF_PLATE_SECTION_ERR', {msg: ePlate.message}, 'warn');
+  }
+
   // Distribucion de carga por tecnico
-  y = pdfSectionTitle(doc, 1, 'Distribucion de carga por tecnico', y);
+  y = pdfSectionTitle(doc, 2, 'Distribucion de carga por tecnico', y);
   // FRENTE 9.4 (2026-05-14): prorratear seconds por técnico al rango del
   // reporte. Antes la suma cruda permitía que un servicio multi-día se
   // contara entero — distorsionaba ranking de "más productivo".
@@ -24368,7 +24602,7 @@ function generatePDFGestion() {
 
   // Tipos de servicio mas frecuentes
   if (y > 230) { doc.addPage(); y = 28; pdfDrawHeader(doc, 'Reporte de Gestion'); }
-  y = pdfSectionTitle(doc, 2, 'Tipos de servicio mas frecuentes', y);
+  y = pdfSectionTitle(doc, 3, 'Tipos de servicio mas frecuentes', y);
   var bySrv = {};
   rows.forEach(function(r) {
     if (!bySrv[r.service]) bySrv[r.service] = {count: 0, seconds: 0, onTime: 0, withGoal: 0};
@@ -24402,7 +24636,7 @@ function generatePDFGestion() {
   var reasons = Object.keys(kpis.pauseReasons);
   if (reasons.length) {
     if (y > 230) { doc.addPage(); y = 28; pdfDrawHeader(doc, 'Reporte de Gestion'); }
-    y = pdfSectionTitle(doc, 3, 'Motivos de pausa (ordenados por tiempo)', y);
+    y = pdfSectionTitle(doc, 4, 'Motivos de pausa (ordenados por tiempo)', y);
     var reasonRows = reasons
       .map(function(k) { return [k, kpis.pauseReasons[k].count, fmtHM(kpis.pauseReasons[k].seconds)]; })
       .sort(function(a,b) {
