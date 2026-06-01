@@ -24196,10 +24196,19 @@ function pdfKPIBox(doc, x, y, w, h, label, value, color) {
   doc.setLineWidth(0.2);
   doc.rect(x, y, w, h, 'S');
   // Valor
+  // BUG-FIX titulo-cortado: el value se dibuja centrado a 18pt fijo. Strings
+  // largos ("143 · 45 sesiones pend.") desbordaban el ancho de la caja y se
+  // veían cortados. Auto-reducimos el tamaño hasta que quepa en (w - margen).
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(18);
   doc.setTextColor.apply(doc, color || PDF_COLORS.black);
-  doc.text(value, x + w/2, y + h/2 + 1, {align: 'center'});
+  var _fs = 18;
+  var _maxW = w - 4; // 2mm de aire a cada lado
+  doc.setFontSize(_fs);
+  while (_fs > 7 && doc.getTextWidth(String(value)) > _maxW) {
+    _fs -= 0.5;
+    doc.setFontSize(_fs);
+  }
+  doc.text(String(value), x + w/2, y + h/2 + 1, {align: 'center'});
   // Label
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(7);
@@ -24548,7 +24557,197 @@ function generatePDFTecnico() {
 // ──────────────────────────────────────────────
 // REPORTE DE GESTION — tendencias y decisiones
 // ──────────────────────────────────────────────
-function generatePDFGestion() {
+// ──────────────────────────────────────────────────────────────
+// RESUMEN EJECUTIVO (PDF Gestión) — lectura + recomendación para
+// jefatura. Va primero, antes del detalle por unidad.
+// ──────────────────────────────────────────────────────────────
+
+// Categorías de servicio consideradas SOPORTE/LOGÍSTICA de taller (no
+// trabajo sobre una unidad de cliente). Coinciden con la clasificación
+// 'soporte' de _classifyLocal + la fila Logística de taller.
+var PDF_SOPORTE_SERVICES = [
+  'Movimiento de vehiculos', 'Lavado de vehiculos', 'Compras',
+  'Estandar inicial del dia', 'Reunion de apertura', 'Cierre de taller',
+  'Estandar de taller'
+];
+
+// Fetch async del embudo de OT — estado VIVO desde work_orders.status
+// (no del CSV/registros de tiempo, que congelan estado). Devuelve un
+// objeto {closed, in_progress, pending_visado, assigned,
+// pending_double_check, open, total} o null si falla (degradación
+// elegante: el resumen se dibuja sin la línea de embudo).
+async function pdfFetchEmbudoOT() {
+  try {
+    var r = await sb.from('work_orders').select('status');
+    if (!r || r.error || !Array.isArray(r.data)) {
+      logR('PDF_EMBUDO_FETCH_ERR', {msg: r && r.error ? r.error.message : 'sin data'}, 'warn');
+      return null;
+    }
+    var counts = {};
+    r.data.forEach(function(w) {
+      var s = w.status || 'desconocido';
+      counts[s] = (counts[s] || 0) + 1;
+    });
+    counts.total = r.data.length;
+    return counts;
+  } catch (e) {
+    logR('PDF_EMBUDO_THREW', {msg: e.message}, 'warn');
+    return null;
+  }
+}
+
+// Dibuja el bloque "Resumen ejecutivo". Recibe kpis (ya calculado),
+// las filas del período, el consolidado por patente (para el % de
+// soporte saneado), el embudo de OT (o null), y la 'y' actual.
+// Retorna la nueva 'y'. Tono: lectura (qué significa) + recomendación
+// (qué hacer), en cursiva.
+function pdfRenderResumenEjecutivo(doc, kpis, rows, consol, embudo, y) {
+  var W = doc.internal.pageSize.getWidth();
+  var maxW = W - 28; // márgenes 14mm
+
+  // Salto de página defensivo si no cabe el encabezado del bloque.
+  if (y > 250) { doc.addPage(); y = 20; }
+
+  // Título de sección
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(11);
+  doc.setTextColor.apply(doc, PDF_COLORS.black);
+  doc.text('RESUMEN EJECUTIVO', 14, y);
+  y += 2;
+  doc.setDrawColor.apply(doc, PDF_COLORS.black);
+  doc.setLineWidth(0.4);
+  doc.line(14, y, W - 14, y);
+  y += 6;
+
+  // ── Cálculo de métricas (todas derivadas, nada hardcodeado) ──
+  var capSec = kpis.capacitySec || 0;
+  var prodSec = kpis.productiveSec || 0;
+  // Utilización = productivo / capacidad (mismo criterio que el header HTML).
+  var utilPct = capSec > 0 ? Math.round((prodSec / capSec) * 100) : null;
+  var prodH = Math.round(prodSec / 360) / 10;
+  var capH = Math.round(capSec / 360) / 10;
+
+  // Cumplimiento = % en objetivo (refleja al equipo técnico).
+  var cumplPct = kpis.withGoal > 0 ? kpis.pctOnTime : null;
+
+  // % Soporte/logística sobre tiempo efectivo del taller, vía consolidado
+  // saneado: soporte sobre unidades + toda la fila Logística de taller.
+  var soporteSec = 0, efectivoSec = 0;
+  (consol || []).forEach(function(u) {
+    if (u.isLogistica) {
+      soporteSec += u.totalSec;
+      efectivoSec += u.totalSec;
+    } else {
+      soporteSec += (u.soporteSec || 0);
+      efectivoSec += (u.trabajoSec || 0) + (u.soporteSec || 0);
+    }
+  });
+  var soportePct = efectivoSec > 0 ? Math.round((soporteSec / efectivoSec) * 100) : null;
+
+  // Cuello de botella: pausa que más TIEMPO de trabajo iniciado detiene.
+  // (No la más frecuente — esa suele ser "término de jornada".) Buscamos
+  // "repuestos / falta de repuestos" explícitamente; si no, el top por seg.
+  var topPause = null, topPauseSec = 0;
+  var pr = kpis.pauseReasons || {};
+  Object.keys(pr).forEach(function(k) {
+    if (pr[k].seconds > topPauseSec) { topPauseSec = pr[k].seconds; topPause = k; }
+  });
+  var repuestosKey = null;
+  Object.keys(pr).forEach(function(k) {
+    if (/repuesto/i.test(k)) repuestosKey = k;
+  });
+
+  // Helper interno: dibuja una línea "negrita: lectura" + recomendación
+  // en cursiva debajo. Maneja salto de página.
+  function bloque(titulo, lectura, recomendacion) {
+    if (y > 270) { doc.addPage(); y = 20; }
+    // Línea de lectura (título en negrita + texto normal, mismo párrafo).
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9);
+    doc.setTextColor.apply(doc, PDF_COLORS.black);
+    var tW = doc.getTextWidth(titulo + ' ');
+    doc.text(titulo, 14, y);
+    doc.setFont('helvetica', 'normal');
+    var lectLines = doc.splitTextToSize(lectura, maxW - tW);
+    if (lectLines.length) {
+      doc.text(lectLines[0], 14 + tW, y);
+      for (var i = 1; i < lectLines.length; i++) {
+        y += 4.5;
+        doc.text(lectLines[i], 14, y);
+      }
+    }
+    y += 5;
+    // Recomendación en cursiva gris.
+    doc.setFont('helvetica', 'italic');
+    doc.setFontSize(8);
+    doc.setTextColor.apply(doc, PDF_COLORS.grayMid);
+    var recLines = doc.splitTextToSize(recomendacion, maxW);
+    recLines.forEach(function(ln) { doc.text(ln, 14, y); y += 4; });
+    y += 3;
+  }
+
+  // ── Utilización ──
+  if (utilPct !== null) {
+    bloque(
+      'Utilización ' + utilPct + '% —',
+      'El taller usó ' + prodH + 'h de ' + capH + 'h de capacidad disponible.',
+      (utilPct < 50
+        ? 'Buena parte de las horas-técnico no se tradujeron en trabajo cronometrado: revisar si es captura incompleta de tiempos o capacidad ociosa real.'
+        : 'Nivel de utilización razonable; mantener el seguimiento de captura de tiempos.')
+    );
+  }
+
+  // ── Cumplimiento ──
+  if (cumplPct !== null) {
+    bloque(
+      'Cumplimiento ' + cumplPct + '% —',
+      (cumplPct >= 50 ? 'Algo más de la mitad' : 'Menos de la mitad') +
+        ' de los servicios con meta se cerraron en tiempo. Refleja al equipo técnico (el soporte no lo distorsiona).',
+      'Revisar calibración de metas o bloqueos recurrentes.'
+    );
+  }
+
+  // ── Soporte y logística ──
+  if (soportePct !== null) {
+    bloque(
+      'Soporte y logística: ' + soportePct + '% del tiempo —',
+      'Esa fracción de las horas se va en movimientos, lavados, compras, apertura y cierre.',
+      'Evaluar si parte puede concentrarse en soporte y liberar horas técnicas.'
+    );
+  }
+
+  // ── Cuello de botella (repuestos) ──
+  if (repuestosKey || topPause) {
+    var cuelloLabel = repuestosKey || topPause;
+    bloque(
+      'Cuello de botella: ' + cuelloLabel + ' —',
+      'Principal pausa que detiene trabajo ya iniciado.',
+      'Acción correctiva en abastecimiento.'
+    );
+  }
+
+  // ── Embudo de OT ──
+  if (embudo && embudo.total > 0) {
+    var closed = embudo.closed || 0;
+    var visado = embudo.pending_visado || 0;
+    var dobleC = embudo.pending_double_check || 0;
+    var sinArrancar = (embudo.open || 0) + (embudo.assigned || 0);
+    var enCalidad = visado + dobleC;
+    var cierrePct = Math.round((closed / embudo.total) * 100);
+    bloque(
+      'Embudo de OT: ' + cierrePct + '% de cierre —',
+      'De ' + embudo.total + ' OT: ' + closed + ' cerradas, ' + enCalidad +
+        ' atascadas en control de calidad (' + visado + ' visado + ' + dobleC +
+        ' doble control), ' + sinArrancar + ' sin arrancar.',
+      'El cuello del cierre es el control de calidad, no la ejecución.'
+    );
+  }
+
+  y += 2;
+  return y;
+}
+
+async function generatePDFGestion() {
   if (!pdfCheckLoaded()) return;
   var rows = REP.data;
   if (!rows.length) { showGlobalError('No hay servicios en el periodo para generar reporte.', 5000); return; }
@@ -24560,13 +24759,29 @@ function generatePDFGestion() {
   var kpis = computeKPIs(rows, {from: rbG.from, to: rbG.to, technicianCount: pdfResolveTechCount(rows)});
   var y = pdfRenderHeaderBlock(doc, 'Reporte de Gestion', repRangeLabel(), kpis);
 
+  // Consolidado por patente (saneado). Se eleva aquí para reutilizarlo en
+  // el Resumen Ejecutivo (% soporte) y en la tabla "Resumen por unidad".
+  var _catG = (typeof _activityCatCache !== 'undefined' && _activityCatCache) ? _activityCatCache : [];
+  var _consol = [];
+  try { _consol = consolidateByPlate(rows, _catG, {from: rbG.from, to: rbG.to}); }
+  catch (eC) { logR('PDF_CONSOL_ERR', {msg: eC.message}, 'warn'); }
+
+  // Embudo de OT — estado vivo desde work_orders.status (async). Si falla,
+  // el resumen se dibuja sin esa línea (degradación elegante).
+  var _embudo = await pdfFetchEmbudoOT();
+
+  // ── RESUMEN EJECUTIVO (lo primero que lee la jefatura) ──
+  try {
+    y = pdfRenderResumenEjecutivo(doc, kpis, rows, _consol, _embudo, y);
+  } catch (eRE) {
+    logR('PDF_RESUMEN_EJEC_ERR', {msg: eRE.message}, 'warn');
+  }
+
 
   // ── FASE B: Resumen por unidad (patente) — una fila por patente con
   //    tiempos saneados. Resuelve la dispersión de una patente en varias
   //    partes del informe. Si falla, no rompe el resto del PDF.
   try {
-    var _catG = (typeof _activityCatCache !== 'undefined' && _activityCatCache) ? _activityCatCache : [];
-    var _consol = consolidateByPlate(rows, _catG, {from: rbG.from, to: rbG.to});
     // Solo unidades reales (excluir logística de taller de esta tabla)
     var _unidades = _consol.filter(function(u){ return !u.isLogistica; });
     if (_unidades.length > 0) {
