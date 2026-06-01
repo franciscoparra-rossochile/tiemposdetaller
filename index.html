@@ -4050,6 +4050,91 @@ window.invalidateAssignableTechsCache = invalidateAssignableTechsCache;
 // opts.includeId: si se pasa, garantiza que ese user_id esté en la lista
 //   (útil para edición — mantiene visible un técnico ya asignado aunque
 //   su perfil haya cambiado a no-asignable).
+
+// =====================================================================
+// FASE 2a · Clasificador de actividad operacional (ROSSO OPS)
+// Lee catalogo editable desde Supabase (activity_categories) y clasifica
+// cada Servicio en su categoria operacional. Base de los informes de
+// productividad. NO altera ningun calculo existente: solo clasifica.
+// Categorias: trabajo_unidad | apertura | cierre | logistica |
+//             abastecimiento | soporte | desconocido
+// =====================================================================
+var _activityCatCache = null;
+var _activityCatCacheAt = 0;
+var _ACTIVITY_CAT_TTL_MS = 10 * 60 * 1000; // 10 min
+
+function _normService(s) {
+  if (!s || typeof s !== 'string') return '';
+  return s.toLowerCase().trim()
+    .replace(/[\u00e1\u00e0\u00e4]/g, 'a').replace(/[\u00e9\u00e8\u00eb]/g, 'e')
+    .replace(/[\u00ed\u00ec\u00ef]/g, 'i').replace(/[\u00f3\u00f2\u00f6]/g, 'o')
+    .replace(/[\u00fa\u00f9\u00fc]/g, 'u');
+}
+
+async function loadActivityCatalog(force) {
+  var now = Date.now();
+  if (!force && _activityCatCache && (now - _activityCatCacheAt) < _ACTIVITY_CAT_TTL_MS) {
+    return _activityCatCache;
+  }
+  try {
+    var r = await sb.from('activity_categories')
+      .select('match_type, service_match, category, is_productive');
+    if (r && r.error) {
+      logR('ACTIVITY_CAT_FETCH_ERR', {msg: r.error.message}, 'warn');
+      return _activityCatCache || []; // degradacion graceful
+    }
+    _activityCatCache = (r && r.data) || [];
+    _activityCatCacheAt = now;
+    logR('ACTIVITY_CAT_CACHED', {rules: _activityCatCache.length});
+    return _activityCatCache;
+  } catch (e) {
+    logR('ACTIVITY_CAT_THREW', {msg: e.message}, 'warn');
+    return _activityCatCache || [];
+  }
+}
+
+// Clasifica usando el catalogo ya cargado (sincrono).
+// Devuelve {category, is_productive, matched}.
+function classifyActivitySync(servicio, catalog) {
+  var s = _normService(servicio);
+  if (!s) return { category: 'desconocido', is_productive: false, matched: false };
+  catalog = catalog || _activityCatCache || [];
+
+  var i;
+  // 1) match exacto primero (mas especifico)
+  for (i = 0; i < catalog.length; i++) {
+    if (catalog[i] && catalog[i].match_type === 'exact' && s === catalog[i].service_match) {
+      return { category: catalog[i].category, is_productive: catalog[i].is_productive === true, matched: true };
+    }
+  }
+  // 2) match por prefijo
+  for (i = 0; i < catalog.length; i++) {
+    if (catalog[i] && catalog[i].match_type === 'prefix' && s.indexOf(catalog[i].service_match) === 0) {
+      return { category: catalog[i].category, is_productive: catalog[i].is_productive === true, matched: true };
+    }
+  }
+  // 3) Fallback NO silencioso: registra para auditar y avisar en informe
+  _recordUnclassified(servicio);
+  return { category: 'desconocido', is_productive: false, matched: false };
+}
+
+// Helper de conveniencia
+function isProductiveActivity(categoria) {
+  return categoria === 'trabajo_unidad';
+}
+
+// Registra servicio no clasificado (fire-and-forget, no bloquea el flujo)
+function _recordUnclassified(servicio) {
+  if (!servicio) return;
+  try {
+    sb.rpc('bump_unclassified', { p_service: servicio }).then(function (r) {
+      if (r && r.error) logR('UNCLASSIFIED_RPC_ERR', { msg: r.error.message }, 'warn');
+    });
+  } catch (e) {
+    logR('UNCLASSIFIED_THREW', { msg: e.message }, 'warn');
+  }
+}
+
 // Devuelve: array de {id, name, username, role, can_tech} o [] en error.
 async function getAssignableTechs(opts) {
   opts = opts || {};
