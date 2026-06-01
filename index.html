@@ -4681,6 +4681,33 @@ function sanitizeRowTime(r, rawSec) {
 // con desglose de tiempos saneados. Resuelve el problema de "una patente
 // dispersa en 5 partes del informe".
 // =====================================================================
+// Clasificación LOCAL (reglas embebidas, espejo del catálogo activity_categories).
+// Usada por consolidateByPlate para no depender de la carga asíncrona del cache.
+function _classifyLocal(servicio) {
+  var s = _normService(servicio || '');
+  if (!s) return { category: 'desconocido', is_productive: false };
+  // Exactos (no productivos)
+  if (s.indexOf('estandar inicial') === 0) return { category: 'apertura', is_productive: false };
+  if (s.indexOf('reunion de apertura') === 0) return { category: 'apertura', is_productive: false };
+  if (s.indexOf('cierre de taller') === 0) return { category: 'cierre', is_productive: false };
+  if (s.indexOf('movimiento de vehiculo') === 0) return { category: 'logistica', is_productive: false };
+  if (s.indexOf('compras') === 0) return { category: 'abastecimiento', is_productive: false };
+  if (s.indexOf('lavado de vehiculo') === 0) return { category: 'soporte', is_productive: false };
+  if (s.indexOf('estandar de taller') === 0) return { category: 'soporte', is_productive: false };
+  // Prefijos (trabajo sobre unidad)
+  if (s.indexOf('reparaciones generales') === 0) return { category: 'trabajo_unidad', is_productive: true };
+  if (s.indexOf('mantenimiento') === 0) return { category: 'trabajo_unidad', is_productive: true };
+  if (s.indexOf('mantencion') === 0) return { category: 'trabajo_unidad', is_productive: true };
+  if (s.indexOf('diagnostico') === 0) return { category: 'trabajo_unidad', is_productive: true };
+  if (s.indexOf('servicio de frenos') === 0) return { category: 'trabajo_unidad', is_productive: true };
+  if (s.indexOf('cambio de aceite') === 0) return { category: 'trabajo_unidad', is_productive: true };
+  if (s.indexOf('garantia') === 0) return { category: 'trabajo_unidad', is_productive: true };
+  if (s.indexOf('postura de dpf') === 0) return { category: 'trabajo_unidad', is_productive: true };
+  if (s.indexOf('recuperacion de dpf') === 0) return { category: 'trabajo_unidad', is_productive: true };
+  // Fallback: tratar como trabajo de unidad (la mayoría del texto libre es reparación)
+  return { category: 'trabajo_unidad', is_productive: true };
+}
+
 function consolidateByPlate(rows, catalog, periodCtx) {
   rows = rows || [];
   catalog = catalog || _activityCatCache || [];
@@ -4700,20 +4727,21 @@ function consolidateByPlate(rows, catalog, periodCtx) {
     var isLogistica = !pNorm || pNorm === 'LOGISTICADETALLER';
     var key = isLogistica ? '__LOGISTICA__' : pNorm;
 
-    // Tiempo del período (prorrateado si hay rango) y luego saneado
+    // Tiempo EFECTIVO del período (solo productivo, sin pausa ni calendario),
+    // luego saneado. No sumamos pauseSec: el tiempo entre jornadas no es
+    // tiempo de taller y producía totales imposibles (ej: 210h por unidad).
     var baseSec;
     if (hasRange && typeof proRateRowInRange === 'function') {
       var pr = proRateRowInRange(r, rangeFrom, rangeTo);
-      baseSec = (pr.productiveSec || 0) + (pr.pauseSec || 0);
+      baseSec = (pr.productiveSec || 0);
     } else {
       baseSec = parseInt(r.seconds, 10) || 0;
     }
     var san = sanitizeRowTime(r, baseSec);
 
-    // Clasificar actividad
-    var cls = (typeof classifyActivitySync === 'function')
-      ? classifyActivitySync(r.service, catalog)
-      : { category: 'desconocido', is_productive: false };
+    // Clasificar actividad — reglas LOCALES embebidas (no depende del cache
+    // de Supabase, que puede estar vacío al generar el PDF de forma síncrona).
+    var cls = _classifyLocal(r.service);
 
     if (!byPlate[key]) {
       byPlate[key] = {
@@ -4742,12 +4770,6 @@ function consolidateByPlate(rows, catalog, periodCtx) {
     if (cls.category === 'trabajo_unidad') p.trabajoSec += san.sec;
     else if (cls.category === 'soporte') p.soporteSec += san.sec;
     else p.otrosSec += san.sec;
-
-    // Pausa: sumar tiempo de pausas del registro si está disponible
-    if (hasRange && typeof proRateRowInRange === 'function') {
-      var pr2 = proRateRowInRange(r, rangeFrom, rangeTo);
-      p.pausaSec += (pr2.pauseSec || 0);
-    }
 
     // Tipo de servicio y técnico
     var sv = r.service || '(sin servicio)';
@@ -24523,18 +24545,19 @@ function generatePDFGestion() {
           if (u.tecnicos[t] > maxSec) { maxSec = u.tecnicos[t]; topTech = t; }
         });
         var marca = u.capeados > 0 ? ' \u26A0' : '';
+        var efectivo = u.trabajoSec + u.soporteSec;
         return [
           u.plate + marca,
           fmtHM(u.trabajoSec),
-          fmtHM(u.pausaSec),
-          fmtHM(u.totalSec),
+          fmtHM(u.soporteSec),
+          fmtHM(efectivo),
           topTech,
           u.registros + ''
         ];
       });
       doc.autoTable({
         startY: y,
-        head: [['Patente','Trabajo','Pausa','Total','Tecnico principal','Reg.']],
+        head: [['Patente','Trabajo','Soporte','Total efectivo','Tecnico principal','Reg.']],
         body: _plateRows,
         theme: 'plain',
         styles: {fontSize: 8, cellPadding: 2, lineColor: PDF_COLORS.grayBorder, lineWidth: 0.1},
