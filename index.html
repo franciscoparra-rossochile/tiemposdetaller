@@ -1106,7 +1106,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // FIX QW-12 (2026-04-30): config global única para evitar drift entre scripts.
 // Cualquier ajuste de timeouts/intervals va aqui y los demas scripts lo leen.
 window.RossoConfig = Object.freeze({
-  APP_VERSION: 'v2.8.3-cierre-sino',            // 2026-06-11: Cierre local con SÍ/NO/N/A + comentarios (No exige comentario)
+  APP_VERSION: 'v2.8.4-tiempo-real',            // 2026-06-11: Fix #6 tiempo sesión activa real (no filtrado por jornada) — corrige "40min→1seg"
   SDK_TIMEOUT_MS: 8000,
   CONN_TIMEOUT_MS: 5000,
   EMERGENCY_TIMEOUT_MS: 15000,
@@ -1613,6 +1613,31 @@ function computeAccumulatedEffectivePauseMs(sess) {
   }
   return total;
 }
+
+// computeAccumulatedRawPauseMs(sess) — total de pausas en tiempo REAL (crudo),
+// SIN filtrar por jornada laboral. Se usa para el cálculo de duración de la
+// sesión activa (liveSecondsNow), donde el tiempo trabajado se mide real —
+// incluido el trabajo fuera de horario (turnos extra, cierres tardíos, support).
+// El filtro de jornada se conserva SOLO para el prorrateo de pausas largas en
+// reportes (computeAccumulatedEffectivePauseMs), que es donde nació.
+function computeAccumulatedRawPauseMs(sess) {
+  if (!sess) return 0;
+  var pauses = sess.pauses || [];
+  var total = 0;
+  for (var i = 0; i < pauses.length; i++) {
+    var p = pauses[i];
+    if (p && p.paused_at && p.resumed_at) {
+      var a = new Date(p.paused_at).getTime();
+      var b = new Date(p.resumed_at).getTime();
+      if (isFinite(a) && isFinite(b) && b > a) total += (b - a);
+    } else if (p && typeof p.duration_ms === 'number' && !p.paused_at) {
+      total += p.duration_ms; // pausa legacy sin timestamps
+    }
+    // Pausa abierta (paused_at sin resumed_at): NO se suma aquí (la maneja liveSecondsNow).
+  }
+  return total;
+}
+window.computeAccumulatedRawPauseMs = computeAccumulatedRawPauseMs;
 
 // workableMsInRange(from, to) — capacidad laboral teórica del taller entre
 // dos timestamps, en milisegundos. Reusa effectivePauseMsBetween: la
@@ -7223,11 +7248,19 @@ function liveSecondsNow(s) {
   // Antes: (now - started) sumaba la noche completa; (acc_paused_ms) era
   // tiempo crudo. Ambos se cancelaban parcialmente pero el resultado era
   // sensible al instante exacto del polling. Ahora todo es laboral.
-  var elapsedMs = effectivePauseMsBetween(started, now);
+  //
+  // FIX #6 (2026-06-11): el tiempo de la SESIÓN ACTIVA se mide REAL (crudo),
+  // no filtrado por jornada. Causa raíz del bug "40 min → 1 segundo": un técnico
+  // que trabaja fuera del horario laboral (cierre tardío, turno extra, support)
+  // veía su tiempo colapsar a ~0 porque effectivePauseMsBetween descartaba todo
+  // lo que cae fuera de los bloques de WORK_HOURS. Ahora se cuenta el tiempo real
+  // entre started_at y now, menos pausas REALES (crudas). El filtro de jornada se
+  // conserva SOLO para el prorrateo de pausas largas en reportes (donde nació,
+  // para evitar que una pausa nocturna sume 13h falsas).
+  var elapsedMs = now - started;
 
-  // Pausas cerradas: usar el recálculo efectivo (no el `accumulated_paused_ms`
-  // legacy de BD, que está contaminado con tiempo no laboral).
-  var pausedClosedMs = computeAccumulatedEffectivePauseMs(s);
+  // Pausas cerradas: tiempo REAL (crudo), coherente con el lapso real de arriba.
+  var pausedClosedMs = computeAccumulatedRawPauseMs(s);
   elapsedMs -= pausedClosedMs;
 
   // FASE 2.6 SANITY: si la BD dice que la sesion esta pausada pero falta paused_at,
@@ -7237,12 +7270,12 @@ function liveSecondsNow(s) {
     inferredPause = new Date(s.updated_at).getTime();
   }
 
-  // Si esta pausado ahora, restar tambien el tiempo desde que empezo la pausa actual
-  // (ahora también en horario laboral).
+  // Si esta pausado ahora, restar tambien el tiempo desde que empezo la pausa
+  // actual — también en tiempo REAL (crudo), coherente con el resto del cálculo.
   if (s.status === 'paused') {
     var pausedAt = s.paused_at ? new Date(s.paused_at).getTime() : inferredPause;
-    if (pausedAt && !isNaN(pausedAt)) {
-      elapsedMs -= effectivePauseMsBetween(pausedAt, now);
+    if (pausedAt && !isNaN(pausedAt) && now > pausedAt) {
+      elapsedMs -= (now - pausedAt);
     }
   }
 
