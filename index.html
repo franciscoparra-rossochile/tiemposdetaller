@@ -1108,7 +1108,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // FIX QW-12 (2026-04-30): config global única para evitar drift entre scripts.
 // Cualquier ajuste de timeouts/intervals va aqui y los demas scripts lo leen.
 window.RossoConfig = Object.freeze({
-  APP_VERSION: 'v2.8.4-tiempo-real',            // 2026-06-11: Fix #6 tiempo sesión activa real (no filtrado por jornada) — corrige "40min→1seg"
+  APP_VERSION: 'v2.8.5-gate-checklist-texto',            // 2026-06-11: Fix texto candado doble control (checklist técnico vs pauta según servicio) + OPS en headers
   SDK_TIMEOUT_MS: 8000,
   CONN_TIMEOUT_MS: 5000,
   EMERGENCY_TIMEOUT_MS: 15000,
@@ -18609,7 +18609,16 @@ async function openMyOTDetail(otId) {
     +   (hasChecklist && techDone
         ? '<button class="btn btn-gold" onclick="openDoubleCheck(\'' + o.id + '\')">' + (dcDone ? '✏️ Editar doble control' : '✅ 2. Doble control de cierre') + '</button>'
         : (hasChecklist
-            ? '<button class="btn" disabled style="opacity:.4;cursor:not-allowed" title="Completa la pauta de inspección primero">🔒 2. Doble control (cerrar pauta primero)</button>'
+            ? (function(){
+                // El texto del candado debe reflejar el tipo de servicio: "pauta de
+                // inspección" solo cuando hay pauta v2; "checklist técnico" para el
+                // resto (reparaciones, frenos, diagnóstico, DPF, garantía). Antes
+                // decía "pauta" siempre, confundiendo a técnicos como Benjamín en
+                // Reparaciones generales (que no lleva pauta).
+                var usesPautaV2b = (typeof hasPautaV2 === 'function') && hasPautaV2(o.service_classification);
+                var paso1 = usesPautaV2b ? 'la pauta de inspección' : 'el checklist técnico';
+                return '<button class="btn" disabled style="opacity:.4;cursor:not-allowed" title="Completa ' + paso1 + ' primero">🔒 2. Doble control (completa ' + paso1 + ' primero)</button>';
+              })()
             : ''))
     + '</div>';
   openModal('m-my-ot');
