@@ -1108,7 +1108,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // FIX QW-12 (2026-04-30): config global única para evitar drift entre scripts.
 // Cualquier ajuste de timeouts/intervals va aqui y los demas scripts lo leen.
 window.RossoConfig = Object.freeze({
-  APP_VERSION: 'v2.8.5-gate-checklist-texto',            // 2026-06-11: Fix texto candado doble control (checklist técnico vs pauta según servicio) + OPS en headers
+  APP_VERSION: 'v2.8.6-sync-ot',            // 2026-06-11: Fix #2 sync assigned_user_id en rol responsible + bloqueo apoyo-como-responsable (protege foco OT)
   SDK_TIMEOUT_MS: 8000,
   CONN_TIMEOUT_MS: 5000,
   EMERGENCY_TIMEOUT_MS: 15000,
@@ -12790,6 +12790,21 @@ async function _waSubmit() {
     });
   }
 
+  // PROTECCIÓN DE FOCO (2026-06-11): un objetivo de APOYO (lavado, apoyo
+  // genérico) NO puede asignarse con rol "Responsable". El responsable es el
+  // dueño de la garantía y del foco técnico de la OT; un lavado o tarea de
+  // apoyo es satélite, no puede tomar el control de una OT de reparación ni
+  // pisar su servicio principal. Si se intenta, se bloquea con mensaje claro.
+  var APOYO_OBJECTIVES = ['lavado', 'apoyo'];
+  if (role === 'responsible') {
+    var apoyoEnResp = payloads.find(function(p){ return APOYO_OBJECTIVES.indexOf(p.objective) !== -1; });
+    if (apoyoEnResp) {
+      var objLbl = waObjectiveMeta(apoyoEnResp.objective).label;
+      return _waShowErr('"' + objLbl + '" es una tarea de apoyo y no puede asignarse como Responsable. '
+        + 'Cambia el rol a "Apoyo logístico" o "Apoyo técnico". El responsable de la OT no cambia.');
+    }
+  }
+
   // UI: bloquear botón mientras envía
   var btn = document.getElementById('wa-new-submit');
   var originalBtn = btn.innerHTML;
@@ -12804,13 +12819,27 @@ async function _waSubmit() {
     return _waShowErr('No se pudo guardar: ' + (res.error || 'error desconocido'));
   }
 
-  // Si el rol era Responsable y la OT no tenía uno, settearlo ahora.
-  if (role === 'responsible' && !ot.responsible_user_id) {
+  // FIX #2 SINCRONIZACIÓN OT (2026-06-11): cuando se asigna rol Responsable,
+  // sincronizar AMBOS campos en work_orders:
+  //   • responsible_user_id → dueño de la garantía ("el que firma, responde").
+  //     Solo se setea si la OT no tenía uno (no se pisa un responsable existente).
+  //   • assigned_user_id → dueño OPERATIVO (lo que el técnico ve en "Mis OT" y
+  //     puede trabajar). ANTES no se seteaba aquí, así que la OT quedaba invisible
+  //     para el mecánico Y aparecía como "sin asignar" en Stock OTs (jefatura).
+  //     Esa era la causa raíz del bug reportado por Ale.
+  // Los roles de APOYO no tocan assigned_user_id: el dueño operativo es único
+  // (decisión A — coherente con "el que firma, responde").
+  if (role === 'responsible') {
     try {
-      await sb.from('work_orders').update({ responsible_user_id: techId }).eq('id', otId);
-      logR('WA_SET_RESPONSIBLE', { ot: ot.ot_number, user_id: techId });
+      var woUpd = { assigned_user_id: techId, updated_by: CU ? CU.id : null };
+      // Solo settear responsible si la OT no tenía uno (preserva el existente).
+      if (!ot.responsible_user_id) woUpd.responsible_user_id = techId;
+      // Si la OT estaba 'open', pasa a 'assigned' (ya tiene dueño operativo).
+      if (ot.status === 'open') woUpd.status = 'assigned';
+      await sb.from('work_orders').update(woUpd).eq('id', otId);
+      logR('WA_SYNC_RESPONSIBLE', { ot: ot.ot_number, user_id: techId, setResp: !ot.responsible_user_id });
     } catch(e) {
-      logR('WA_SET_RESPONSIBLE_ERR', { msg: e.message }, 'warn');
+      logR('WA_SYNC_RESPONSIBLE_ERR', { msg: e.message }, 'warn');
     }
   }
 
