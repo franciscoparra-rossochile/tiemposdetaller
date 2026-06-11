@@ -341,9 +341,10 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
   <div class="modal">
     <div class="modal-t">Motivo de pausa</div>
     <div class="modal-s">Selecciona el motivo obligatoriamente</div>
+    <div id="pause-eod-hint" style="display:none;background:#f3edff;border:1px solid #5b3a8c;border-radius:4px;padding:8px 10px;margin-bottom:10px;font-size:11px;color:#3d2766;line-height:1.4"></div>
     <button class="btn btn-gold" style="margin-bottom:8px" onclick="confirmPause('Falta de repuestos')">Falta de repuestos</button>
     <button class="btn btn-gold" style="margin-bottom:8px" onclick="confirmPause('Espera de aprobacion')">Espera de aprobacion</button>
-    <button class="btn btn-gold" style="margin-bottom:8px" onclick="confirmPause('Termino de jornada')">Termino de jornada</button>
+    <button class="btn btn-gold" style="margin-bottom:8px;background:#5b3a8c;border-color:#5b3a8c" onclick="suspendFromPause('fin_jornada')">🌙 Término de jornada (suspender)</button>
     <button class="btn btn-gold" style="margin-bottom:8px" onclick="confirmPause('Espera de visado')">Espera de visado</button>
     <button class="btn btn-gold" style="margin-bottom:8px" onclick="openPrioridadModal()">Cambio de servicio por nueva prioridad</button>
     <button class="btn btn-gold" style="margin-bottom:8px" onclick="confirmPause('Movimiento de vehiculos')">Movimiento de vehiculos</button>
@@ -354,6 +355,23 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     <button class="btn btn-gold" style="margin-bottom:8px" onclick="confirmPause('Protocolo: Doble control')">Protocolo: Doble control</button>
     <button class="btn btn-gold" style="margin-bottom:8px" onclick="confirmPause('Protocolo: Visado')">Protocolo: Visado</button>
     <button class="btn btn-out" onclick="closeModal('m-pause')">Cancelar</button>
+  </div>
+</div>
+
+<!-- MÓDULO SUSPENDER (2026-06): salida limpia para trabajo que NO continúa hoy -->
+<div class="overlay" id="m-suspender" style="display:none">
+  <div class="modal">
+    <div class="modal-t">🌙 Suspender trabajo</div>
+    <div class="modal-s">El trabajo <b>no continúa hoy</b>. Se cierra tu registro de tiempo del día y la OT queda en "Suspendidas" para retomarla después, conservando responsable e historial. Si solo te ausentas un rato (almuerzo, trámite), usa <b>Pausar</b>.</div>
+    <div class="lbl">Motivo de suspensión</div>
+    <button class="btn btn-gold susp-reason-btn" id="susp-r-fin_jornada" style="margin-bottom:8px" onclick="pickSuspendReason('fin_jornada')">Fin de jornada</button>
+    <button class="btn btn-gold susp-reason-btn" id="susp-r-espera_repuesto" style="margin-bottom:8px" onclick="pickSuspendReason('espera_repuesto')">Espera de repuesto</button>
+    <button class="btn btn-gold susp-reason-btn" id="susp-r-reasignacion" style="margin-bottom:8px" onclick="pickSuspendReason('reasignacion')">Reasignación</button>
+    <button class="btn btn-gold susp-reason-btn" id="susp-r-otro" style="margin-bottom:8px" onclick="pickSuspendReason('otro')">Otro motivo</button>
+    <textarea class="inp" id="susp-text" placeholder="Detalle del motivo (obligatorio si eliges Otro)" style="height:56px;display:none;margin-bottom:8px"></textarea>
+    <div id="susp-err" style="display:none;color:var(--red);font-size:12px;margin-bottom:8px;font-weight:600;padding:8px;background:var(--red4);border-radius:4px"></div>
+    <button class="btn btn-green" id="susp-btn" onclick="confirmSuspend()">Suspender y cerrar mi día</button>
+    <button class="btn btn-out" onclick="closeModal('m-suspender')" style="margin-top:8px">Cancelar</button>
   </div>
 </div>
 
@@ -9314,7 +9332,7 @@ function buildMisServCard(s, status) {
   h += '<div style="display:flex;gap:6px;flex-wrap:wrap">';
 
   if (isRunning) {
-    h += '<button class="btn-sm" style="border-color:var(--gold);color:var(--gold)" onclick="setPauseContext(\'' + s.session_key + '\');openModal(\'m-pause\')">Pausar</button>';
+    h += '<button class="btn-sm" style="border-color:var(--gold);color:var(--gold)" onclick="setPauseContext(\'' + s.session_key + '\');prepPauseModal();openModal(\'m-pause\')">Pausar</button>';
     h += '<button class="btn-sm" style="border-color:var(--red);color:var(--red)" onclick="openChecklist(\'' + s.session_key + '\')">Finalizar</button>';
   } else if (isPaused) {
     if (activeSup) {
@@ -9329,6 +9347,11 @@ function buildMisServCard(s, status) {
     h += '<button class="btn-sm" style="border-color:var(--blue);color:var(--blue)" onclick="openChecklist(\'' + s.session_key + '\')">Completar checklist</button>';
   }
 
+  // MÓDULO SUSPENDER (2026-06): salida limpia para trabajo de unidad que no continúa hoy.
+  // Solo sesiones con OT vinculada; logística se finaliza, no se suspende.
+  if ((isRunning || isPaused) && s.work_order_id && s.plate !== 'Logistica de taller') {
+    h += '<button class="btn-sm" style="border-color:#5b3a8c;color:#5b3a8c" onclick="openSuspendModal(\'' + s.session_key + '\')">🌙 Suspender</button>';
+  }
   h += '<button class="btn-sm" onclick="openCommentModal(\'' + s.session_key + '\')">Comentar</button>';
   // FASE 4.0: hallazgo en vivo (solo si hay OT vinculada).
   // La patente se sanitiza para inline-onclick (alfanumérico + guion).
@@ -9350,6 +9373,359 @@ function applyAssignAndGo(service, plate) {
 
 // Comment modal
 var commentForKey = null;
+// ═══════════════════════════════════════════════════════════════
+// MÓDULO SUSPENDER (2026-06) — salida limpia para trabajo a medias
+// ═══════════════════════════════════════════════════════════════
+// Causa raíz que resuelve: el flujo solo ofrecía Pausar/Finalizar, y un
+// técnico con trabajo a medias al fin de jornada pausaba y abandonaba
+// (levantamiento 06-2026: 22 sesiones zombies, 15 unidades sin visado).
+// Suspender = cierra el registro de tiempo del día a history + tramo,
+// pone la OT en 'suspended' (conserva responsible_user_id e historial)
+// y elimina la sesión. Retomar crea sesión nueva contra la misma OT.
+// Regla: ¿el trabajo continúa hoy? Pausa. ¿No continúa hoy? Suspende.
+
+var SUSPEND_REASONS = {
+  fin_jornada:     'Fin de jornada',
+  espera_repuesto: 'Espera de repuesto',
+  reasignacion:    'Reasignación',
+  otro:            'Otro motivo'
+};
+var _suspendCtx = {key: null, reason: null};
+var _suspending = false;
+var _resumingSusp = false;
+
+// Minutos que faltan para el cierre del taller hoy (negativo = ya cerró).
+// null = fin de semana. Mismo horario que isWithinWorkshopHours.
+function minutesToWorkshopClose() {
+  var d = new Date();
+  var dow = d.getDay();
+  if (dow === 0 || dow === 6) return null;
+  var close = (dow >= 1 && dow <= 3) ? 19 * 60 : (dow === 4) ? 18 * 60 : 17 * 60;
+  return close - (d.getHours() * 60 + d.getMinutes());
+}
+
+// Hint dentro del modal Pausar: si estamos a <=60 min del cierre (o ya
+// pasó), sugiere suspender en vez de pausar. Sugerencia, no imposición.
+function prepPauseModal() {
+  var hint = document.getElementById('pause-eod-hint');
+  if (!hint) return;
+  var mtc = minutesToWorkshopClose();
+  var sess = liveData.find(function(s){ return s.session_key === T.sessionKey; });
+  var hasOT = sess && sess.work_order_id && sess.plate !== 'Logistica de taller';
+  if (mtc !== null && mtc <= 60 && hasOT) {
+    hint.innerHTML = (mtc <= 0
+        ? '🌙 <b>El taller ya cerró.</b> '
+        : '🌙 <b>Queda menos de 1 hora de jornada.</b> ')
+      + 'Si este trabajo no continúa hoy, mejor <b>suspéndelo</b>: cierra tu día limpio y queda pendiente de retomar.'
+      + '<button class="btn btn-gold" style="margin-top:8px;background:#5b3a8c;border-color:#5b3a8c;width:100%" onclick="suspendFromPause(\'fin_jornada\')">🌙 Suspender por fin de jornada</button>';
+    hint.style.display = 'block';
+  } else {
+    hint.style.display = 'none';
+    hint.innerHTML = '';
+  }
+}
+
+// Entrada desde el modal Pausar (botón Término de jornada o hint EOD).
+// Si la sesión no tiene OT (logística), cae a la pausa clásica: la
+// logística no se suspende.
+function suspendFromPause(presetReason) {
+  var sess = liveData.find(function(s){ return s.session_key === T.sessionKey; });
+  if (!sess || !sess.work_order_id || sess.plate === 'Logistica de taller') {
+    confirmPause('Termino de jornada');
+    return;
+  }
+  closeModal('m-pause');
+  openSuspendModal(sess.session_key, presetReason || 'fin_jornada');
+}
+
+function openSuspendModal(sessionKey, presetReason) {
+  var sess = liveData.find(function(s){ return s.session_key === sessionKey; });
+  if (!sess) { showGlobalError('Sesión no encontrada. Recarga la página.', 4000); return; }
+  if (!sess.work_order_id || sess.plate === 'Logistica de taller') {
+    showGlobalError('Este servicio no se puede suspender (sin OT vinculada). Usa Finalizar.', 4500);
+    return;
+  }
+  _suspendCtx = {key: sessionKey, reason: presetReason || null};
+  var txt = document.getElementById('susp-text');
+  var err = document.getElementById('susp-err');
+  if (txt) { txt.value = ''; txt.style.display = 'none'; }
+  if (err) err.style.display = 'none';
+  Object.keys(SUSPEND_REASONS).forEach(function(k){
+    var b = document.getElementById('susp-r-' + k);
+    if (b) b.style.opacity = (presetReason && presetReason !== k) ? '0.45' : '1';
+  });
+  openModal('m-suspender');
+}
+
+function pickSuspendReason(key) {
+  _suspendCtx.reason = key;
+  Object.keys(SUSPEND_REASONS).forEach(function(k){
+    var b = document.getElementById('susp-r-' + k);
+    if (b) b.style.opacity = (k === key) ? '1' : '0.45';
+  });
+  var txt = document.getElementById('susp-text');
+  if (txt) txt.style.display = (key === 'otro') ? 'block' : 'none';
+}
+
+async function confirmSuspend() {
+  if (_suspending) { logR('SUSPEND_GUARD_BLOCKED', {}); return; }
+  _suspending = true;
+  startOp();
+  try {
+    await _confirmSuspendInner();
+  } finally {
+    _suspending = false;
+    endOp();
+  }
+}
+
+async function _confirmSuspendInner() {
+  var err = document.getElementById('susp-err');
+  function fail(msg) { if (err) { err.textContent = msg; err.style.display = 'block'; } }
+
+  var key = _suspendCtx.key;
+  var reasonKey = _suspendCtx.reason;
+  if (!key) { fail('Sesión no identificada. Cierra y reintenta.'); return; }
+  if (!reasonKey) { fail('Selecciona el motivo de suspensión.'); return; }
+  var txtEl = document.getElementById('susp-text');
+  var detail = txtEl ? txtEl.value.trim() : '';
+  if (reasonKey === 'otro' && !detail) { fail('Describe el motivo en el campo de texto.'); return; }
+  var reasonLabel = SUSPEND_REASONS[reasonKey] || reasonKey;
+
+  var sess = liveData.find(function(s){ return s.session_key === key; });
+  if (!sess) {
+    await fetchLive();
+    fail('La sesión ya no está activa. Puede haberse cerrado desde otro dispositivo.');
+    return;
+  }
+  var woId = sess.work_order_id;
+  var nowISO = new Date().toISOString();
+
+  // Tiempo definitivo con la misma fórmula determinística de doFinish
+  var finSec = liveSecondsNow(sess);
+  if (!finSec && sess.seconds) finSec = sess.seconds;
+  if (!finSec || finSec < 1) finSec = 1;
+
+  logR('SUSPEND_ATTEMPT', {key: key, reason: reasonKey, sec: finSec, wo: woId});
+
+  // Idempotencia: si esta sesión ya quedó en history (intento previo con
+  // red intermitente), no duplicamos — solo limpiamos active_sessions.
+  try {
+    var rEx = await sb.from('history').select('id').eq('session_key', key).limit(1).maybeSingle();
+    if (rEx && rEx.data && rEx.data.id) {
+      logR('SUSPEND_IDEMPOTENT', {key: key, history_id: rEx.data.id}, 'warn');
+      try { await sb.from('active_sessions').delete().eq('session_key', key); } catch(_){}
+      closeModal('m-suspender');
+      if (T.sessionKey === key) resetT();
+      await fetchLive();
+      showGlobalError('El tramo ya estaba registrado. Suspensión confirmada.', 4000);
+      return;
+    }
+  } catch(_){ /* columna session_key podría no existir: seguimos al insert */ }
+
+  // 1) HISTORY — tramo del día cerrado, marcado como suspensión (no es
+  //    un servicio terminado: sin checklist técnico ni visado).
+  var histPayload = {
+    technician: sess.technician, username: sess.username,
+    service: sess.service, plate: sess.plate,
+    duration: fmtT(finSec), seconds: finSec,
+    goal_minutes: sess.goal_minutes || null,
+    pauses: sess.pauses || [],
+    checklist: {_suspension: {reason: reasonKey, reason_label: reasonLabel,
+                              detail: detail || null, by: CU.name, at: nowISO}},
+    work_order_id: woId,
+    started_at: sess.started_at || null,
+    ended_at: nowISO,
+    session_key: key
+  };
+  var rH = await sb.from('history').insert(histPayload);
+  logR('SUSPEND_HISTORY_RESULT', {error: rH.error ? rH.error.message : null});
+  if (rH.error) { fail('Error al guardar el tramo: ' + rH.error.message + '. La sesión NO fue tocada, reintenta.'); return; }
+
+  // 2) TRAMO en service_time_entries (mismo contrato que doFinish)
+  try {
+    var rSte = await sb.from('service_time_entries').insert({
+      work_order_id: woId,
+      technician_id: CU.id,
+      technician_username: sess.username,
+      technician_name: sess.technician,
+      session_key: key,
+      type: 'own',
+      started_at: sess.started_at || nowISO,
+      ended_at: nowISO,
+      duration_seconds: finSec,
+      notes: 'Suspendido: ' + reasonLabel + (detail ? ' · ' + detail : '')
+    });
+    if (rSte && rSte.error) {
+      logR('SUSPEND_STE_ERR', {msg: rSte.error.message}, 'err');
+      showGlobalError('Aviso: el tramo no se guardó en service_time_entries (' + rSte.error.message + '). La suspensión continúa.', 5000);
+    }
+  } catch(_){}
+
+  // 3) OT → suspended SOLO si no quedan otras sesiones vivas sobre ella
+  //    (lección SYGG40: trabajo multi-técnico). Si quedan, la OT sigue
+  //    in_progress y solo se cierra el tramo de este técnico.
+  var otrasVivas = (liveData || []).filter(function(s2){
+    return s2.work_order_id === woId && s2.session_key !== key
+      && (s2.status === 'running' || s2.status === 'paused');
+  });
+  var otSuspendida = false;
+  if (otrasVivas.length === 0) {
+    try {
+      var rGet = await sb.from('work_orders').select('status').eq('id', woId).maybeSingle();
+      var curSt = rGet && rGet.data ? rGet.data.status : null;
+      if (['open','assigned','in_progress'].indexOf(curSt) !== -1) {
+        var rUp = await sb.from('work_orders').update({
+          status: 'suspended',
+          suspended_at: nowISO,
+          suspended_by_user_id: CU.id,
+          suspended_by_name: CU.name,
+          suspended_reason: reasonLabel + (detail ? ' · ' + detail : '')
+        }).eq('id', woId);
+        if (rUp && rUp.error) logR('SUSPEND_WO_ERR', {msg: rUp.error.message}, 'err');
+        else otSuspendida = true;
+      } else {
+        logR('SUSPEND_WO_SKIP', {wo: woId, status: curSt}, 'warn');
+      }
+    } catch(_){}
+  } else {
+    logR('SUSPEND_WO_OTHERS_ALIVE', {wo: woId, otras: otrasVivas.length});
+  }
+
+  // 4) Eliminar la sesión (último paso, igual que doFinish)
+  var rD = await sb.from('active_sessions').delete().eq('session_key', key);
+  logR('SUSPEND_DELETE_SESSION', {key: key, error: rD.error ? rD.error.message : null});
+
+  // 5) Notificación + log estructurado
+  try {
+    await pushNotif('pau', sess.technician + ' suspendió ' + (sess.plate || 'servicio'),
+      sess.service + ' · ' + reasonLabel + (detail ? ' · ' + detail : ''));
+  } catch(_){}
+  try {
+    await logServiceEvent({
+      plate: sess.plate, workOrderId: woId,
+      action: 'session_suspended',
+      prevStatus: sess.status, newStatus: otSuspendida ? 'suspended' : 'in_progress',
+      origin: 'suspender', serviceLabel: sess.service, sessionKey: key,
+      technicianUsername: sess.username, technicianName: sess.technician,
+      detail: {reason: reasonKey, reason_label: reasonLabel, text: detail || null,
+               seconds: finSec, ot_suspendida: otSuspendida}
+    });
+  } catch(_){}
+
+  closeModal('m-suspender');
+  if (T.sessionKey === key) resetT();
+  await fetchLive();
+  if (typeof curTechTab !== 'undefined' && curTechTab) techTab('t-nuevo');
+  showToast('pau', 'Trabajo suspendido', (sess.plate || '') + ' · ' + reasonLabel);
+  showGlobalError('✓ Trabajo suspendido. Quedó en "Mis OTs" para retomarlo.', 4500);
+}
+
+// Retomar una OT suspendida: archiva la suspensión en checklist_data,
+// reactiva la OT y crea una sesión nueva para quien retoma (puede ser
+// otro técnico — handoff natural; responsible_user_id no se toca).
+async function retomarSuspendida(woId) {
+  if (_resumingSusp) return;
+  _resumingSusp = true;
+  startOp();
+  try {
+    var rWO = await sb.from('work_orders').select('*').eq('id', woId).maybeSingle();
+    if (!rWO || !rWO.data) { showGlobalError('OT no encontrada.', 4000); return; }
+    var wo = rWO.data;
+    if (wo.status !== 'suspended') {
+      showGlobalError('Esta OT ya no está suspendida (estado: ' + wo.status + '). Recarga.', 4500);
+      return;
+    }
+
+    // Recuperar servicio/patente/meta del último tramo registrado
+    var hist = null;
+    try {
+      var rHist = await sb.from('history')
+        .select('service, plate, goal_minutes')
+        .eq('work_order_id', woId)
+        .order('ended_at', {ascending: false})
+        .limit(1);
+      if (rHist && rHist.data && rHist.data.length) hist = rHist.data[0];
+    } catch(_){}
+    var srvDef = SERVICES_INGRESO.find(function(x){ return x.key === wo.service_classification; });
+    var service = (hist && hist.service) || (srvDef ? srvDef.label : wo.service_classification) || 'Servicio';
+    var plate = wo.plate || (hist && hist.plate) || '';
+    if (!plate) { showGlobalError('No se pudo determinar la patente de la OT.', 4500); return; }
+
+    var nowISO = new Date().toISOString();
+
+    // Archivar la suspensión como historial (una OT suspendida 3 veces
+    // deja 3 huellas) y limpiar los campos vivos
+    var cd = wo.checklist_data || {};
+    var suspHist = Array.isArray(cd.suspension_history) ? cd.suspension_history : [];
+    suspHist.push({
+      suspended_at: wo.suspended_at || null,
+      by: wo.suspended_by_name || null,
+      reason: wo.suspended_reason || null,
+      resumed_at: nowISO,
+      resumed_by: CU.name
+    });
+    cd.suspension_history = suspHist;
+
+    var rUp = await sb.from('work_orders').update({
+      status: 'in_progress',
+      assigned_user_id: CU.id,
+      checklist_data: cd,
+      suspended_at: null,
+      suspended_by_user_id: null,
+      suspended_by_name: null,
+      suspended_reason: null
+    }).eq('id', woId);
+    if (rUp && rUp.error) { showGlobalError('Error al reactivar la OT: ' + rUp.error.message, 5000); return; }
+
+    // Sesión nueva (tramo nuevo) con el mismo contrato de inicio normal
+    var newKey = CU.username + '_' + Date.now();
+    var rIns = await sb.from('active_sessions').insert({
+      session_key: newKey,
+      technician: CU.name,
+      username: CU.username,
+      service: service,
+      plate: plate,
+      seconds: 0,
+      running: true,
+      status: 'running',
+      goal_minutes: (hist && hist.goal_minutes) || null,
+      over_alerted: false,
+      pauses: [],
+      started_at: nowISO,
+      updated_at: nowISO,
+      paused_at: null,
+      accumulated_paused_ms: 0,
+      work_order_id: woId
+    });
+    if (rIns && rIns.error) {
+      showGlobalError('OT reactivada, pero la sesión no pudo iniciarse: ' + rIns.error.message + '. Iníciala desde "Nuevo registro".', 6000);
+    }
+
+    try {
+      await pushNotif('resume', CU.name + ' retomó ' + plate, service + ' · suspendida ' +
+        (wo.suspended_reason ? 'por ' + wo.suspended_reason : 'previamente'));
+    } catch(_){}
+    try {
+      await logServiceEvent({
+        plate: plate, workOrderId: woId,
+        action: 'session_resumed_from_suspension',
+        prevStatus: 'suspended', newStatus: 'in_progress',
+        origin: 'suspender', serviceLabel: service, sessionKey: newKey,
+        technicianUsername: CU.username, technicianName: CU.name,
+        detail: {previous_reason: wo.suspended_reason || null}
+      });
+    } catch(_){}
+
+    await fetchLive();
+    if (typeof curTechTab !== 'undefined' && curTechTab) techTab('t-misservicios');
+    showToast('resume', 'Trabajo retomado', plate + ' · cronómetro corriendo');
+  } finally {
+    _resumingSusp = false;
+    endOp();
+  }
+}
+
 function setPauseContext(sessionKey) {
   // If T doesn't have this session, load it from liveData
   if (T.sessionKey !== sessionKey) {
@@ -9731,13 +10107,65 @@ async function renderBossStockOT(body) {
   body.innerHTML = '<div class="card-accent">'
     + '<div style="font-size:13px;font-weight:700;color:#111;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">Stock de OTs sin asignar</div>'
     + '<div style="font-size:11px;color:var(--wh3);margin-bottom:10px;line-height:1.4">Órdenes de trabajo abiertas sin técnico designado. Asígnalas para que aparezcan en la vista "Mis OTs" del técnico correspondiente.</div>'
+    + '<div id="stock-susp-wrap" style="margin-bottom:12px"></div>'
     + '<div id="stock-ot-filters" style="margin-bottom:10px"></div>'
     + '<div id="stock-ot-meta" style="font-size:11px;color:var(--wh3);margin-bottom:8px;font-family:var(--mono)">Cargando...</div>'
     + '<div id="stock-ot-list"></div>'
     + '</div>';
-  await loadStockOTs();
+  await Promise.all([loadStockOTs(), loadSuspendedOTsBoss()]);
 }
 window.renderBossStockOT = renderBossStockOT;
+
+// MÓDULO SUSPENDER (2026-06): bandeja de jefatura — visibilidad total de
+// trabajos a medias: quién los dejó, por qué y hace cuánto. Loader
+// autónomo: no toca loadStockOTs.
+async function loadSuspendedOTsBoss() {
+  var wrap = document.getElementById('stock-susp-wrap');
+  if (!wrap || !sb) return;
+  try {
+    var r = await sb.from('work_orders')
+      .select('id, ot_number, service_classification, plate, vehicle_id, suspended_at, suspended_by_name, suspended_reason, responsible_user_id')
+      .eq('status', 'suspended')
+      .order('suspended_at', {ascending: true})
+      .limit(100);
+    if (r.error) { wrap.innerHTML = ''; logR('SUSP_BOSS_ERR', {msg: r.error.message}, 'warn'); return; }
+    var ots = r.data || [];
+    if (!ots.length) { wrap.innerHTML = ''; return; }
+
+    // Hidratar patentes faltantes desde client_vehicles
+    var needVeh = ots.filter(function(o){ return !o.plate && o.vehicle_id; }).map(function(o){ return o.vehicle_id; });
+    var vehs = {};
+    if (needVeh.length) {
+      try {
+        var rv = await sb.from('client_vehicles').select('id, plate').in('id', needVeh);
+        (rv.data || []).forEach(function(v){ vehs[v.id] = v; });
+      } catch(_){}
+    }
+
+    var h = '<div style="font-size:11px;font-weight:700;color:#5b3a8c;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">🌙 Trabajos suspendidos (' + ots.length + ')</div>';
+    h += ots.map(function(o){
+      var plate = o.plate || (vehs[o.vehicle_id] ? vehs[o.vehicle_id].plate : '') || '—';
+      var srv = SERVICES_INGRESO.find(function(x){ return x.key === o.service_classification; });
+      var dSusp = o.suspended_at ? Math.round((Date.now() - new Date(o.suspended_at).getTime()) / 86400000 * 10) / 10 : null;
+      var alerta = (dSusp !== null && dSusp >= 3);
+      return '<div style="background:' + (alerta ? '#fff5f5' : '#faf7ff') + ';border:1px solid ' + (alerta ? 'var(--red)' : '#5b3a8c') + ';border-radius:3px;padding:8px 10px;margin-bottom:6px">'
+        + '<div style="display:flex;justify-content:space-between;gap:8px;align-items:center">'
+        +   '<div style="font-size:12px;font-weight:700;font-family:\'Rajdhani\',sans-serif">OT-' + (o.ot_number || '?') + ' · ' + escapeHtml(plate) + (srv ? ' · ' + escapeHtml(srv.label) : '') + '</div>'
+        +   (dSusp !== null ? '<div style="font-size:10px;font-weight:700;color:' + (alerta ? 'var(--red)' : '#5b3a8c') + ';font-family:var(--mono)">' + dSusp + 'd</div>' : '')
+        + '</div>'
+        + '<div style="font-size:10px;color:var(--wh3);margin-top:2px">'
+        +   (o.suspended_by_name ? 'Suspendió: ' + escapeHtml(o.suspended_by_name) : '')
+        +   (o.suspended_reason ? ' · ' + escapeHtml(o.suspended_reason) : '')
+        +   (alerta ? ' · <b style="color:var(--red)">⚠ +3 días sin retomar</b>' : '')
+        + '</div>'
+        + '</div>';
+    }).join('');
+    wrap.innerHTML = h;
+  } catch(e) {
+    wrap.innerHTML = '';
+    logR('SUSP_BOSS_EX', {msg: e.message}, 'warn');
+  }
+}
 
 // Carga datos: OTs sin asignar + técnicos disponibles (paralelo)
 async function loadStockOTs() {
@@ -17866,7 +18294,7 @@ async function loadMyOTs() {
     var rOT = await sb.from('work_orders')
       .select('*')
       .eq('assigned_user_id', CU.id)
-      .in('status', ['open','assigned','in_progress','pending_double_check','pending_visado'])
+      .in('status', ['open','assigned','in_progress','pending_double_check','pending_visado','suspended'])
       .order('created_at', {ascending: false})
       .limit(200);
     if (rOT.error) { meta.textContent = 'Error: ' + rOT.error.message; return; }
@@ -17913,8 +18341,9 @@ function renderMyOTsList() {
                 s === 'cancelled' ? 'var(--wh4)' :
                 s === 'in_progress' ? 'var(--gold)' :
                 s === 'pending_double_check' ? 'var(--blue)' :
+                s === 'suspended' ? '#5b3a8c' :
                 s === 'pending_visado' ? 'var(--gold)' : 'var(--blue)';
-    var lbl = ({open:'Sin iniciar', assigned:'Asignada', in_progress:'En proceso', pending_double_check:'Pendiente doble control', pending_visado:'Pendiente visado', closed:'Cerrada', cancelled:'Cancelada'})[s] || s;
+    var lbl = ({open:'Sin iniciar', assigned:'Asignada', in_progress:'En proceso', pending_double_check:'Pendiente doble control', pending_visado:'Pendiente visado', suspended:'Suspendida', closed:'Cerrada', cancelled:'Cancelada'})[s] || s;
     return '<span style="font-size:9px;color:' + color + ';font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.06em;padding:2px 6px;border:1px solid ' + color + ';border-radius:3px">' + lbl + '</span>';
   }
 
@@ -17938,6 +18367,19 @@ function renderMyOTsList() {
       ? '<div style="display:inline-block;background:var(--red);color:#fff;font-size:9px;font-weight:800;padding:2px 6px;border-radius:3px;margin-top:4px;letter-spacing:.06em;text-transform:uppercase;font-family:\'Rajdhani\',sans-serif">⚠ Rechazada — corregir</div>'
       : '';
     var bgStyle = rejIsCurrent ? 'background:#fff5f5;border:1px solid var(--red);' : 'background:#fff;border:1px solid var(--border);';
+    // MÓDULO SUSPENDER: bloque de suspensión con motivo, antigüedad y Retomar
+    var suspBlock = '';
+    if (o.status === 'suspended') {
+      var dSusp = o.suspended_at ? Math.round((Date.now() - new Date(o.suspended_at).getTime()) / 86400000 * 10) / 10 : null;
+      bgStyle = 'background:#faf7ff;border:1px solid #5b3a8c;';
+      suspBlock = '<div style="margin-top:6px;padding:6px 8px;background:#f3edff;border-radius:4px;font-size:10px;color:#3d2766;line-height:1.4">'
+        + '🌙 Suspendida' + (o.suspended_by_name ? ' por ' + escapeHtml(o.suspended_by_name) : '')
+        + (dSusp !== null ? ' hace ' + dSusp + ' día' + (dSusp === 1 ? '' : 's') : '')
+        + (o.suspended_reason ? '<br/>Motivo: ' + escapeHtml(o.suspended_reason) : '')
+        + '<button class="btn-sm" style="display:block;margin-top:6px;border-color:var(--green);color:var(--green);width:100%" '
+        + 'onclick="event.stopPropagation();retomarSuspendida(\'' + o.id + '\')">▶ Retomar trabajo</button>'
+        + '</div>';
+    }
     return '<div style="' + bgStyle + 'border-left:3px solid ' + leftBorder + ';border-radius:3px;padding:10px;margin-bottom:6px;cursor:pointer" onclick="openMyOTDetail(\'' + o.id + '\')">'
       + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:4px">'
       +   '<div style="font-size:13px;font-weight:700;font-family:\'Rajdhani\',sans-serif">OT-' + (o.ot_number || '?') + ' · ' + escapeHtml(srvLabel) + '</div>'
@@ -17947,6 +18389,7 @@ function renderMyOTsList() {
       + '<div style="font-size:11px;color:var(--wh3)">' + (v ? escapeHtml(v.brand) + ' ' + escapeHtml(v.model) + ' · ' + plate : 'vehículo desconocido') + '</div>'
       + (c ? '<div style="font-size:10px;color:var(--wh4);font-family:var(--mono)">' + escapeHtml(c.name) + ' · ' + escapeHtml(c.phone || '') + '</div>' : '')
       + rejBadge
+      + suspBlock
       + '</div>';
   }
 
@@ -22706,7 +23149,7 @@ async function loadDashboardData(forceRefresh) {
     // ─── Calcular KPIs ───
     var k = {
       total_ots_30d: ots.length,
-      ots_active: ots.filter(function(o){return ['open','assigned','in_progress','pending_double_check','pending_visado'].indexOf(o.status) !== -1;}).length,
+      ots_active: ots.filter(function(o){return ['open','assigned','in_progress','pending_double_check','pending_visado','suspended'].indexOf(o.status) !== -1;}).length,
       ots_in_progress: ots.filter(function(o){return o.status === 'in_progress';}).length,
       ots_pending_dc: ots.filter(function(o){return o.status === 'pending_double_check';}).length,
       ots_pending_visado: ots.filter(function(o){return o.status === 'pending_visado';}).length,
