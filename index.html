@@ -1106,7 +1106,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // FIX QW-12 (2026-04-30): config global única para evitar drift entre scripts.
 // Cualquier ajuste de timeouts/intervals va aqui y los demas scripts lo leen.
 window.RossoConfig = Object.freeze({
-  APP_VERSION: 'v2.8.2-logo-pdf-pauta',            // 2026-06-11: Logo oficial en PDFs (OT/Recepción/Informe) + briefing pauta al iniciar + cambio aceite 30min
+  APP_VERSION: 'v2.8.3-cierre-sino',            // 2026-06-11: Cierre local con SÍ/NO/N/A + comentarios (No exige comentario)
   SDK_TIMEOUT_MS: 8000,
   CONN_TIMEOUT_MS: 5000,
   EMERGENCY_TIMEOUT_MS: 15000,
@@ -22289,7 +22289,17 @@ function _cierreLocalCompletion(state, date) {
     if (it._optional) return;
     totalRequired += 1;
     var v = (state.checklist || {})[it.key];
-    if (v && (v.ok === true || v.na === true)) {
+    var answered = false;
+    if (v) {
+      if (v.ok === true || v.na === true) {
+        answered = true;
+      } else if (v.no === true) {
+        // Un "No" solo cuenta como respondido si tiene comentario (regla A:
+        // registra pero exige justificación; no bloquea el cierre).
+        answered = (v.notes != null && v.notes !== '');
+      }
+    }
+    if (answered) {
       doneRequired += 1;
     } else {
       missing.push(it.key);
@@ -22552,21 +22562,30 @@ function _cierreLocalRenderForm(body) {
         + '</div>';
       var btnRow = mk('div','');
       btnRow.style.cssText = 'display:flex;gap:6px;margin-top:6px;flex-wrap:wrap';
-      ['ok','na'].forEach(function(kind) {
+      // Tres estados exclusivos: SÍ (ok) / NO (no) / N/A (na).
+      // Un "No" exige comentario obligatorio (trazabilidad de lo que no se hizo).
+      [
+        {kind:'ok',  label:'✓ Sí', cls:'ok'},
+        {kind:'no',  label:'✗ No', cls:'no'},
+        {kind:'na',  label:'N/A',   cls:'na'}
+      ].forEach(function(opt) {
+        var kind = opt.kind;
         var btn = mk('button','sel-btn');
-        btn.style.cssText = 'flex:0 0 auto;padding:6px 12px;font-size:11px;min-width:80px';
-        var active = (kind === 'ok' && st.ok === true) || (kind === 'na' && st.na === true);
-        if (active) btn.classList.add('on');
-        btn.textContent = kind === 'ok' ? '✓ OK' : 'N/A';
+        btn.style.cssText = 'flex:0 0 auto;padding:6px 12px;font-size:11px;min-width:70px';
+        var active = (kind === 'ok' && st.ok === true)
+                  || (kind === 'no' && st.no === true)
+                  || (kind === 'na' && st.na === true);
+        if (active) {
+          btn.classList.add('on');
+          // El "No" activo se resalta en rojo para que salte a la vista.
+          if (kind === 'no') btn.style.cssText += 'background:var(--red);color:#fff;border-color:var(--red);';
+        }
+        btn.textContent = opt.label;
         btn.onclick = function() {
-          // Toggle exclusivo entre ok / na
+          // Toggle exclusivo entre ok / no / na (preserva el comentario previo).
           var prev = _cierreLocalState.checklist[it.key] || {};
-          var next = {};
-          if (kind === 'ok') {
-            next.ok = !prev.ok; next.na = false;
-          } else {
-            next.na = !prev.na; next.ok = false;
-          }
+          var next = {ok:false, no:false, na:false};
+          next[kind] = !prev[kind];
           if (prev.notes) next.notes = prev.notes;
           _cierreLocalState.checklist[it.key] = next;
           _cierreLocalRenderForm(body);
@@ -22575,6 +22594,50 @@ function _cierreLocalRenderForm(body) {
       });
       row.innerHTML = labelHtml;
       row.appendChild(btnRow);
+
+      // Comentario: obligatorio si el estado es "No"; opcional (vía botón
+      // "+ comentar") en cualquier otro caso. Mantiene el formulario limpio
+      // sin perder trazabilidad.
+      var isNo = st.no === true;
+      var hasNotes = st.notes != null && st.notes !== '';
+      var showCommentBox = isNo || hasNotes || st._showComment === true;
+      if (showCommentBox) {
+        var cWrap = mk('div','');
+        cWrap.style.cssText = 'margin-top:6px';
+        var cta = mk('textarea','inp');
+        cta.style.cssText = 'min-height:38px;font-size:11px;padding:6px 8px;'
+          + (isNo && !hasNotes ? 'border-color:var(--red);' : '');
+        cta.placeholder = isNo ? 'Comentario obligatorio: ¿qué pasó? (ej: alarma no activó)' : 'Comentario (opcional)';
+        cta.value = st.notes || '';
+        cta.oninput = function() {
+          var cur = _cierreLocalState.checklist[it.key] || {};
+          cur.notes = this.value;
+          _cierreLocalState.checklist[it.key] = cur;
+          // Recalcular estado de guardado sin re-render completo (evita perder foco).
+          _cierreLocalUpdateStatus(body);
+        };
+        cWrap.appendChild(cta);
+        if (isNo && !hasNotes) {
+          var warn = mk('div','');
+          warn.style.cssText = 'font-size:10px;color:var(--red);margin-top:3px;font-weight:600';
+          warn.textContent = '⚠ Un "No" requiere comentario para registrar el cierre.';
+          cWrap.appendChild(warn);
+        }
+        row.appendChild(cWrap);
+      } else {
+        // Botón discreto para añadir comentario opcional en Sí / N/A.
+        var addC = mk('button','');
+        addC.style.cssText = 'margin-top:5px;background:none;border:none;color:var(--wh3);'
+          + 'font-size:10px;cursor:pointer;padding:2px 0;text-decoration:underline';
+        addC.textContent = '+ comentar';
+        addC.onclick = function() {
+          var cur = _cierreLocalState.checklist[it.key] || {};
+          cur._showComment = true;
+          _cierreLocalState.checklist[it.key] = cur;
+          _cierreLocalRenderForm(body);
+        };
+        row.appendChild(addC);
+      }
       secCard.appendChild(row);
     });
     body.appendChild(secCard);
@@ -22592,33 +22655,47 @@ function _cierreLocalRenderForm(body) {
   body.appendChild(notesCard);
 
   // Estado de completitud + botón de guardar
-  var compl = _cierreLocalCompletion(_cierreLocalState, today);
   var statusCard = mk('div','card-accent');
-  statusCard.style.cssText = 'margin-top:10px;border-left:4px solid '
-    + (compl.isComplete ? 'var(--green)' : 'var(--gold3)');
-  statusCard.innerHTML = '<div class="lbl">Estado del checklist</div>'
-    + '<div style="font-size:13px;font-weight:700;color:'
-    + (compl.isComplete ? 'var(--green)' : 'var(--gold3)') + '">'
-    + (compl.isComplete ? '✓ Completo · listo para registrar' :
-        ('⏳ Faltan ' + (compl.totalRequired - compl.doneRequired) + ' item' +
-         (compl.totalRequired - compl.doneRequired === 1 ? '' : 's') + ' obligatorio' +
-         (compl.totalRequired - compl.doneRequired === 1 ? '' : 's')))
-    + '</div>'
-    + '<div style="font-size:11px;color:var(--wh3);margin-top:4px">'
-    + compl.doneRequired + ' de ' + compl.totalRequired + ' obligatorios · ' + compl.pct + '%</div>';
+  statusCard.id = 'cierre-status-card';
   body.appendChild(statusCard);
 
   var saveBtn = mk('button','btn btn-red');
   saveBtn.style.marginTop = '10px';
   saveBtn.id = 'cierre-save-btn';
-  saveBtn.textContent = compl.isComplete ? 'Registrar cierre completo' : 'Guardar avance (incompleto)';
   saveBtn.onclick = function() {
-    if (!compl.isComplete) {
-      if (!confirm('Faltan ' + (compl.totalRequired - compl.doneRequired) + ' items obligatorios. ¿Guardar de todas formas?')) return;
+    var c = _cierreLocalCompletion(_cierreLocalState, new Date());
+    if (!c.isComplete) {
+      if (!confirm('Faltan ' + (c.totalRequired - c.doneRequired) + ' items obligatorios (incluye "No" sin comentario). ¿Guardar de todas formas?')) return;
     }
     _cierreLocalSave(body);
   };
   body.appendChild(saveBtn);
+
+  // Pintar estado inicial (y permitir refresco en vivo desde los comentarios).
+  _cierreLocalUpdateStatus(body);
+}
+
+// Refresca la tarjeta de estado + el texto del botón sin re-renderizar el
+// formulario completo (evita perder el foco del textarea de comentarios).
+function _cierreLocalUpdateStatus(body) {
+  var compl = _cierreLocalCompletion(_cierreLocalState, new Date());
+  var card = document.getElementById('cierre-status-card');
+  if (card) {
+    card.style.cssText = 'margin-top:10px;border-left:4px solid '
+      + (compl.isComplete ? 'var(--green)' : 'var(--gold3)');
+    card.innerHTML = '<div class="lbl">Estado del checklist</div>'
+      + '<div style="font-size:13px;font-weight:700;color:'
+      + (compl.isComplete ? 'var(--green)' : 'var(--gold3)') + '">'
+      + (compl.isComplete ? '✓ Completo · listo para registrar' :
+          ('⏳ Faltan ' + (compl.totalRequired - compl.doneRequired) + ' item' +
+           (compl.totalRequired - compl.doneRequired === 1 ? '' : 's') + ' obligatorio' +
+           (compl.totalRequired - compl.doneRequired === 1 ? '' : 's')))
+      + '</div>'
+      + '<div style="font-size:11px;color:var(--wh3);margin-top:4px">'
+      + compl.doneRequired + ' de ' + compl.totalRequired + ' obligatorios · ' + compl.pct + '%</div>';
+  }
+  var btn = document.getElementById('cierre-save-btn');
+  if (btn) btn.textContent = compl.isComplete ? 'Registrar cierre completo' : 'Guardar avance (incompleto)';
 }
 
 // FRENTE 9.5 (2026-05-14): refactor de guardado del cierre de local.
@@ -22649,11 +22726,24 @@ function _cierreLocalRenderForm(body) {
 async function _cierreLocalSave(body) {
   var today = new Date();
   var compl = _cierreLocalCompletion(_cierreLocalState, today);
+  // Sanitizar: persistir solo {ok,no,na,notes}; descartar flags de UI
+  // (_showComment) y comentarios vacíos para no ensuciar la BD.
+  var cleanChecklist = {};
+  var srcChk = _cierreLocalState.checklist || {};
+  Object.keys(srcChk).forEach(function(k) {
+    var v = srcChk[k] || {};
+    var entry = {};
+    if (v.ok === true) entry.ok = true;
+    if (v.no === true) entry.no = true;
+    if (v.na === true) entry.na = true;
+    if (v.notes != null && v.notes !== '') entry.notes = v.notes;
+    if (Object.keys(entry).length) cleanChecklist[k] = entry;
+  });
   var payload = {
     closed_at: new Date().toISOString(),
     responsible_id: CU && CU.id ? CU.id : null,
     responsible_name: CU ? CU.name : '—',
-    checklist: _cierreLocalState.checklist || {},
+    checklist: cleanChecklist,
     notes: _cierreLocalState.notes || null,
     is_complete: compl.isComplete,
     missing_items: compl.missing
@@ -22743,10 +22833,14 @@ function _cierreLocalView(closure) {
       var icon, color;
       if (v.ok) { icon = '✓'; color = 'var(--green)'; }
       else if (v.na) { icon = 'N/A'; color = 'var(--wh3)'; }
-      else { icon = '✗'; color = 'var(--red)'; }
-      html += '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;padding:4px 0;border-top:1px solid var(--wh5);font-size:11px">'
+      else if (v.no) { icon = '✗'; color = 'var(--red)'; }
+      else { icon = '—'; color = 'var(--wh4)'; }
+      html += '<div style="padding:4px 0;border-top:1px solid var(--wh5)">'
+        + '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;font-size:11px">'
         + '<span style="color:#111;flex:1">' + escapeHtml(it.label) + '</span>'
         + '<span style="color:' + color + ';font-weight:700;font-family:\'Rajdhani\',sans-serif">' + icon + '</span>'
+        + '</div>'
+        + (v.notes ? '<div style="font-size:10px;color:' + (v.no ? 'var(--red)' : 'var(--wh3)') + ';margin-top:2px;padding-left:2px;font-style:italic">↳ ' + escapeHtml(v.notes) + '</div>' : '')
         + '</div>';
     });
   });
