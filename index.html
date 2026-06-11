@@ -1108,7 +1108,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // FIX QW-12 (2026-04-30): config global única para evitar drift entre scripts.
 // Cualquier ajuste de timeouts/intervals va aqui y los demas scripts lo leen.
 window.RossoConfig = Object.freeze({
-  APP_VERSION: 'v2.8.6-sync-ot',            // 2026-06-11: Fix #2 sync assigned_user_id en rol responsible + bloqueo apoyo-como-responsable (protege foco OT)
+  APP_VERSION: 'v2.8.7-gobernanza-pauta',            // 2026-06-11: Gobernanza pauta (solo responsable/jefatura firma) + sync OT + protección foco
   SDK_TIMEOUT_MS: 8000,
   CONN_TIMEOUT_MS: 5000,
   EMERGENCY_TIMEOUT_MS: 15000,
@@ -18661,6 +18661,44 @@ async function openMyOTDetail(otId) {
 // el modal esta visible para permitir guardado parcial y re-apertura.
 var _activePautaV2 = null;
 
+// GOBERNANZA DE PAUTA (2026-06-11): solo el técnico RESPONSABLE de la OT puede
+// abrir y firmar la pauta de inspección. Quien presta apoyo NO. Regla pedida por
+// Nicolás, coherente con "el que firma, responde".
+//
+// pautaCanEdit(ot) → { allowed, reason, becomesResponsible }
+//   • allowed: bool — si CU puede abrir/guardar la pauta de esta OT.
+//   • reason: string — mensaje para el usuario cuando NO puede.
+//   • becomesResponsible: bool — true si al guardar, CU debe quedar como
+//     responsable (caso: OT sin responsable previo y CU la tiene asignada).
+//
+// Regla:
+//   1) Jefatura/admin/super_admin → siempre pueden (supervisión/corrección).
+//   2) CU es el responsable actual (responsible_user_id) → puede.
+//   3) OT sin responsable Y CU la tiene asignada operativamente
+//      (assigned_user_id) → puede, y al firmar se vuelve responsable.
+//   4) Cualquier otro caso (apoyo, técnico ajeno) → bloqueado.
+function pautaCanEdit(ot) {
+  if (!ot || !CU) return { allowed: false, reason: 'No se pudo verificar la OT o el usuario.', becomesResponsible: false };
+  // 1) Jefatura / admin: siempre.
+  if (CU.role === 'admin' || CU.role === 'super_admin' || CU.role === 'jefatura') {
+    return { allowed: true, reason: '', becomesResponsible: false };
+  }
+  // 2) Responsable actual de la OT.
+  if (ot.responsible_user_id && ot.responsible_user_id === CU.id) {
+    return { allowed: true, reason: '', becomesResponsible: false };
+  }
+  // 3) OT sin responsable, pero CU la tiene asignada operativamente → al firmar se vuelve responsable.
+  if (!ot.responsible_user_id && ot.assigned_user_id === CU.id) {
+    return { allowed: true, reason: '', becomesResponsible: true };
+  }
+  // 4) Bloqueado.
+  var msg = ot.responsible_user_id
+    ? 'Solo el técnico responsable de esta OT puede llenar la pauta de inspección. Si estás prestando apoyo, el responsable debe firmarla.'
+    : 'No tienes esta OT asignada como responsable. La pauta de inspección solo la firma el técnico encargado del servicio.';
+  return { allowed: false, reason: msg, becomesResponsible: false };
+}
+window.pautaCanEdit = pautaCanEdit;
+
 // Abre el modal de pauta v2 para una OT. Carga datos previos si existen.
 async function openPautaV2Modal(otId) {
   // BUGFIX 2026-05-15: antes este lookup era estrictamente sobre _myOTsCache.
@@ -18709,6 +18747,13 @@ async function openPautaV2Modal(otId) {
     // Servicio no tiene pauta v2 -> fallback a checklist legacy.
     return openTechChecklist(otId);
   }
+  // GOBERNANZA DE PAUTA: solo el responsable (o jefatura/admin) puede abrirla.
+  var permPauta = pautaCanEdit(o);
+  if (!permPauta.allowed) {
+    showGlobalError(permPauta.reason, 5500);
+    logR('PAUTA_V2_OPEN_BLOCKED', {ot: o.ot_number, woId: otId, user: CU && CU.id, role: CU && CU.role});
+    return;
+  }
   _activeOT = row;
   // Cargar datos previos (re-edicion) o inicializar vacio.
   var existing = ((o.checklist_data || {}).tech_checklist || {}).pauta_v2;
@@ -18723,6 +18768,11 @@ async function openPautaV2Modal(otId) {
     zonas: (existing && existing.zonas) ? JSON.parse(JSON.stringify(existing.zonas)) : {},
     observaciones_libres: (existing && existing.observaciones_libres) || '',
     audit_log: (existing && Array.isArray(existing.audit_log)) ? existing.audit_log.slice() : [],
+    // Contexto de gobernanza: para revalidar al guardar y, si corresponde,
+    // promover a CU como responsable (caso OT sin responsable previo).
+    responsibleUserId: o.responsible_user_id || null,
+    assignedUserId: o.assigned_user_id || null,
+    becomesResponsible: !!permPauta.becomesResponsible,
     // FRENTE 7 FASE B: contexto de cierre. 'finalize' cierra cronometro y avanza status.
     // 'live' = abierto durante servicio, autosave en cada cambio, no avanza status.
     context: 'finalize'
@@ -18757,13 +18807,20 @@ async function openPautaV2DuringService(woId, sessionKey) {
   if (!sb || !woId) { showGlobalError('Datos insuficientes para abrir pauta', 3000); return; }
   try {
     // Cargar OT actual (siempre datos frescos para reflejar autosave previo)
-    var r = await sb.from('work_orders').select('id, ot_number, service_classification, plate, checklist_data, vehicle_id').eq('id', woId).single();
+    var r = await sb.from('work_orders').select('id, ot_number, service_classification, plate, checklist_data, vehicle_id, responsible_user_id, assigned_user_id').eq('id', woId).single();
     if (r && r.error) { showGlobalError('Error al cargar OT: ' + r.error.message, 4000); return; }
     var o = r.data;
     if (!o) { showGlobalError('OT no encontrada', 3000); return; }
     var srv = o.service_classification;
     var def = CHECKLISTS_TECH_PAUTAS_V2[srv];
     if (!def) { showGlobalError('Este servicio no tiene pauta v2', 3500); return; }
+    // GOBERNANZA DE PAUTA: solo el responsable (o jefatura/admin) puede editarla, también durante el servicio.
+    var permPautaLive = pautaCanEdit(o);
+    if (!permPautaLive.allowed) {
+      showGlobalError(permPautaLive.reason, 5500);
+      logR('PAUTA_V2_LIVE_BLOCKED', {ot: o.ot_number, woId: woId, user: CU && CU.id, role: CU && CU.role});
+      return;
+    }
     var existing = ((o.checklist_data || {}).tech_checklist || {}).pauta_v2;
     // Vehiculo (opcional, para header)
     var vData = null;
@@ -18784,6 +18841,9 @@ async function openPautaV2DuringService(woId, sessionKey) {
       zonas: (existing && existing.zonas) ? JSON.parse(JSON.stringify(existing.zonas)) : {},
       observaciones_libres: (existing && existing.observaciones_libres) || '',
       audit_log: (existing && Array.isArray(existing.audit_log)) ? existing.audit_log.slice() : [],
+      responsibleUserId: o.responsible_user_id || null,
+      assignedUserId: o.assigned_user_id || null,
+      becomesResponsible: !!permPautaLive.becomesResponsible,
       sessionKey: sessionKey || null,
       context: 'live',
       lastAutosaveAt: null
@@ -19505,6 +19565,20 @@ async function savePautaV2() {
   var st = _activePautaV2;
   if (!st) { showGlobalError('No hay pauta activa', 3000); return; }
 
+  // GOBERNANZA DE PAUTA (defensa en profundidad): revalidar permiso al guardar.
+  // La apertura ya lo valida, pero el estado pudo iniciarse por otra vía. Solo
+  // el responsable (o jefatura/admin) puede firmar. Reconstruimos una OT mínima
+  // desde el estado para reusar la misma regla.
+  var permSave = pautaCanEdit({
+    responsible_user_id: st.responsibleUserId || null,
+    assigned_user_id: st.assignedUserId || null
+  });
+  if (!permSave.allowed) {
+    showGlobalError(permSave.reason, 5500);
+    logR('PAUTA_V2_SAVE_BLOCKED', {ot: st.otNumber, woId: st.woId, user: CU && CU.id, role: CU && CU.role});
+    return;
+  }
+
   // BUGFIX iOS Safari 2026-05-15: los inputs de campos adicionales (oil_motor:
   // litros, viscosidad, marca; state_with_numeric: mm/nm/psi) usan onchange,
   // que en iOS Safari NO se dispara hasta el blur. Si el técnico tipea en un
@@ -19676,12 +19750,20 @@ async function savePautaV2() {
     // `checklist_data: cd`. Escribirlo aquí como columna top-level provocaba:
     //   "Could not find the 'tech_completed_at' column of 'work_orders' in the schema cache"
     // y dejaba al técnico atrapado en el cierre.
-    var rup = await sb.from('work_orders').update({
+    var woUpdate = {
       checklist_data: cd,
       status: newStatus,
       updated_at: new Date().toISOString(),
       updated_by: CU ? CU.id : null
-    }).eq('id', st.woId);
+    };
+    // GOBERNANZA: si CU firmó una pauta de OT sin responsable previo, queda como
+    // responsable ("el que firma, responde"). Setea ambos campos en el mismo update.
+    if (st.becomesResponsible && CU && CU.id) {
+      woUpdate.responsible_user_id = CU.id;
+      woUpdate.assigned_user_id = CU.id;
+      logR('PAUTA_V2_PROMOTED_RESPONSIBLE', {ot: st.otNumber, woId: st.woId, user: CU.id});
+    }
+    var rup = await sb.from('work_orders').update(woUpdate).eq('id', st.woId);
     if (rup && rup.error) {
       showGlobalError('Error al guardar pauta: ' + rup.error.message, 5000);
       logR('PAUTA_V2_SAVE_ERR', {ot: st.otNumber, msg: rup.error.message}, 'err');
