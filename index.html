@@ -23562,25 +23562,34 @@ async function generateOTPdf(otId) {
     var marginX = 15;
     var y = 15;
 
-    // Header con franja roja superior
-    doc.setFillColor(204, 26, 26);
-    doc.rect(0, 0, pageW, 22, 'F');
-    doc.setTextColor(255, 255, 255);
+    // Header con logo oficial de la marca (sobre fondo blanco, sin "OPS").
+    // Patrón unificado con el Informe de Servicio: logo a la izquierda,
+    // título a la derecha, línea roja de separación inferior.
+    try {
+      var otLogoUrl = await getInformeLogoDataUrl();
+      if (otLogoUrl) {
+        var otImgProbe = new Image();
+        var otRatio = await new Promise(function(resolve){
+          otImgProbe.onload = function(){ resolve(otImgProbe.naturalWidth / otImgProbe.naturalHeight); };
+          otImgProbe.onerror = function(){ resolve(4.2); };
+          otImgProbe.src = otLogoUrl;
+        });
+        var otLogoW = 36;
+        var otLogoH = otLogoW / (otRatio || 4.2);
+        doc.addImage(otLogoUrl, 'JPEG', marginX, 8, otLogoW, otLogoH, undefined, 'FAST');
+      }
+    } catch(e) { logR('OT_LOGO_RENDER_ERR', {msg: e.message}, 'warn'); }
+    doc.setTextColor(20, 20, 20);
     doc.setFont('helvetica','bold');
-    doc.setFontSize(20);
-    doc.text('ROSSO', marginX, 13);
-    // Subtítulo "OPS · OPERACIONES ESPECIALES" separado para evitar overlap
-    doc.setFontSize(7);
-    doc.setFont('helvetica','normal');
-    doc.setTextColor(255, 220, 220);
-    doc.text('OPS', marginX + 30, 8);
-    doc.setTextColor(255, 255, 255);
-    doc.setFontSize(8);
-    doc.text('OPERACIONES ESPECIALES', marginX + 30, 14);
+    doc.setFontSize(13);
+    doc.text('ORDEN DE TRABAJO', pageW - marginX, 12, {align: 'right'});
     doc.setFontSize(11);
-    doc.setFont('helvetica','bold');
-    doc.setTextColor(255, 255, 255);
-    doc.text('ORDEN DE TRABAJO  N°  OT-' + (o.ot_number || '?'), pageW - marginX, 13, {align: 'right'});
+    doc.setTextColor(204, 26, 26);
+    doc.text('N° OT-' + (o.ot_number || '?'), pageW - marginX, 18, {align: 'right'});
+    // Línea roja de separación
+    doc.setDrawColor(204, 26, 26);
+    doc.setLineWidth(0.8);
+    doc.line(marginX, 24, pageW - marginX, 24);
     y = 30;
 
     // Fecha + status
@@ -23740,7 +23749,7 @@ async function generateOTPdf(otId) {
     // Footer
     doc.setFontSize(7);
     doc.setTextColor(120, 120, 120);
-    doc.text('Documento generado por Rosso OPS · ' + new Date().toLocaleString('es-CL'), pageW/2, 290, {align:'center'});
+    doc.text('Documento generado por Rosso · ' + new Date().toLocaleString('es-CL'), pageW/2, 290, {align:'center'});
 
     // Guardar
     var fileName = 'OT-' + (o.ot_number || otId.slice(0,8)) + '_' + (v.plate || 'sinpatente') + '.pdf';
@@ -23824,25 +23833,29 @@ async function generateRecepcionConforme(otId) {
     var marginX = 15;
     var y = 15;
 
-    // Header rojo
-    doc.setFillColor(204, 26, 26);
-    doc.rect(0, 0, pageW, 22, 'F');
-    doc.setTextColor(255, 255, 255);
-    doc.setFontSize(20);
+    // Header con logo oficial de la marca (sobre fondo blanco, sin "OPS").
+    // Unificado con Informe de Servicio y Orden de Trabajo.
+    try {
+      var rcLogoUrl = await getInformeLogoDataUrl();
+      if (rcLogoUrl) {
+        var rcImgProbe = new Image();
+        var rcRatio = await new Promise(function(resolve){
+          rcImgProbe.onload = function(){ resolve(rcImgProbe.naturalWidth / rcImgProbe.naturalHeight); };
+          rcImgProbe.onerror = function(){ resolve(4.2); };
+          rcImgProbe.src = rcLogoUrl;
+        });
+        var rcLogoW = 36;
+        var rcLogoH = rcLogoW / (rcRatio || 4.2);
+        doc.addImage(rcLogoUrl, 'JPEG', marginX, 8, rcLogoW, rcLogoH, undefined, 'FAST');
+      }
+    } catch(e) { logR('RECEPCION_LOGO_RENDER_ERR', {msg: e.message}, 'warn'); }
+    doc.setTextColor(20, 20, 20);
     doc.setFont('helvetica', 'bold');
-    doc.text('ROSSO', marginX, 13);
-    // Subtítulo "OPS · OPERACIONES ESPECIALES" en dos líneas para evitar overlap
-    doc.setFontSize(7);
-    doc.setFont('helvetica', 'normal');
-    doc.setTextColor(255, 220, 220);
-    doc.text('OPS', marginX + 30, 8);
-    doc.setTextColor(255, 255, 255);
-    doc.setFontSize(8);
-    doc.text('OPERACIONES ESPECIALES', marginX + 30, 14);
-    doc.setFontSize(11);
-    doc.setFont('helvetica', 'bold');
-    doc.setTextColor(255, 255, 255);
-    doc.text('RECEPCIÓN CONFORME', pageW - marginX, 13, {align:'right'});
+    doc.setFontSize(13);
+    doc.text('RECEPCIÓN CONFORME', pageW - marginX, 14, {align:'right'});
+    doc.setDrawColor(204, 26, 26);
+    doc.setLineWidth(0.8);
+    doc.line(marginX, 24, pageW - marginX, 24);
     y = 30;
 
     // Subtítulo
@@ -24151,8 +24164,8 @@ async function generateRecepcionConforme(otId) {
     // Footer
     doc.setFontSize(7);
     doc.setTextColor(120, 120, 120);
-    doc.text('Documento generado por Rosso OPS · ' + new Date().toLocaleString('es-CL'), pageW/2, 290, {align:'center'});
-    doc.text('ROSSO OPS · OPERACIONES ESPECIALES · Recepción Conforme OT-' + (o.ot_number || '?'), pageW/2, 293.5, {align:'center'});
+    doc.text('Documento generado por Rosso · ' + new Date().toLocaleString('es-CL'), pageW/2, 290, {align:'center'});
+    doc.text('ROSSO · Recepción Conforme OT-' + (o.ot_number || '?'), pageW/2, 293.5, {align:'center'});
 
     doc.save('Recepcion_Conforme_OT-' + (o.ot_number || 'X') + '_' + (v.plate || 'XX') + '.pdf');
     showGlobalError('✓ Recepción Conforme generada.', 3000);
