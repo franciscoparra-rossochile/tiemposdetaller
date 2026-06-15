@@ -1108,7 +1108,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // FIX QW-12 (2026-04-30): config global única para evitar drift entre scripts.
 // Cualquier ajuste de timeouts/intervals va aqui y los demas scripts lo leen.
 window.RossoConfig = Object.freeze({
-  APP_VERSION: 'v2.8.7-gobernanza-pauta',            // 2026-06-11: Gobernanza pauta (solo responsable/jefatura firma) + sync OT + protección foco
+  APP_VERSION: 'v2.8.8-multiservicio-1b',            // 2026-06-15: Fase 1b multiservicio — sold_services[] en work_orders (saveNewOT escribe estructura canónica; UI aún de 1 servicio)
   SDK_TIMEOUT_MS: 8000,
   CONN_TIMEOUT_MS: 5000,
   EMERGENCY_TIMEOUT_MS: 15000,
@@ -20803,6 +20803,72 @@ function onNewOTServiceChange() {
   descWrap.style.display = s.needsDesc ? '' : 'none';
 }
 
+// ═══════════════════════════════════════════════════════════════
+// FASE 1b MULTISERVICIO (2026-06-15): sold_services[] en work_orders.
+// El modal sigue capturando UN servicio; aquí se persiste como array de
+// un elemento con la estructura canónica del diseño multiservicio. Cuando
+// la UI pase a lista agregable (camino completo), solo cambia cómo se llena
+// el array — la forma del dato y la persistencia ya quedan correctas.
+// Es 100% additivo: service_classification sigue siendo el servicio principal.
+// ═══════════════════════════════════════════════════════════════
+
+// _serviceReportKind(serviceKey) → tipo de informe que abrirá el técnico.
+// 'pauta'   → mantenimientos (pauta v2 existente)
+// 'diag' | 'repar' | 'freno' | 'dpf' | 'reprog' | 'neum' | 'garantia' → informe estructurado
+// 'none'    → lavado (solo tiempo)
+function _serviceReportKind(serviceKey) {
+  switch (serviceKey) {
+    case 'CAMBIO_ACEITE':
+    case 'MANT_EXPRESS':
+    case 'MANT_COMPLETO':   return 'pauta';
+    case 'DIAGNOSTICO':     return 'diag';
+    case 'REPAR_GENERALES': return 'repar';
+    case 'FRENOS':          return 'freno';
+    case 'DPF_PACK_ESENCIAL':
+    case 'DPF_PACK_AVANZADO':
+    case 'DPF_PACK_PREMIUM':
+    case 'DPF_EXTRAIDO':    return 'dpf';
+    case 'REPROG_ECU':      return 'reprog';
+    case 'NEUMATICOS':      return 'neum';
+    case 'GARANTIA':        return 'garantia';
+    case 'LAVADO':          return 'none';
+    default:                return 'repar';
+  }
+}
+window._serviceReportKind = _serviceReportKind;
+
+// _genSoldServiceId() → id local único para un sold_service (no cripto, solo unicidad local).
+function _genSoldServiceId() {
+  return 'svc_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+}
+
+// _buildSoldServiceFromForm(srvKey, srvSub, srvDesc) → un elemento de sold_services[].
+// Estructura canónica del diseño multiservicio v3. El campo intake queda con
+// los datos que el modal actual sí captura (descripción); los específicos
+// (síntomas, nivel, hardware) se llenarán cuando la UI pase a multi.
+function _buildSoldServiceFromForm(srvKey, srvSub, srvDesc) {
+  if (!srvKey) return null;
+  return {
+    id: _genSoldServiceId(),
+    service_classification: srvKey,
+    service_subtype: srvSub || null,
+    report_kind: _serviceReportKind(srvKey),
+    intake: {
+      description: srvDesc || null,
+      diagnostic_level: null,
+      client_symptoms: null,
+      tire_size: null,
+      reprog_hardware_required: null,
+      elim_module: null
+    },
+    assigned_user_id: null,
+    assignment_role: null,
+    status: 'pending',
+    created_at: new Date().toISOString()
+  };
+}
+window._buildSoldServiceFromForm = _buildSoldServiceFromForm;
+
 async function saveNewOT() {
   var vehId = document.getElementById('m-newot-vehid').value;
   var cliId = document.getElementById('m-newot-cliid').value;
@@ -20835,6 +20901,8 @@ async function saveNewOT() {
   var isEdit = !!_editOTId;
   btn.innerHTML = '<span class="spin"></span> ' + (isEdit ? 'Guardando...' : 'Creando...'); btn.disabled = true;
 
+  // FASE 1b: construir sold_services[] (por ahora un elemento desde el form único).
+  var _soldSvc = _buildSoldServiceFromForm(srvKey, srvSub, srvDesc);
   var basePayload = {
     service_classification: srvKey, service_subtype: srvSub || null,
     service_description: srvDesc || null,
@@ -20842,6 +20910,9 @@ async function saveNewOT() {
     client_notes: notes || null,
     updated_by: CU ? CU.id : null
   };
+  // sold_services SOLO se escribe en creación. En edición no se toca: este modal
+  // es de un servicio y sobrescribir aplastaría una OT que ya fuera multiservicio.
+  if (!_editOTId && _soldSvc) basePayload.sold_services = [_soldSvc];
   try {
     if (isEdit) {
       var ru = await sb.from('work_orders').update(basePayload).eq('id', _editOTId);
