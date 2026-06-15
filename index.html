@@ -891,9 +891,25 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     <input type="hidden" id="m-newot-vehid"/>
     <input type="hidden" id="m-newot-cliid"/>
 
-    <div class="lbl">Tipo de servicio</div>
+    <div id="m-newot-migr-banner" style="display:none;font-size:11px;padding:8px 10px;border-radius:4px;margin-bottom:12px;line-height:1.45;background:var(--gold2);color:var(--gold3);border:1px solid var(--gold)"></div>
+
+    <div id="m-newot-fechas" style="display:flex;gap:10px;margin-bottom:12px">
+      <div style="flex:1">
+        <div class="lbl">Fecha de creación</div>
+        <div id="m-newot-fcrea" style="font-size:12px;color:var(--wh3);font-family:var(--mono);padding:6px 0">—</div>
+      </div>
+      <div style="flex:1">
+        <div class="lbl">Fecha de agendamiento</div>
+        <input class="inp" type="datetime-local" id="m-newot-fagenda" step="900" style="margin-bottom:0"/>
+      </div>
+    </div>
+
+    <div class="lbl">Servicios de la orden</div>
+    <div id="m-newot-svc-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:8px"></div>
+
+    <!-- Selector interno reutilizado para agregar servicios a la lista (conserva lógica de subtipos) -->
     <select class="inp" id="m-newot-srv" onchange="onNewOTServiceChange()">
-      <option value="">Selecciona servicio...</option>
+      <option value="">+ Agregar servicio...</option>
     </select>
 
     <div id="m-newot-sub-wrap" style="display:none">
@@ -905,6 +921,10 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     <div id="m-newot-desc-wrap" style="display:none">
       <div class="lbl">Descripción del trabajo</div>
       <textarea class="inp" id="m-newot-desc" rows="2" placeholder="Detalla el trabajo solicitado"></textarea>
+    </div>
+
+    <div id="m-newot-add-wrap" style="display:none;margin-bottom:12px">
+      <button class="btn btn-out" id="m-newot-add-btn" style="font-size:12px;padding:8px" onclick="addServiceToOTList()">Añadir este servicio a la orden</button>
     </div>
 
     <div class="lbl">Gestor comercial</div>
@@ -1108,7 +1128,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // FIX QW-12 (2026-04-30): config global única para evitar drift entre scripts.
 // Cualquier ajuste de timeouts/intervals va aqui y los demas scripts lo leen.
 window.RossoConfig = Object.freeze({
-  APP_VERSION: 'v2.8.9-agendamiento-a1',            // 2026-06-15: Fase A1.1 — pestaña Agendamiento (absorbe Calendario como sub-vista) + lista de servicios agendados. Modal multiservicio pendiente A1.2. m-event intacto.
+  APP_VERSION: 'v2.9.0-multiservicio-a12',            // 2026-06-15: Fase A1.2 — modal m-new-ot multiservicio (lista agregable) en crear/editar, Catastro y Agendamiento. Migración al vuelo de OT viejas + banner. Fechas creación/agendamiento visibles. Ya NO escribe scheduled_services (agendamiento vive en la OT).
   SDK_TIMEOUT_MS: 8000,
   CONN_TIMEOUT_MS: 5000,
   EMERGENCY_TIMEOUT_MS: 15000,
@@ -11650,10 +11670,10 @@ async function _gestorLoadList(wrap) {
 // puente seguro, abren el flujo de creación de OT existente (openNewOTForVehicle
 // vía selección de cliente). El modal multiservicio completo entra en A1 paso 2.
 function openNuevaFichaGestor() {
-  // Puente A1: dirigir al flujo de selección de cliente para crear la ficha.
-  // (El modal de ficha multiservicio dedicado se conecta en el siguiente paso de A1.)
-  bossTab('b-ingreso');
-  showGlobalError('Selecciona o crea el cliente y vehículo para agendar la ficha de servicio.', 4000);
+  // A1.2: el gestor selecciona/crea cliente y vehículo en Catastro; al crear la OT,
+  // el modal ya es multiservicio con la fecha de agendamiento visible para llenar.
+  bossTab('b-catastro');
+  showGlobalError('Selecciona o crea el cliente y vehículo. Al crear la orden, agrega los servicios y la fecha de agendamiento.', 5000);
 }
 window.openNuevaFichaGestor = openNuevaFichaGestor;
 
@@ -20795,21 +20815,57 @@ async function editOT(otId) {
     var subEl   = modal && modal.querySelector('.modal-s');
     if (titleEl) titleEl.textContent = 'Editar OT-' + (o.ot_number || '?');
     if (subEl)   subEl.textContent = 'Modifica los datos de esta orden de trabajo';
-    document.getElementById('m-newot-srv').value = o.service_classification || '';
-    onNewOTServiceChange();
-    // Sub: si es multiSelect, marcar checkboxes; si es single, setear value
-    var srvDef = SERVICES_INGRESO.find(function(x){return x.key === o.service_classification;});
-    if (srvDef && srvDef.subs && srvDef.subs.length) {
-      if (srvDef.multiSelect && o.service_subtype) {
-        var picked = o.service_subtype.split(' + ');
-        document.querySelectorAll('#m-newot-sub-multi input[data-newot-sub]').forEach(function(cb){
-          cb.checked = picked.indexOf(cb.dataset.newotSub) !== -1;
-        });
-      } else if (o.service_subtype) {
-        document.getElementById('m-newot-sub').value = o.service_subtype;
+    // A1.2: cargar la lista multiservicio. Si la OT ya tiene sold_services[], usarla.
+    // Si es del modelo viejo (sold_services null/vacío), MIGRAR al vuelo desde
+    // service_classification + service_subtype + service_description, y avisar.
+    _resetOTServiceList();
+    var migrated = false;
+    if (Array.isArray(o.sold_services) && o.sold_services.length) {
+      _otServiceList = o.sold_services.map(function(ss){
+        return {
+          service_classification: ss.service_classification,
+          service_subtype: ss.service_subtype || null,
+          description: (ss.intake && ss.intake.description) || ss.service_description || null
+        };
+      });
+    } else if (o.service_classification) {
+      _otServiceList = [{
+        service_classification: o.service_classification,
+        service_subtype: o.service_subtype || null,
+        description: o.service_description || null
+      }];
+      migrated = true;
+    }
+    renderOTServiceList();
+    // Banner de migración
+    var banner = document.getElementById('m-newot-migr-banner');
+    if (banner) {
+      if (migrated) {
+        banner.style.display = '';
+        banner.innerHTML = 'Esta OT es del modelo anterior (un servicio). Se convirtió automáticamente a multiservicio para mantener la coherencia. Revisa los servicios y guarda.';
+      } else {
+        banner.style.display = 'none';
       }
     }
-    document.getElementById('m-newot-desc').value = o.service_description || '';
+    // Fechas: creación (solo lectura) + agendamiento (editable), siempre a la vista.
+    var fcrea = document.getElementById('m-newot-fcrea');
+    if (fcrea) fcrea.textContent = o.created_at ? fmtD(o.created_at) : '—';
+    var fagenda = document.getElementById('m-newot-fagenda');
+    if (fagenda) {
+      if (o.scheduled_appointment_at) {
+        // datetime-local necesita formato YYYY-MM-DDTHH:mm sin zona
+        try {
+          var dt = new Date(o.scheduled_appointment_at);
+          var pad = function(n){ return String(n).padStart(2,'0'); };
+          fagenda.value = dt.getFullYear() + '-' + pad(dt.getMonth()+1) + '-' + pad(dt.getDate()) + 'T' + pad(dt.getHours()) + ':' + pad(dt.getMinutes());
+        } catch(_) { fagenda.value = ''; }
+      } else {
+        fagenda.value = '';
+      }
+    }
+    // Origen 'agendamiento' si la OT tiene fecha de agendamiento; si no, 'catastro'.
+    _otModalOrigin = o.scheduled_appointment_at ? 'agendamiento' : 'catastro';
+    document.getElementById('m-newot-desc').value = '';
     document.getElementById('m-newot-notes').value = o.client_notes || '';
     // Esperar a que el dropdown de gestores esté cargado, luego setear
     setTimeout(function(){
@@ -20904,6 +20960,19 @@ async function openNewOTForVehicle(vehicleId, clientId) {
       mgrSel.appendChild(o);
     });
   } catch(_){}
+  // A1.2: estado multiservicio del modal. Por defecto origen 'catastro' (editOT lo ajusta).
+  // Si NO venimos de editOT (creación), reseteamos lista y banner; editOT los setea después.
+  if (!_editOTId) {
+    _resetOTServiceList();
+    _otModalOrigin = 'catastro';
+    var banner0 = document.getElementById('m-newot-migr-banner');
+    if (banner0) banner0.style.display = 'none';
+    var fcrea0 = document.getElementById('m-newot-fcrea');
+    if (fcrea0) fcrea0.textContent = 'Nueva (se asigna al crear)';
+    var fagenda0 = document.getElementById('m-newot-fagenda');
+    if (fagenda0) fagenda0.value = '';
+    renderOTServiceList();
+  }
   closeModal('m-vehicle-detail');
   openModal('m-new-ot');
 }
@@ -20914,7 +20983,7 @@ function onNewOTServiceChange() {
   var descWrap = document.getElementById('m-newot-desc-wrap');
   var subSel = document.getElementById('m-newot-sub');
   var subMulti = document.getElementById('m-newot-sub-multi');
-  if (!key) { subWrap.style.display='none'; descWrap.style.display='none'; if(subMulti)subMulti.innerHTML=''; return; }
+  if (!key) { subWrap.style.display='none'; descWrap.style.display='none'; if(subMulti)subMulti.innerHTML=''; var aw=document.getElementById('m-newot-add-wrap'); if(aw)aw.style.display='none'; return; }
   var s = SERVICES_INGRESO.find(function(x){ return x.key === key; });
   if (!s) return;
   if (s.subs && s.subs.length) {
@@ -20938,6 +21007,9 @@ function onNewOTServiceChange() {
     subSel.value = ''; if(subMulti)subMulti.innerHTML=''; subWrap.style.display = 'none';
   }
   descWrap.style.display = s.needsDesc ? '' : 'none';
+  // A1.2: mostrar el botón "Añadir este servicio" cuando hay un servicio elegido.
+  var addWrap = document.getElementById('m-newot-add-wrap');
+  if (addWrap) addWrap.style.display = key ? '' : 'none';
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -21006,11 +21078,87 @@ function _buildSoldServiceFromForm(srvKey, srvSub, srvDesc) {
 }
 window._buildSoldServiceFromForm = _buildSoldServiceFromForm;
 
+// ═══════════════════════════════════════════════════════════════
+// FASE A1.2 MULTISERVICIO (2026-06-15): lista de servicios en el modal m-new-ot.
+// Estado en memoria mientras el modal está abierto. saveNewOT persiste esto
+// como sold_services[]. Aplica a CREAR y EDITAR, desde Catastro y Agendamiento
+// (Opción B: un solo modelo en toda la app).
+// ═══════════════════════════════════════════════════════════════
+var _otServiceList = [];        // [{service_classification, service_subtype, description}]
+var _otModalOrigin = 'catastro'; // 'catastro' | 'agendamiento'
+
+// Resetea el estado del modal (llamar al abrir).
+function _resetOTServiceList() {
+  _otServiceList = [];
+}
+
+// Pinta la lista de servicios agregados con botón de quitar.
+function renderOTServiceList() {
+  var box = document.getElementById('m-newot-svc-list');
+  if (!box) return;
+  if (_otServiceList.length === 0) {
+    box.innerHTML = '<div style="font-size:12px;color:var(--wh4);padding:9px;text-align:center;border:1px dashed var(--border2);border-radius:4px">Sin servicios. Agrega al menos uno con el selector de abajo.</div>';
+    return;
+  }
+  var html = '';
+  _otServiceList.forEach(function(s, i) {
+    var def = SERVICES_INGRESO.find(function(x){ return x.key === s.service_classification; });
+    var label = def ? def.label : s.service_classification;
+    var kind = _serviceReportKind(s.service_classification);
+    var color = (kind === 'pauta') ? 'var(--green)' : (kind === 'none') ? 'var(--wh3)' : 'var(--blue)';
+    var detail = [s.service_subtype, s.description].filter(Boolean).join(' · ');
+    html += '<div style="border:1px solid var(--border2);border-left:3px solid ' + color + ';border-radius:4px;padding:8px 10px;background:#fff">'
+      +   '<div style="display:flex;justify-content:space-between;align-items:center">'
+      +     '<span style="font-size:13px;font-weight:600;color:#111">' + escapeHtml(label) + '</span>'
+      +     '<button class="btn-sm" style="border-color:var(--red);color:var(--red);padding:2px 8px" onclick="removeServiceFromOTList(' + i + ')">Quitar</button>'
+      +   '</div>'
+      +   (detail ? '<div style="font-size:11px;color:var(--wh3);margin-top:3px">' + escapeHtml(detail) + '</div>' : '')
+      + '</div>';
+  });
+  box.innerHTML = html;
+}
+window.renderOTServiceList = renderOTServiceList;
+
+// Agrega el servicio seleccionado en el selector interno a la lista de la OT.
+function addServiceToOTList() {
+  var srvKey = document.getElementById('m-newot-srv').value;
+  if (!srvKey) { showGlobalError('Selecciona un servicio primero.', 3000); return; }
+  var s = SERVICES_INGRESO.find(function(x){ return x.key === srvKey; });
+  // Subtipo (single o multi)
+  var srvSub = '';
+  if (s && s.subs && s.subs.length) {
+    if (s.multiSelect) {
+      var multis = Array.from(document.querySelectorAll('#m-newot-sub-multi input[type=checkbox]:checked')).map(function(cb){ return cb.dataset.newotSub; });
+      if (multis.length === 0) { showGlobalError('Marca al menos una especificación.', 3000); return; }
+      srvSub = multis.join(' + ');
+    } else {
+      srvSub = document.getElementById('m-newot-sub').value || '';
+      if (!srvSub) { showGlobalError('Falta la especificación.', 3000); return; }
+    }
+  }
+  var srvDesc = '';
+  if (s && s.needsDesc) {
+    srvDesc = document.getElementById('m-newot-desc').value.trim();
+    if (!srvDesc) { showGlobalError('Indica la descripción del trabajo.', 3000); return; }
+  }
+  _otServiceList.push({ service_classification: srvKey, service_subtype: srvSub || null, description: srvDesc || null });
+  // Resetear el selector interno para el siguiente
+  document.getElementById('m-newot-srv').value = '';
+  onNewOTServiceChange();
+  renderOTServiceList();
+}
+window.addServiceToOTList = addServiceToOTList;
+
+function removeServiceFromOTList(i) {
+  _otServiceList.splice(i, 1);
+  renderOTServiceList();
+}
+window.removeServiceFromOTList = removeServiceFromOTList;
+
+
 async function saveNewOT() {
   var vehId = document.getElementById('m-newot-vehid').value;
   var cliId = document.getElementById('m-newot-cliid').value;
-  var srvKey = document.getElementById('m-newot-srv').value;
-  var srvDesc = document.getElementById('m-newot-desc').value.trim();
   var mgrSel = document.getElementById('m-newot-mgr');
   var mgrId = mgrSel.value || null;
   var mgrName = mgrId ? (mgrSel.options[mgrSel.selectedIndex].dataset.name || mgrSel.options[mgrSel.selectedIndex].text) : '';
@@ -21018,38 +21166,43 @@ async function saveNewOT() {
   var err = document.getElementById('m-newot-err');
   err.style.display = 'none';
 
-  if (!srvKey) { err.textContent = 'Selecciona el servicio'; err.style.display='block'; return; }
-  var s = SERVICES_INGRESO.find(function(x){ return x.key === srvKey; });
-  var srvSub = '';
-  if (s && s.subs && s.subs.length) {
-    if (s.multiSelect) {
-      var multis = Array.from(document.querySelectorAll('#m-newot-sub-multi input[type=checkbox]:checked')).map(function(cb){return cb.dataset.newotSub;});
-      if (multis.length === 0) { err.textContent = 'Marca al menos una especificación'; err.style.display='block'; return; }
-      srvSub = multis.join(' + ');
-    } else {
-      srvSub = document.getElementById('m-newot-sub').value || '';
-      if (!srvSub) { err.textContent = 'Falta especificación'; err.style.display='block'; return; }
-    }
+  // A1.2 (Opción B): la fuente de servicios es _otServiceList (multiservicio).
+  if (!_otServiceList || _otServiceList.length === 0) {
+    err.textContent = 'Agrega al menos un servicio a la orden.'; err.style.display='block'; return;
   }
-  if (s && s.needsDesc && !srvDesc) { err.textContent = 'Indica la descripción del trabajo'; err.style.display='block'; return; }
   if (!mgrId) { err.textContent = 'Asigna un gestor comercial'; err.style.display='block'; return; }
+
+  // Servicio principal = primer elemento (para compatibilidad con service_classification
+  // y las ~30 referencias existentes que leen ese campo).
+  var principal = _otServiceList[0];
+
+  // Fecha de agendamiento (opcional; visible siempre. El gestor la llena al agendar).
+  var fagendaRaw = document.getElementById('m-newot-fagenda').value;
+  var fagendaIso = fagendaRaw ? new Date(fagendaRaw).toISOString() : null;
+
+  // Construir sold_services[] desde la lista completa.
+  var soldServices = _otServiceList.map(function(it){
+    return _buildSoldServiceFromForm(it.service_classification, it.service_subtype, it.description);
+  }).filter(Boolean);
+
+  // Descripción/subtipo principales para los campos legacy (resumen del primero).
+  var srvKey = principal.service_classification;
+  var srvSub = principal.service_subtype || '';
+  var srvDesc = principal.description || '';
 
   var btn = document.getElementById('m-newot-btn');
   var isEdit = !!_editOTId;
   btn.innerHTML = '<span class="spin"></span> ' + (isEdit ? 'Guardando...' : 'Creando...'); btn.disabled = true;
 
-  // FASE 1b: construir sold_services[] (por ahora un elemento desde el form único).
-  var _soldSvc = _buildSoldServiceFromForm(srvKey, srvSub, srvDesc);
   var basePayload = {
     service_classification: srvKey, service_subtype: srvSub || null,
     service_description: srvDesc || null,
     commercial_manager_id: mgrId, commercial_manager_name: mgrName,
     client_notes: notes || null,
+    sold_services: soldServices,
+    scheduled_appointment_at: fagendaIso,
     updated_by: CU ? CU.id : null
   };
-  // sold_services SOLO se escribe en creación. En edición no se toca: este modal
-  // es de un servicio y sobrescribir aplastaría una OT que ya fuera multiservicio.
-  if (!_editOTId && _soldSvc) basePayload.sold_services = [_soldSvc];
   try {
     if (isEdit) {
       var ru = await sb.from('work_orders').update(basePayload).eq('id', _editOTId);
@@ -21062,15 +21215,16 @@ async function saveNewOT() {
       });
       var r = await sb.from('work_orders').insert(insertPayload).select('id, ot_number').single();
       if (r.error) throw new Error(r.error.message);
-      // FASE 2.4.D: auto-crear scheduled_service vinculado al crear nueva OT desde catastro
       var newOTId = r.data && r.data.id;
       var newOTNum = r.data && r.data.ot_number;
-      if (newOTId) await autoCreateScheduledForOT(newOTId, vehId, srvKey, srvSub, mgrId);
-      // FASE 2.4.D-fix: notificar al gestor + jefe de taller
+      // NOTA A1.2: ya NO se llama autoCreateScheduledForOT — el agendamiento vive
+      // en la OT (sold_services + scheduled_appointment_at), no en scheduled_services.
+      // El Smart Planner migrará su fuente en A3. Hasta entonces, las OT nuevas no
+      // aparecen en el calendario viejo (esperado; la lista de Agendamiento sí las muestra).
       if (newOTId) {
         var srvDef2 = SERVICES_INGRESO.find(function(x){return x.key === srvKey;});
         var srvLbl2 = (srvDef2 ? srvDef2.label : srvKey) + (srvSub ? ' · ' + srvSub : '');
-        // Buscar la patente del vehículo
+        if (soldServices.length > 1) srvLbl2 += ' (+' + (soldServices.length - 1) + ' más)';
         var plate = '';
         try { var rv = await sb.from('client_vehicles').select('plate').eq('id', vehId).maybeSingle(); if (rv && rv.data) plate = rv.data.plate || ''; } catch(_){}
         await notifyOTCreated(newOTId, newOTNum, srvLbl2, plate, mgrId);
@@ -21085,9 +21239,11 @@ async function saveNewOT() {
   closeModal('m-new-ot');
   showGlobalError(isEdit ? 'OT actualizada' : 'Orden de trabajo creada', 2500);
   _editOTId = null;
+  _resetOTServiceList();
   // Refrescar listas relevantes
   if (curBossTab === 'b-catastro') await loadCatastro();
   if (curBossTab === 'b-ingreso')  await loadUnassignedToday();
+  if (curBossTab === 'b-gestor')   renderBossGestor(document.getElementById('boss-body'));
 }
 
 // ═══════════════════════════════════════════════════════════════
