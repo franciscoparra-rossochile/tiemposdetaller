@@ -1128,7 +1128,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // FIX QW-12 (2026-04-30): config global única para evitar drift entre scripts.
 // Cualquier ajuste de timeouts/intervals va aqui y los demas scripts lo leen.
 window.RossoConfig = Object.freeze({
-  APP_VERSION: 'v2.9.3-agendamiento-a2',            // 2026-06-15: Fase A2 — lista de agendamientos potenciada: filtro por estado, búsqueda por patente/cliente, agrupación temporal (hoy/semana/adelante/pasadas), cliente+gestor por tarjeta. Edición ya conectada vía editOT.
+  APP_VERSION: 'v2.9.4-agendamiento-a2b',            // 2026-06-15: A2+ — estados en español claros, tiempo transcurrido (liveSecondsNow) y técnico actual desde active_sessions en cada tarjeta de agendamiento.
   SDK_TIMEOUT_MS: 8000,
   CONN_TIMEOUT_MS: 5000,
   EMERGENCY_TIMEOUT_MS: 15000,
@@ -11650,6 +11650,27 @@ async function _gestorLoadList(wrap) {
       try { var rc = await sb.from('clients').select('id, name').in('id', cliIds);
         (rc.data || []).forEach(function(c){ cliById[c.id] = c; }); } catch(_){}
     }
+    // A2+: sesiones activas para mostrar tiempo transcurrido y técnico actual.
+    var otIds = rows.map(function(o){ return o.id; }).filter(Boolean);
+    var sessByOT = {};
+    if (otIds.length) {
+      try {
+        var rs = await sb.from('active_sessions').select('*').in('work_order_id', otIds);
+        (rs.data || []).forEach(function(s){
+          // Una OT puede tener varias sesiones; quedarse con la que está corriendo
+          // (running) o, si no, la más reciente.
+          var prev = sessByOT[s.work_order_id];
+          if (!prev) { sessByOT[s.work_order_id] = s; return; }
+          var sRun = (s.status === 'running'), pRun = (prev.status === 'running');
+          if (sRun && !pRun) { sessByOT[s.work_order_id] = s; return; }
+          if (sRun === pRun) {
+            var sT = new Date(s.updated_at || s.started_at || 0).getTime();
+            var pT = new Date(prev.updated_at || prev.started_at || 0).getTime();
+            if (sT > pT) sessByOT[s.work_order_id] = s;
+          }
+        });
+      } catch(_){}
+    }
     // Anexar datos hidratados a cada fila para filtrar/render
     rows.forEach(function(o){
       var veh = plateById[o.vehicle_id] || {};
@@ -11664,6 +11685,15 @@ async function _gestorLoadList(wrap) {
       } else {
         var def0 = SERVICES_INGRESO.find(function(x){ return x.key === o.service_classification; });
         o._svcLabel = (def0 ? def0.label : (o.service_classification || 'Sin servicio'));
+      }
+      // A2+: sesión activa de esta OT (tiempo y técnico actual)
+      var sess = sessByOT[o.id];
+      if (sess) {
+        o._sessTech = sess.technician || '';
+        o._sessPaused = (sess.status === 'paused');
+        try { o._sessSecs = liveSecondsNow(sess); } catch(_) { o._sessSecs = 0; }
+      } else {
+        o._sessTech = ''; o._sessSecs = 0; o._sessPaused = false;
       }
     });
     _gestorRowsCache = rows;
@@ -11742,17 +11772,42 @@ function _gestorRenderList(wrap) {
   wrap.innerHTML = html;
 }
 
-// HTML de una tarjeta de agendamiento (con cliente + gestor).
+// A2+: traduce el status técnico a etiqueta clara en español + color.
+function _gestorEstadoInfo(status) {
+  switch (status) {
+    case 'open':                 return { label: 'Agendada',               color: 'var(--blue)' };
+    case 'assigned':             return { label: 'Asignada',               color: 'var(--blue)' };
+    case 'in_progress':          return { label: 'En proceso',             color: 'var(--gold3)' };
+    case 'pending_double_check': return { label: 'Esperando doble control', color: 'var(--gold3)' };
+    case 'pending_visado':       return { label: 'Esperando visado',       color: 'var(--gold3)' };
+    case 'closed':               return { label: 'Cerrada',                color: 'var(--green)' };
+    default:                     return { label: (status || '—'),          color: 'var(--wh3)' };
+  }
+}
+
+// HTML de una tarjeta de agendamiento (con cliente, gestor, tiempo y técnico actual).
 function _gestorCardHtml(o) {
   var fecha = o.scheduled_appointment_at ? fmtD(o.scheduled_appointment_at) : 'Sin fecha';
   var canEdit = (o.status === 'open');
-  var stColor = (o.status === 'open') ? 'var(--blue)' : (o.status === 'closed') ? 'var(--wh4)' : 'var(--wh3)';
+  var est = _gestorEstadoInfo(o.status);
+  // Línea de trabajo en curso: técnico + tiempo transcurrido (solo si hay sesión).
+  var workLine = '';
+  if (o._sessTech || o._sessSecs) {
+    var tiempo = (o._sessSecs ? fmtHM(o._sessSecs) : '0m');
+    var pausedTxt = o._sessPaused ? ' (en pausa)' : '';
+    workLine = '<div style="font-size:11px;color:var(--gold3);margin-top:3px">'
+      + '<i class="ti ti-clock" style="font-size:12px;vertical-align:-2px"></i> '
+      + (o._sessTech ? escapeHtml(o._sessTech) + ' · ' : '')
+      + 'lleva ' + escapeHtml(tiempo) + escapeHtml(pausedTxt)
+      + '</div>';
+  }
   return '<div style="border:1px solid var(--border2);border-left:3px solid var(--gold);border-radius:4px;padding:10px 12px;margin-bottom:8px;background:#fff">'
     +   '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">'
     +     '<div style="flex:1">'
     +       '<div style="font-size:13px;font-weight:700;color:#111">' + escapeHtml(o._plate) + (o._bm ? ' · <span style="font-weight:400;color:var(--wh3)">' + escapeHtml(o._bm) + '</span>' : '') + '</div>'
     +       (o._cliName ? '<div style="font-size:12px;color:var(--wh2);margin-top:1px">' + escapeHtml(o._cliName) + '</div>' : '')
     +       '<div style="font-size:12px;color:var(--wh2);margin-top:2px">' + escapeHtml(o._svcLabel) + '</div>'
+    +       workLine
     +       '<div style="font-size:10px;color:var(--wh4);margin-top:2px">'
     +         (o.ot_number ? '<span style="font-family:var(--mono)">OT ' + escapeHtml(String(o.ot_number)) + '</span>' : '')
     +         (o.commercial_manager_name ? ' · ' + escapeHtml(o.commercial_manager_name) : '')
@@ -11760,7 +11815,7 @@ function _gestorCardHtml(o) {
     +     '</div>'
     +     '<div style="text-align:right;flex-shrink:0">'
     +       '<div style="font-size:12px;font-weight:600;color:#111">' + escapeHtml(fecha) + '</div>'
-    +       '<span style="font-size:10px;font-weight:700;color:' + stColor + '">' + escapeHtml(String(o.status || '').toUpperCase()) + '</span>'
+    +       '<span style="display:inline-block;margin-top:3px;font-size:10px;font-weight:700;padding:2px 7px;border-radius:3px;background:var(--bg3);color:' + est.color + '">' + escapeHtml(est.label) + '</span>'
     +     '</div>'
     +   '</div>'
     +   (canEdit
