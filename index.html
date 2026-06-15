@@ -1128,7 +1128,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // FIX QW-12 (2026-04-30): config global única para evitar drift entre scripts.
 // Cualquier ajuste de timeouts/intervals va aqui y los demas scripts lo leen.
 window.RossoConfig = Object.freeze({
-  APP_VERSION: 'v2.9.4-agendamiento-a2b',            // 2026-06-15: A2+ — estados en español claros, tiempo transcurrido (liveSecondsNow) y técnico actual desde active_sessions en cada tarjeta de agendamiento.
+  APP_VERSION: 'v2.9.5-agendamiento-a2c',            // 2026-06-15: A2 fixes — calendario en sub-div (toolbar ya no se borra, se puede volver a lista) + lista muestra TODAS las OT (con/sin fecha); grupo 'Sin fecha' editable para fecha retroactiva; filtro Todas incluye cerradas.
   SDK_TIMEOUT_MS: 8000,
   CONN_TIMEOUT_MS: 5000,
   EMERGENCY_TIMEOUT_MS: 15000,
@@ -11580,16 +11580,14 @@ async function renderBossGestor(body) {
   body.appendChild(bar);
 
   if (_gestorView === 'calendario') {
-    // El calendario (renderBossCal) tiene muchas auto-invocaciones internas que
-    // repintan boss-body completo (navegación de meses, click en día). Pelear con
-    // eso metiéndolo en un sub-wrap rompe la toolbar. Solución robusta: dejar que
-    // el calendario ocupe boss-body, y montar un botón flotante "Volver a lista"
-    // que NO depende del repintado interno del calendario.
-    await renderBossCal(body);
-    // Botón volver: se inserta al inicio del body, sobrevive porque renderBossCal
-    // ya terminó de pintar. Si el usuario navega meses, el botón se re-inyecta
-    // vía el observer ligero de abajo.
-    _gestorMountVolverBtn(body);
+    // El calendario vive en su PROPIO sub-contenedor, separado de la toolbar.
+    // renderBossCal recuerda este contenedor (_bossCalContainer) y sus repintados
+    // internos (navegación de meses/vistas) van aquí, NO a boss-body. Así la toolbar
+    // de arriba (Lista/Calendario) nunca se borra y siempre puedes volver.
+    var calHost = mk('div','');
+    calHost.id = 'gestor-cal-host';
+    body.appendChild(calHost);
+    await renderBossCal(calHost);
     return;
   }
 
@@ -11605,6 +11603,9 @@ async function renderBossGestor(body) {
 // Robusto ante repintados: si el calendario se repinta y borra el botón, este
 // helper se puede volver a llamar. Para A1.2 lo montamos una vez; si el usuario
 // navega meses y lo pierde, puede volver con la pestaña.
+// DEPRECADA (v2.9.5): ya no se usa. La toolbar de Agendamiento ahora vive separada
+// del calendario (sub-div gestor-cal-host), así que nunca se borra y no hace falta
+// re-inyectar un botón volver. Se conserva la definición para no romper referencias.
 function _gestorMountVolverBtn(body) {
   if (document.getElementById('gestor-volver-btn')) return;
   var b = mk('div','');
@@ -11630,10 +11631,13 @@ var _gestorRowsCache = null;  // cache de filas hidratadas para filtrar sin reca
 
 async function _gestorLoadList(wrap) {
   try {
+    // A2 fix: traer TODAS las OT (no solo con fecha de agendamiento). El filtro de
+    // estado decide qué mostrar. Las OT sin fecha pueden recibir fecha retroactiva
+    // editándolas desde aquí. Limitamos a un rango razonable para no traer miles.
     var q = sb.from('work_orders')
       .select('id, ot_number, status, scheduled_appointment_at, created_at, sold_services, service_classification, service_description, vehicle_id, client_id, commercial_manager_id, commercial_manager_name')
-      .not('scheduled_appointment_at', 'is', null)
-      .order('scheduled_appointment_at', { ascending: true });
+      .order('created_at', { ascending: false })
+      .limit(300);
     var r = await q;
     if (r.error) { wrap.innerHTML = '<div class="empty">Error al cargar: ' + escapeHtml(r.error.message) + '</div>'; return; }
     var rows = r.data || [];
@@ -11749,10 +11753,11 @@ function _gestorRenderList(wrap) {
   var startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   var endToday = new Date(startToday.getTime() + 86400000);
   var endWeek = new Date(startToday.getTime() + 7 * 86400000);
-  var groups = { pasadas: [], hoy: [], semana: [], adelante: [] };
+  var groups = { sinfecha: [], pasadas: [], hoy: [], semana: [], adelante: [] };
   filtered.forEach(function(o){
+    if (!o.scheduled_appointment_at) { groups.sinfecha.push(o); return; }
     var d = new Date(o.scheduled_appointment_at);
-    if (isNaN(d.getTime())) { groups.adelante.push(o); return; }
+    if (isNaN(d.getTime())) { groups.sinfecha.push(o); return; }
     if (d < startToday) groups.pasadas.push(o);
     else if (d < endToday) groups.hoy.push(o);
     else if (d < endWeek) groups.semana.push(o);
@@ -11761,12 +11766,16 @@ function _gestorRenderList(wrap) {
 
   var html = bar;
   var sections = [
-    ['hoy', 'Hoy'], ['semana', 'Esta semana'], ['adelante', 'Más adelante'], ['pasadas', 'Pasadas']
+    ['hoy', 'Hoy'], ['semana', 'Esta semana'], ['adelante', 'Más adelante'],
+    ['sinfecha', 'Sin fecha de agendamiento'], ['pasadas', 'Pasadas']
   ];
   sections.forEach(function(sec){
     var key = sec[0], title = sec[1], list = groups[key];
     if (!list.length) return;
-    html += '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--wh3);margin:14px 0 8px">' + title + ' · ' + list.length + '</div>';
+    var hint = (key === 'sinfecha')
+      ? ' <span style="font-weight:400;text-transform:none;color:var(--wh4)">— edítalas para asignar fecha</span>'
+      : '';
+    html += '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--wh3);margin:14px 0 8px">' + title + ' · ' + list.length + hint + '</div>';
     list.forEach(function(o){ html += _gestorCardHtml(o); });
   });
   wrap.innerHTML = html;
@@ -11860,7 +11869,12 @@ window.editFichaGestor = editFichaGestor;
 // BOSS: CALENDARIO (3 vistas: mes / semana / dia)
 // ═══════════════════════════════════════════════
 
+// Contenedor donde se montó el calendario (boss-body normal, o un sub-div cuando
+// vive dentro de Agendamiento). Los repintados internos lo usan para no pisar la toolbar.
+var _bossCalContainer = null;
+
 async function renderBossCal(body) {
+  _bossCalContainer = body;  // recordar dónde se montó (Agendamiento usa un sub-div)
   body.innerHTML = '<div class="empty"><span class="spin"></span>Cargando...</div>';
   if (calView === 'mes') await renderCalMonth(body);
   else if (calView === 'semana') await renderCalWeek(body);
@@ -11892,7 +11906,7 @@ function buildCalToolbar() {
     b.onclick = function() {
       calView = v[0];
       try { localStorage.setItem('rosso_cal_view', v[0]); } catch(e) {}
-      renderBossCal(document.getElementById('boss-body'));
+      renderBossCal(_bossCalContainer || document.getElementById('boss-body'));
     };
     toggle.appendChild(b);
   });
