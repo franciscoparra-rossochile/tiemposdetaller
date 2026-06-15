@@ -279,7 +279,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
     <div class="tab" data-tab="b-entregados" onclick="bossTab('b-entregados')" id="tab-entregados" style="display:none">Entregados</div>
     <div class="tab active" data-tab="b-online" onclick="bossTab('b-online')" id="tab-online">En curso<span class="ndot" id="boss-online-dot" title="Hay muchos servicios pausados"></span></div>
     <div class="tab" data-tab="b-stock-ot" onclick="bossTab('b-stock-ot')" id="tab-stock-ot" style="display:none" title="OTs sin asignar">Stock OTs<span class="ndot" id="boss-stock-ot-dot" title="OTs sin asignar con +4h"></span></div>
-    <div class="tab" data-tab="b-calendario" onclick="bossTab('b-calendario')" id="tab-calendario">Calendario</div>
+    <div class="tab" data-tab="b-gestor" onclick="bossTab('b-gestor')" id="tab-gestor">Agendamiento</div>
     <div class="tab" data-tab="b-plan" onclick="bossTab('b-plan')" id="tab-plan">Smart Planner</div>
     <div class="tab" data-tab="b-hist" onclick="bossTab('b-hist')" id="tab-hist">Historial</div>
     <div class="tab" data-tab="b-reportes" onclick="bossTab('b-reportes')" id="tab-reportes">Reportes</div>
@@ -1108,7 +1108,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // FIX QW-12 (2026-04-30): config global única para evitar drift entre scripts.
 // Cualquier ajuste de timeouts/intervals va aqui y los demas scripts lo leen.
 window.RossoConfig = Object.freeze({
-  APP_VERSION: 'v2.8.8-multiservicio-1b',            // 2026-06-15: Fase 1b multiservicio — sold_services[] en work_orders (saveNewOT escribe estructura canónica; UI aún de 1 servicio)
+  APP_VERSION: 'v2.8.9-agendamiento-a1',            // 2026-06-15: Fase A1.1 — pestaña Agendamiento (absorbe Calendario como sub-vista) + lista de servicios agendados. Modal multiservicio pendiente A1.2. m-event intacto.
   SDK_TIMEOUT_MS: 8000,
   CONN_TIMEOUT_MS: 5000,
   EMERGENCY_TIMEOUT_MS: 15000,
@@ -7570,6 +7570,7 @@ function bossTab(t) {
   else if (t === 'b-stock-ot') renderBossStockOT(body);
   else if (t === 'b-alertas') { document.getElementById('boss-ndot').classList.remove('show'); document.getElementById('boss-badge').style.display = 'none'; renderBossAlertas(body); }
   else if (t === 'b-calendario') renderBossCal(body);
+  else if (t === 'b-gestor') renderBossGestor(body);
   else if (t === 'b-plan') renderBossPlan(body);
   else if (t === 'b-hist') renderBossHist(body);
   else if (t === 'b-reportes') renderBossReportes(body);
@@ -7629,6 +7630,10 @@ function refreshBossTabsVisibility() {
   // Dashboard: solo admin
   var elDash = document.getElementById('tab-dashboard');
   if (elDash) elDash.style.display = (CU.role === 'admin') ? '' : 'none';
+  // FASE A1 (2026-06-15): Agendamiento (absorbe Calendario). Visible para jefatura/admin
+  // o cualquiera con permiso can_schedule_services (el gestor).
+  var elGestor = document.getElementById('tab-gestor');
+  if (elGestor) elGestor.style.display = (CU.role === 'admin' || CU.role === 'jefatura' || hasPerm(CU, 'can_schedule_services')) ? '' : 'none';
   // Botón Configuración en header: solo admin
   var btnCfg = document.getElementById('btn-boss-config');
   if (btnCfg) btnCfg.style.display = (CU.role === 'admin') ? '' : 'none';
@@ -11525,6 +11530,138 @@ async function renderBossAlertas(body) {
     body.appendChild(card);
   });
 }
+
+// ═══════════════════════════════════════════════
+// BOSS: AGENDAMIENTO (FASE A1, 2026-06-15)
+// Pestaña del gestor. Absorbe el Calendario como sub-vista.
+// Vista "lista": fichas de servicio agendadas (crean OT con sold_services[]).
+// Vista "calendario": delega 100% en renderBossCal (intacto).
+// El modal viejo m-event NO se toca — sigue vivo como respaldo durante la transición.
+// ═══════════════════════════════════════════════
+var _gestorView = 'lista';  // 'lista' | 'calendario'
+
+async function renderBossGestor(body) {
+  if (!hasPerm(CU, 'can_schedule_services') && CU.role !== 'admin' && CU.role !== 'jefatura') {
+    body.innerHTML = '<div class="empty">No tienes permiso para agendar servicios.</div>';
+    return;
+  }
+  // Toolbar con selector de vista + botón nueva ficha
+  var bar = mk('div','');
+  bar.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px';
+  var listaActive = _gestorView === 'lista';
+  bar.innerHTML =
+      '<div style="display:flex;border:1px solid var(--border2);border-radius:4px;overflow:hidden">'
+    +   '<button class="btn-sm" style="border:none;border-radius:0;' + (listaActive ? 'background:var(--red);color:#fff' : 'background:#fff;color:var(--wh3)') + '" onclick="_gestorSetView(\'lista\')">Lista</button>'
+    +   '<button class="btn-sm" style="border:none;border-radius:0;' + (!listaActive ? 'background:var(--red);color:#fff' : 'background:#fff;color:var(--wh3)') + '" onclick="_gestorSetView(\'calendario\')">Calendario</button>'
+    + '</div>'
+    + '<button class="btn btn-red" style="font-size:12px;padding:7px 14px;width:auto" onclick="openNuevaFichaGestor()">+ Nueva ficha de servicio</button>';
+  body.appendChild(bar);
+
+  if (_gestorView === 'calendario') {
+    // Delegar al calendario existente sobre un sub-contenedor propio para no
+    // perder la toolbar. renderBossCal repinta su contenedor; le damos uno aparte.
+    var calWrap = mk('div',''); calWrap.id = 'gestor-cal-wrap';
+    body.appendChild(calWrap);
+    await renderBossCal(calWrap);
+    return;
+  }
+
+  // Vista LISTA — fichas agendadas (A1: estructura + carga básica; A2 ampliará edición/filtros)
+  var listWrap = mk('div','');
+  listWrap.innerHTML = '<div class="empty"><span class="spin"></span>Cargando agendamientos...</div>';
+  body.appendChild(listWrap);
+  await _gestorLoadList(listWrap);
+}
+window.renderBossGestor = renderBossGestor;
+
+function _gestorSetView(v) {
+  _gestorView = v;
+  renderBossGestor(document.getElementById('boss-body'));
+}
+window._gestorSetView = _gestorSetView;
+
+// Carga las OT agendadas (work_orders con scheduled_appointment_at), ordenadas por fecha.
+// A1: render de solo lectura. A2 agregará edición de las que están en status 'open'.
+async function _gestorLoadList(wrap) {
+  try {
+    var q = sb.from('work_orders')
+      .select('id, ot_number, status, scheduled_appointment_at, sold_services, service_classification, service_description, vehicle_id, client_id, commercial_manager_id, commercial_manager_name')
+      .not('scheduled_appointment_at', 'is', null)
+      .order('scheduled_appointment_at', { ascending: true });
+    var r = await q;
+    if (r.error) { wrap.innerHTML = '<div class="empty">Error al cargar: ' + escapeHtml(r.error.message) + '</div>'; return; }
+    var rows = r.data || [];
+    if (rows.length === 0) {
+      wrap.innerHTML = '<div class="empty">No hay servicios agendados todavía. Usa "+ Nueva ficha de servicio" para agendar.</div>';
+      return;
+    }
+    // Hidratar patentes (work_orders no tiene plate; usar client_vehicles)
+    var vehIds = rows.map(function(o){ return o.vehicle_id; }).filter(Boolean);
+    var plateById = {};
+    if (vehIds.length) {
+      try {
+        var rv = await sb.from('client_vehicles').select('id, plate, brand, model').in('id', vehIds);
+        (rv.data || []).forEach(function(v){ plateById[v.id] = v; });
+      } catch(_){}
+    }
+    var html = '<div style="font-size:12px;color:var(--wh3);margin-bottom:10px">Servicios agendados · ' + rows.length + ' · ordenados por fecha</div>';
+    rows.forEach(function(o){
+      var veh = plateById[o.vehicle_id] || {};
+      var plate = veh.plate || '—';
+      var bm = [veh.brand, veh.model].filter(Boolean).join(' ');
+      // Servicios: desde sold_services[] si existe, si no del service_classification (OT vieja)
+      var svcLabel;
+      if (Array.isArray(o.sold_services) && o.sold_services.length) {
+        svcLabel = o.sold_services.map(function(s){
+          var def = SERVICES_INGRESO.find(function(x){ return x.key === s.service_classification; });
+          return def ? def.label : s.service_classification;
+        }).join(' + ');
+      } else {
+        var def0 = SERVICES_INGRESO.find(function(x){ return x.key === o.service_classification; });
+        svcLabel = (def0 ? def0.label : (o.service_classification || 'Sin servicio'));
+      }
+      var fecha = o.scheduled_appointment_at ? fmtD(o.scheduled_appointment_at) : 'Sin fecha';
+      var canEdit = (o.status === 'open');
+      var stColor = o.status === 'open' ? 'var(--blue)' : 'var(--wh3)';
+      html += '<div style="border:1px solid var(--border2);border-left:3px solid var(--gold);border-radius:4px;padding:10px 12px;margin-bottom:8px;background:#fff">'
+        +   '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">'
+        +     '<div style="flex:1">'
+        +       '<div style="font-size:13px;font-weight:700;color:#111">' + escapeHtml(plate) + (bm ? ' · <span style="font-weight:400;color:var(--wh3)">' + escapeHtml(bm) + '</span>' : '') + '</div>'
+        +       '<div style="font-size:12px;color:var(--wh2);margin-top:2px">' + escapeHtml(svcLabel) + '</div>'
+        +       (o.ot_number ? '<div style="font-size:10px;color:var(--wh4);margin-top:2px;font-family:var(--mono)">OT ' + escapeHtml(String(o.ot_number)) + '</div>' : '')
+        +     '</div>'
+        +     '<div style="text-align:right;flex-shrink:0">'
+        +       '<div style="font-size:12px;font-weight:600;color:#111">' + escapeHtml(fecha) + '</div>'
+        +       '<span style="font-size:10px;font-weight:700;color:' + stColor + '">' + escapeHtml(String(o.status || '').toUpperCase()) + '</span>'
+        +     '</div>'
+        +   '</div>'
+        +   (canEdit
+              ? '<div style="margin-top:8px"><button class="btn-sm" onclick="editFichaGestor(\'' + o.id + '\')">Editar</button></div>'
+              : '<div style="margin-top:6px;font-size:11px;color:var(--wh4);font-style:italic">Ya iniciada — no editable desde aquí</div>')
+        + '</div>';
+    });
+    wrap.innerHTML = html;
+  } catch(e) {
+    wrap.innerHTML = '<div class="empty">Error: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+// A1: "Nueva ficha" y "editar" reusan el modal multiservicio. Por ahora, como
+// puente seguro, abren el flujo de creación de OT existente (openNewOTForVehicle
+// vía selección de cliente). El modal multiservicio completo entra en A1 paso 2.
+function openNuevaFichaGestor() {
+  // Puente A1: dirigir al flujo de selección de cliente para crear la ficha.
+  // (El modal de ficha multiservicio dedicado se conecta en el siguiente paso de A1.)
+  bossTab('b-ingreso');
+  showGlobalError('Selecciona o crea el cliente y vehículo para agendar la ficha de servicio.', 4000);
+}
+window.openNuevaFichaGestor = openNuevaFichaGestor;
+
+function editFichaGestor(otId) {
+  if (typeof editOT === 'function') { editOT(otId); }
+  else showGlobalError('Edición disponible próximamente (A2).', 3000);
+}
+window.editFichaGestor = editFichaGestor;
 
 // ═══════════════════════════════════════════════
 // BOSS: CALENDARIO (3 vistas: mes / semana / dia)
@@ -24776,6 +24913,7 @@ async function saveEvent() {
   }
   closeModal('m-event');
   if (curBossTab === 'b-calendario') renderBossCal(document.getElementById('boss-body'));
+  if (curBossTab === 'b-gestor') renderBossGestor(document.getElementById('boss-body'));
   if (curBossTab === 'b-plan') renderBossPlan(document.getElementById('boss-body'));
 }
 
@@ -24804,6 +24942,7 @@ async function _doDeleteEvent() {
   closeModal('m-event');
   showGlobalError('Servicio agendado eliminado.', 2500);
   if (curBossTab === 'b-calendario') renderBossCal(document.getElementById('boss-body'));
+  if (curBossTab === 'b-gestor') renderBossGestor(document.getElementById('boss-body'));
   if (curBossTab === 'b-plan') renderBossPlan(document.getElementById('boss-body'));
 }
 
