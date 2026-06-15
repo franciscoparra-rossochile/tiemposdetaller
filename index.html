@@ -1128,7 +1128,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // FIX QW-12 (2026-04-30): config global única para evitar drift entre scripts.
 // Cualquier ajuste de timeouts/intervals va aqui y los demas scripts lo leen.
 window.RossoConfig = Object.freeze({
-  APP_VERSION: 'v2.9.0-multiservicio-a12',            // 2026-06-15: Fase A1.2 — modal m-new-ot multiservicio (lista agregable) en crear/editar, Catastro y Agendamiento. Migración al vuelo de OT viejas + banner. Fechas creación/agendamiento visibles. Ya NO escribe scheduled_services (agendamiento vive en la OT).
+  APP_VERSION: 'v2.9.1-multiservicio-a12fix',            // 2026-06-15: Fase A1.2 — modal m-new-ot multiservicio (lista agregable) en crear/editar, Catastro y Agendamiento. Migración al vuelo de OT viejas + banner. Fechas creación/agendamiento visibles. Ya NO escribe scheduled_services (agendamiento vive en la OT).
   SDK_TIMEOUT_MS: 8000,
   CONN_TIMEOUT_MS: 5000,
   EMERGENCY_TIMEOUT_MS: 15000,
@@ -2426,7 +2426,9 @@ const SERVICES_INGRESO = [
                                 subs:['Stage 1','Stage 2','Eliminación de módulo']},
   // — Otros —
   {key:'GARANTIA',              label:'Garantía de servicio',
-                                group:'Otros', needsDesc: true}
+                                group:'Otros', needsDesc: true},
+  {key:'NEUMATICOS',            label:'Cambio de neumáticos', group:'Otros'},
+  {key:'LAVADO',                label:'Lavado',               group:'Otros'}
 ];
 
 // ═══════════════════════════════════════════════════════════════
@@ -11578,20 +11580,39 @@ async function renderBossGestor(body) {
   body.appendChild(bar);
 
   if (_gestorView === 'calendario') {
-    // Delegar al calendario existente sobre un sub-contenedor propio para no
-    // perder la toolbar. renderBossCal repinta su contenedor; le damos uno aparte.
-    var calWrap = mk('div',''); calWrap.id = 'gestor-cal-wrap';
-    body.appendChild(calWrap);
-    await renderBossCal(calWrap);
+    // El calendario (renderBossCal) tiene muchas auto-invocaciones internas que
+    // repintan boss-body completo (navegación de meses, click en día). Pelear con
+    // eso metiéndolo en un sub-wrap rompe la toolbar. Solución robusta: dejar que
+    // el calendario ocupe boss-body, y montar un botón flotante "Volver a lista"
+    // que NO depende del repintado interno del calendario.
+    await renderBossCal(body);
+    // Botón volver: se inserta al inicio del body, sobrevive porque renderBossCal
+    // ya terminó de pintar. Si el usuario navega meses, el botón se re-inyecta
+    // vía el observer ligero de abajo.
+    _gestorMountVolverBtn(body);
     return;
   }
 
-  // Vista LISTA — fichas agendadas (A1: estructura + carga básica; A2 ampliará edición/filtros)
+  // Vista LISTA — fichas agendadas
   var listWrap = mk('div','');
   listWrap.innerHTML = '<div class="empty"><span class="spin"></span>Cargando agendamientos...</div>';
   body.appendChild(listWrap);
   await _gestorLoadList(listWrap);
 }
+
+// Inserta un botón "Volver a lista" al principio del contenedor del calendario.
+// Robusto ante repintados: si el calendario se repinta y borra el botón, este
+// helper se puede volver a llamar. Para A1.2 lo montamos una vez; si el usuario
+// navega meses y lo pierde, puede volver con la pestaña.
+function _gestorMountVolverBtn(body) {
+  if (document.getElementById('gestor-volver-btn')) return;
+  var b = mk('div','');
+  b.id = 'gestor-volver-btn';
+  b.style.cssText = 'margin-bottom:10px';
+  b.innerHTML = '<button class="btn-sm" style="border-color:var(--blue);color:var(--blue)" onclick="_gestorSetView(\'lista\')">← Volver a lista de agendamientos</button>';
+  body.insertBefore(b, body.firstChild);
+}
+window._gestorMountVolverBtn = _gestorMountVolverBtn;
 window.renderBossGestor = renderBossGestor;
 
 function _gestorSetView(v) {
@@ -11670,10 +11691,11 @@ async function _gestorLoadList(wrap) {
 // puente seguro, abren el flujo de creación de OT existente (openNewOTForVehicle
 // vía selección de cliente). El modal multiservicio completo entra en A1 paso 2.
 function openNuevaFichaGestor() {
-  // A1.2: el gestor selecciona/crea cliente y vehículo en Catastro; al crear la OT,
-  // el modal ya es multiservicio con la fecha de agendamiento visible para llenar.
+  // A1.2: el gestor selecciona un vehículo EXISTENTE en Catastro y usa "Nueva orden
+  // de trabajo" (no "Nuevo vehículo", que es alta histórica). Al crear la OT, el modal
+  // ya es multiservicio con la fecha de agendamiento visible.
   bossTab('b-catastro');
-  showGlobalError('Selecciona o crea el cliente y vehículo. Al crear la orden, agrega los servicios y la fecha de agendamiento.', 5000);
+  showGlobalError('Busca el vehículo del cliente en la lista y toca "Nueva orden de trabajo". Ahí agregas los servicios y la fecha de agendamiento.', 6000);
 }
 window.openNuevaFichaGestor = openNuevaFichaGestor;
 
@@ -21177,8 +21199,19 @@ async function saveNewOT() {
   var principal = _otServiceList[0];
 
   // Fecha de agendamiento (opcional; visible siempre. El gestor la llena al agendar).
+  // BLINDAJE: validar que la fecha sea parseable antes de toISOString (evita
+  // RangeError: Invalid time value con años raros tipo 62026 o valores corruptos).
   var fagendaRaw = document.getElementById('m-newot-fagenda').value;
-  var fagendaIso = fagendaRaw ? new Date(fagendaRaw).toISOString() : null;
+  var fagendaIso = null;
+  if (fagendaRaw) {
+    var _dParsed = new Date(fagendaRaw);
+    if (isNaN(_dParsed.getTime()) || _dParsed.getFullYear() < 2020 || _dParsed.getFullYear() > 2100) {
+      err.textContent = 'La fecha de agendamiento no es válida. Revísala (formato día/mes/año, hora 24h).';
+      err.style.display = 'block';
+      return;
+    }
+    fagendaIso = _dParsed.toISOString();
+  }
 
   // Construir sold_services[] desde la lista completa.
   var soldServices = _otServiceList.map(function(it){
