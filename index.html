@@ -1128,7 +1128,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // FIX QW-12 (2026-04-30): config global única para evitar drift entre scripts.
 // Cualquier ajuste de timeouts/intervals va aqui y los demas scripts lo leen.
 window.RossoConfig = Object.freeze({
-  APP_VERSION: 'v2.9.5-agendamiento-a2c',            // 2026-06-15: A2 fixes — calendario en sub-div (toolbar ya no se borra, se puede volver a lista) + lista muestra TODAS las OT (con/sin fecha); grupo 'Sin fecha' editable para fecha retroactiva; filtro Todas incluye cerradas.
+  APP_VERSION: 'v2.9.6-agendamiento-a2d',            // 2026-06-15: A2 — edición de TODAS las OT con aviso fuerte si no está open; sección 'Entregadas' separada (cruza client_vehicles.archived); alerta roja para entregadas SIN visado (riesgo garantía); fecha de agendamiento editable retroactiva.
   SDK_TIMEOUT_MS: 8000,
   CONN_TIMEOUT_MS: 5000,
   EMERGENCY_TIMEOUT_MS: 15000,
@@ -11635,7 +11635,7 @@ async function _gestorLoadList(wrap) {
     // estado decide qué mostrar. Las OT sin fecha pueden recibir fecha retroactiva
     // editándolas desde aquí. Limitamos a un rango razonable para no traer miles.
     var q = sb.from('work_orders')
-      .select('id, ot_number, status, scheduled_appointment_at, created_at, sold_services, service_classification, service_description, vehicle_id, client_id, commercial_manager_id, commercial_manager_name')
+      .select('id, ot_number, status, scheduled_appointment_at, created_at, sold_services, service_classification, service_description, vehicle_id, client_id, commercial_manager_id, commercial_manager_name, checklist_data')
       .order('created_at', { ascending: false })
       .limit(300);
     var r = await q;
@@ -11647,7 +11647,7 @@ async function _gestorLoadList(wrap) {
     var cliIds = rows.map(function(o){ return o.client_id; }).filter(Boolean);
     var plateById = {}, cliById = {};
     if (vehIds.length) {
-      try { var rv = await sb.from('client_vehicles').select('id, plate, brand, model').in('id', vehIds);
+      try { var rv = await sb.from('client_vehicles').select('id, plate, brand, model, archived, archived_at').in('id', vehIds);
         (rv.data || []).forEach(function(v){ plateById[v.id] = v; }); } catch(_){}
     }
     if (cliIds.length) {
@@ -11681,6 +11681,12 @@ async function _gestorLoadList(wrap) {
       o._plate = veh.plate || '—';
       o._bm = [veh.brand, veh.model].filter(Boolean).join(' ');
       o._cliName = (cliById[o.client_id] || {}).name || '';
+      // Entrega: el vehículo ya salió si client_vehicles.archived === true
+      o._entregada = (veh.archived === true);
+      o._entregaFecha = veh.archived_at || null;
+      // Visado: aprobado si checklist_data.visado_approved === true && visado_at
+      var cd = o.checklist_data || {};
+      o._visado = (cd.visado_approved === true && !!cd.visado_at);
       if (Array.isArray(o.sold_services) && o.sold_services.length) {
         o._svcLabel = o.sold_services.map(function(s){
           var def = SERVICES_INGRESO.find(function(x){ return x.key === s.service_classification; });
@@ -11730,8 +11736,13 @@ function _gestorRenderList(wrap) {
   var qx = (f.q || '').trim().toLowerCase();
   var filtered = rows.filter(function(o){
     // Estado
-    if (f.estado === 'activas') { if (o.status !== 'open' && o.status !== 'in_progress' && o.status !== 'assigned') return false; }
-    else if (f.estado === 'closed') { if (o.status !== 'closed') return false; }
+    if (f.estado === 'activas') {
+      // Activas: en flujo Y no entregadas (las entregadas van a su sección en 'Todas')
+      if (o._entregada) return false;
+      if (o.status !== 'open' && o.status !== 'in_progress' && o.status !== 'assigned'
+          && o.status !== 'pending_double_check' && o.status !== 'pending_visado') return false;
+    }
+    else if (f.estado === 'closed') { if (o.status !== 'closed' && !o._entregada) return false; }
     else if (f.estado !== 'todas') { if (o.status !== f.estado) return false; }
     // Búsqueda
     if (qx) {
@@ -11753,8 +11764,9 @@ function _gestorRenderList(wrap) {
   var startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   var endToday = new Date(startToday.getTime() + 86400000);
   var endWeek = new Date(startToday.getTime() + 7 * 86400000);
-  var groups = { sinfecha: [], pasadas: [], hoy: [], semana: [], adelante: [] };
+  var groups = { sinfecha: [], pasadas: [], hoy: [], semana: [], adelante: [], entregadas: [] };
   filtered.forEach(function(o){
+    if (o._entregada) { groups.entregadas.push(o); return; }
     if (!o.scheduled_appointment_at) { groups.sinfecha.push(o); return; }
     var d = new Date(o.scheduled_appointment_at);
     if (isNaN(d.getTime())) { groups.sinfecha.push(o); return; }
@@ -11767,7 +11779,8 @@ function _gestorRenderList(wrap) {
   var html = bar;
   var sections = [
     ['hoy', 'Hoy'], ['semana', 'Esta semana'], ['adelante', 'Más adelante'],
-    ['sinfecha', 'Sin fecha de agendamiento'], ['pasadas', 'Pasadas']
+    ['sinfecha', 'Sin fecha de agendamiento'], ['pasadas', 'Pasadas'],
+    ['entregadas', 'Entregadas']
   ];
   sections.forEach(function(sec){
     var key = sec[0], title = sec[1], list = groups[key];
@@ -11799,9 +11812,19 @@ function _gestorCardHtml(o) {
   var fecha = o.scheduled_appointment_at ? fmtD(o.scheduled_appointment_at) : 'Sin fecha';
   var canEdit = (o.status === 'open');
   var est = _gestorEstadoInfo(o.status);
-  // Línea de trabajo en curso: técnico + tiempo transcurrido (solo si hay sesión).
+  // Alerta de garantía: entregada SIN visado.
+  var alertaEntrega = '';
+  if (o._entregada && !o._visado) {
+    alertaEntrega = '<div style="margin-top:6px;font-size:11px;font-weight:700;color:#fff;background:var(--red);padding:5px 8px;border-radius:3px">'
+      + '⚠ ENTREGADA SIN VISADO — riesgo de garantía sin trazabilidad</div>';
+  } else if (o._entregada && o._visado) {
+    alertaEntrega = '<div style="margin-top:6px;font-size:11px;color:var(--green);font-weight:600">✓ Entregada con visado</div>';
+  }
+  // Borde según situación
+  var borderColor = (o._entregada && !o._visado) ? 'var(--red)' : 'var(--gold)';
+  // Línea de trabajo en curso: técnico + tiempo (solo si hay sesión y no entregada).
   var workLine = '';
-  if (o._sessTech || o._sessSecs) {
+  if (!o._entregada && (o._sessTech || o._sessSecs)) {
     var tiempo = (o._sessSecs ? fmtHM(o._sessSecs) : '0m');
     var pausedTxt = o._sessPaused ? ' (en pausa)' : '';
     workLine = '<div style="font-size:11px;color:var(--gold3);margin-top:3px">'
@@ -11810,7 +11833,7 @@ function _gestorCardHtml(o) {
       + 'lleva ' + escapeHtml(tiempo) + escapeHtml(pausedTxt)
       + '</div>';
   }
-  return '<div style="border:1px solid var(--border2);border-left:3px solid var(--gold);border-radius:4px;padding:10px 12px;margin-bottom:8px;background:#fff">'
+  return '<div style="border:1px solid var(--border2);border-left:3px solid ' + borderColor + ';border-radius:4px;padding:10px 12px;margin-bottom:8px;background:#fff">'
     +   '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">'
     +     '<div style="flex:1">'
     +       '<div style="font-size:13px;font-weight:700;color:#111">' + escapeHtml(o._plate) + (o._bm ? ' · <span style="font-weight:400;color:var(--wh3)">' + escapeHtml(o._bm) + '</span>' : '') + '</div>'
@@ -11821,15 +11844,16 @@ function _gestorCardHtml(o) {
     +         (o.ot_number ? '<span style="font-family:var(--mono)">OT ' + escapeHtml(String(o.ot_number)) + '</span>' : '')
     +         (o.commercial_manager_name ? ' · ' + escapeHtml(o.commercial_manager_name) : '')
     +       '</div>'
+    +       alertaEntrega
     +     '</div>'
     +     '<div style="text-align:right;flex-shrink:0">'
-    +       '<div style="font-size:12px;font-weight:600;color:#111">' + escapeHtml(fecha) + '</div>'
-    +       '<span style="display:inline-block;margin-top:3px;font-size:10px;font-weight:700;padding:2px 7px;border-radius:3px;background:var(--bg3);color:' + est.color + '">' + escapeHtml(est.label) + '</span>'
+    +       '<div style="font-size:12px;font-weight:600;color:#111">' + escapeHtml(o._entregada ? (o._entregaFecha ? fmtD(o._entregaFecha) : 'Entregada') : fecha) + '</div>'
+    +       '<span style="display:inline-block;margin-top:3px;font-size:10px;font-weight:700;padding:2px 7px;border-radius:3px;background:var(--bg3);color:' + (o._entregada ? 'var(--wh3)' : est.color) + '">' + escapeHtml(o._entregada ? 'ENTREGADA' : est.label) + '</span>'
     +     '</div>'
     +   '</div>'
     +   (canEdit
           ? '<div style="margin-top:8px"><button class="btn-sm" onclick="editFichaGestor(\'' + o.id + '\')">Editar</button></div>'
-          : '<div style="margin-top:6px;font-size:11px;color:var(--wh4);font-style:italic">Ya iniciada — no editable desde aquí</div>')
+          : '<div style="margin-top:8px"><button class="btn-sm" style="border-color:var(--gold);color:var(--gold3)" onclick="editFichaGestor(\'' + o.id + '\')">Editar (en proceso)</button></div>')
     + '</div>';
 }
 
@@ -18711,6 +18735,7 @@ async function loadClientHistory(clientId) {
 // Wrapper para el botón "+ Nueva OT" del modal detalle vehículo (asegura modo NEW)
 function openNewOTFromCatastro(vehicleId, clientId) {
   _editOTId = null;
+  _editOTStatus = null;
   openNewOTForVehicle(vehicleId, clientId);
 }
 
@@ -20985,6 +21010,7 @@ function openCatastroNewVehicle() {
 
 // ─── Editar OT existente (FASE 2.4.D) ───
 var _editOTId = null; // null = creando nueva, string = editando
+var _editOTStatus = null; // status de la OT en edición (para aviso fuerte si no es 'open')
 
 async function editOT(otId) {
   if (!hasPerm(CU, 'can_ingresar_clientes')) { showGlobalError('Sin permiso', 3000); return; }
@@ -20994,6 +21020,7 @@ async function editOT(otId) {
     if (r.error || !r.data) { showGlobalError('OT no encontrada', 3500); return; }
     var o = r.data;
     _editOTId = otId;
+    _editOTStatus = o.status || null;  // para el aviso fuerte al guardar si no está 'open'
     // Pre-llenar usando openNewOTForVehicle pero después seteando los valores
     await openNewOTForVehicle(o.vehicle_id, o.client_id);
     // Cambiar título y prellenar
@@ -21390,6 +21417,22 @@ async function saveNewOT() {
 
   var btn = document.getElementById('m-newot-btn');
   var isEdit = !!_editOTId;
+
+  // AVISO FUERTE: si se edita una OT que ya NO está 'open' (en proceso o cerrada),
+  // confirmar antes de guardar, porque modificar servicios puede afectar el trabajo
+  // ya registrado por un técnico.
+  if (isEdit && _editOTStatus && _editOTStatus !== 'open') {
+    var estTxt = _gestorEstadoInfo(_editOTStatus).label;
+    var aviso = '⚠️ ATENCIÓN\n\n'
+      + 'Esta OT está en estado "' + estTxt + '" — ya fue tomada o trabajada.\n\n'
+      + 'Si modificaste los servicios, puedes afectar el trabajo, las pautas o los '
+      + 'informes que un técnico ya registró. Cambiar la fecha o las notas es seguro.\n\n'
+      + '¿Confirmas que quieres guardar estos cambios?';
+    if (!confirm(aviso)) {
+      return; // el gestor canceló; no se toca nada
+    }
+  }
+
   btn.innerHTML = '<span class="spin"></span> ' + (isEdit ? 'Guardando...' : 'Creando...'); btn.disabled = true;
 
   var basePayload = {
