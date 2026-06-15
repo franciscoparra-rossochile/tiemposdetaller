@@ -1128,7 +1128,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // FIX QW-12 (2026-04-30): config global única para evitar drift entre scripts.
 // Cualquier ajuste de timeouts/intervals va aqui y los demas scripts lo leen.
 window.RossoConfig = Object.freeze({
-  APP_VERSION: 'v2.9.1-multiservicio-a12fix',            // 2026-06-15: Fase A1.2 — modal m-new-ot multiservicio (lista agregable) en crear/editar, Catastro y Agendamiento. Migración al vuelo de OT viejas + banner. Fechas creación/agendamiento visibles. Ya NO escribe scheduled_services (agendamiento vive en la OT).
+  APP_VERSION: 'v2.9.2-pdf-multiservicio',            // 2026-06-15: PDF de OT lista TODOS los servicios de sold_services[] (antes solo el principal) + fecha agendada en PDF. Sobre A1.2 (modal multiservicio). Pauta del PDF aún muestra la del servicio principal (Fase 6 consolidará).
   SDK_TIMEOUT_MS: 8000,
   CONN_TIMEOUT_MS: 5000,
   EMERGENCY_TIMEOUT_MS: 15000,
@@ -24288,12 +24288,45 @@ async function generateOTPdf(otId) {
 
     // ─── Servicio ───
     sectionTitle('Servicio solicitado');
-    var srvDef = SERVICES_INGRESO.find(function(x){ return x.key === o.service_classification; });
-    field('Tipo', srvDef ? srvDef.label : (o.service_classification || '—'));
-    if (o.service_subtype) field('Especificación', o.service_subtype);
-    if (o.service_description) field('Descripción', o.service_description);
+    // A1.2: si la OT tiene sold_services[], listar TODOS. Si es OT vieja, usar campos legacy.
+    var _soldList = Array.isArray(o.sold_services) ? o.sold_services : null;
+    if (_soldList && _soldList.length) {
+      if (_soldList.length === 1) {
+        // Un solo servicio: formato clásico campo a campo.
+        var s0 = _soldList[0];
+        var def0 = SERVICES_INGRESO.find(function(x){ return x.key === s0.service_classification; });
+        field('Tipo', def0 ? def0.label : (s0.service_classification || '—'));
+        if (s0.service_subtype) field('Especificación', s0.service_subtype);
+        var desc0 = (s0.intake && s0.intake.description) || null;
+        if (desc0) field('Descripción', desc0);
+      } else {
+        // Multiservicio: lista numerada de todos los servicios.
+        field('Servicios', _soldList.length + ' servicios en esta orden:');
+        _soldList.forEach(function(ss, idx) {
+          var defI = SERVICES_INGRESO.find(function(x){ return x.key === ss.service_classification; });
+          var lbl = (defI ? defI.label : ss.service_classification);
+          if (ss.service_subtype) lbl += ' · ' + ss.service_subtype;
+          var descI = (ss.intake && ss.intake.description) || null;
+          if (descI) lbl += ' (' + descI + ')';
+          field((idx + 1) + '.', lbl);
+        });
+      }
+    } else {
+      // OT vieja (modelo de 1 servicio): comportamiento original.
+      var srvDef = SERVICES_INGRESO.find(function(x){ return x.key === o.service_classification; });
+      field('Tipo', srvDef ? srvDef.label : (o.service_classification || '—'));
+      if (o.service_subtype) field('Especificación', o.service_subtype);
+      if (o.service_description) field('Descripción', o.service_description);
+    }
     field('Gestor comercial', o.commercial_manager_name);
-    if (o.scheduled_service_id) field('Servicio agendado', 'Sí (vinculado a planificación)');
+    if (o.scheduled_appointment_at) {
+      try {
+        var _da = new Date(o.scheduled_appointment_at);
+        if (!isNaN(_da.getTime())) field('Fecha agendada', fmtD(o.scheduled_appointment_at));
+      } catch(_){}
+    } else if (o.scheduled_service_id) {
+      field('Servicio agendado', 'Sí (vinculado a planificación)');
+    }
     y += 2;
 
     // ─── FASE 2.4-PDFv2: Pauta del servicio (lista limpia de acciones) ───
