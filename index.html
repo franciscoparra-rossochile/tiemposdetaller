@@ -1128,7 +1128,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // FIX QW-12 (2026-04-30): config global única para evitar drift entre scripts.
 // Cualquier ajuste de timeouts/intervals va aqui y los demas scripts lo leen.
 window.RossoConfig = Object.freeze({
-  APP_VERSION: 'v2.9.6-agendamiento-a2d',            // 2026-06-15: A2 — edición de TODAS las OT con aviso fuerte si no está open; sección 'Entregadas' separada (cruza client_vehicles.archived); alerta roja para entregadas SIN visado (riesgo garantía); fecha de agendamiento editable retroactiva.
+  APP_VERSION: 'v2.9.7-agendamiento-perf',            // 2026-06-15: PERFORMANCE lista agendamiento — 3 hidrataciones en paralelo (Promise.all), límite 80 OT, y NO traer checklist_data completo (solo proyección de visado). Carga mucho más rápida.
   SDK_TIMEOUT_MS: 8000,
   CONN_TIMEOUT_MS: 5000,
   EMERGENCY_TIMEOUT_MS: 15000,
@@ -11631,50 +11631,52 @@ var _gestorRowsCache = null;  // cache de filas hidratadas para filtrar sin reca
 
 async function _gestorLoadList(wrap) {
   try {
-    // A2 fix: traer TODAS las OT (no solo con fecha de agendamiento). El filtro de
-    // estado decide qué mostrar. Las OT sin fecha pueden recibir fecha retroactiva
-    // editándolas desde aquí. Limitamos a un rango razonable para no traer miles.
+    // A2 fix: traer TODAS las OT (no solo con fecha). Límite 80: cubre lo activo y
+    // reciente con holgura. PERFORMANCE: NO traemos checklist_data completo (jsonb
+    // pesado con toda la pauta/reportes); solo los 2 campos de visado que necesita
+    // la alerta de entregadas, vía proyección de jsonb de PostgREST.
     var q = sb.from('work_orders')
-      .select('id, ot_number, status, scheduled_appointment_at, created_at, sold_services, service_classification, service_description, vehicle_id, client_id, commercial_manager_id, commercial_manager_name, checklist_data')
+      .select('id, ot_number, status, scheduled_appointment_at, created_at, sold_services, service_classification, service_description, vehicle_id, client_id, commercial_manager_id, commercial_manager_name, visado_approved:checklist_data->visado_approved, visado_at:checklist_data->visado_at')
       .order('created_at', { ascending: false })
-      .limit(300);
+      .limit(80);
     var r = await q;
     if (r.error) { wrap.innerHTML = '<div class="empty">Error al cargar: ' + escapeHtml(r.error.message) + '</div>'; return; }
     var rows = r.data || [];
 
-    // Hidratar vehículos y clientes en paralelo
+    // Hidratar vehículos, clientes y sesiones EN PARALELO (antes iban en serie:
+    // 3 viajes a la base esperando uno tras otro). Promise.all dispara los 3 juntos.
     var vehIds = rows.map(function(o){ return o.vehicle_id; }).filter(Boolean);
     var cliIds = rows.map(function(o){ return o.client_id; }).filter(Boolean);
-    var plateById = {}, cliById = {};
-    if (vehIds.length) {
-      try { var rv = await sb.from('client_vehicles').select('id, plate, brand, model, archived, archived_at').in('id', vehIds);
-        (rv.data || []).forEach(function(v){ plateById[v.id] = v; }); } catch(_){}
-    }
-    if (cliIds.length) {
-      try { var rc = await sb.from('clients').select('id, name').in('id', cliIds);
-        (rc.data || []).forEach(function(c){ cliById[c.id] = c; }); } catch(_){}
-    }
-    // A2+: sesiones activas para mostrar tiempo transcurrido y técnico actual.
     var otIds = rows.map(function(o){ return o.id; }).filter(Boolean);
-    var sessByOT = {};
-    if (otIds.length) {
-      try {
-        var rs = await sb.from('active_sessions').select('*').in('work_order_id', otIds);
-        (rs.data || []).forEach(function(s){
-          // Una OT puede tener varias sesiones; quedarse con la que está corriendo
-          // (running) o, si no, la más reciente.
-          var prev = sessByOT[s.work_order_id];
-          if (!prev) { sessByOT[s.work_order_id] = s; return; }
-          var sRun = (s.status === 'running'), pRun = (prev.status === 'running');
-          if (sRun && !pRun) { sessByOT[s.work_order_id] = s; return; }
-          if (sRun === pRun) {
-            var sT = new Date(s.updated_at || s.started_at || 0).getTime();
-            var pT = new Date(prev.updated_at || prev.started_at || 0).getTime();
-            if (sT > pT) sessByOT[s.work_order_id] = s;
-          }
-        });
-      } catch(_){}
-    }
+    var plateById = {}, cliById = {}, sessByOT = {};
+
+    var _qVeh = vehIds.length
+      ? sb.from('client_vehicles').select('id, plate, brand, model, archived, archived_at').in('id', vehIds)
+      : Promise.resolve({ data: [] });
+    var _qCli = cliIds.length
+      ? sb.from('clients').select('id, name').in('id', cliIds)
+      : Promise.resolve({ data: [] });
+    var _qSess = otIds.length
+      ? sb.from('active_sessions').select('*').in('work_order_id', otIds)
+      : Promise.resolve({ data: [] });
+
+    var _res;
+    try { _res = await Promise.all([_qVeh, _qCli, _qSess]); }
+    catch(_) { _res = [{data:[]},{data:[]},{data:[]}]; }
+
+    (_res[0] && _res[0].data || []).forEach(function(v){ plateById[v.id] = v; });
+    (_res[1] && _res[1].data || []).forEach(function(c){ cliById[c.id] = c; });
+    (_res[2] && _res[2].data || []).forEach(function(s){
+      var prev = sessByOT[s.work_order_id];
+      if (!prev) { sessByOT[s.work_order_id] = s; return; }
+      var sRun = (s.status === 'running'), pRun = (prev.status === 'running');
+      if (sRun && !pRun) { sessByOT[s.work_order_id] = s; return; }
+      if (sRun === pRun) {
+        var sT = new Date(s.updated_at || s.started_at || 0).getTime();
+        var pT = new Date(prev.updated_at || prev.started_at || 0).getTime();
+        if (sT > pT) sessByOT[s.work_order_id] = s;
+      }
+    });
     // Anexar datos hidratados a cada fila para filtrar/render
     rows.forEach(function(o){
       var veh = plateById[o.vehicle_id] || {};
@@ -11684,9 +11686,9 @@ async function _gestorLoadList(wrap) {
       // Entrega: el vehículo ya salió si client_vehicles.archived === true
       o._entregada = (veh.archived === true);
       o._entregaFecha = veh.archived_at || null;
-      // Visado: aprobado si checklist_data.visado_approved === true && visado_at
-      var cd = o.checklist_data || {};
-      o._visado = (cd.visado_approved === true && !!cd.visado_at);
+      // Visado: aprobado si visado_approved es true (proyectado del jsonb; puede
+      // llegar como boolean true o string "true" según serialización de Postgres).
+      o._visado = ((o.visado_approved === true || o.visado_approved === 'true') && !!o.visado_at);
       if (Array.isArray(o.sold_services) && o.sold_services.length) {
         o._svcLabel = o.sold_services.map(function(s){
           var def = SERVICES_INGRESO.find(function(x){ return x.key === s.service_classification; });
