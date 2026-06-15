@@ -1128,7 +1128,7 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
 // FIX QW-12 (2026-04-30): config global única para evitar drift entre scripts.
 // Cualquier ajuste de timeouts/intervals va aqui y los demas scripts lo leen.
 window.RossoConfig = Object.freeze({
-  APP_VERSION: 'v2.9.2-pdf-multiservicio',            // 2026-06-15: PDF de OT lista TODOS los servicios de sold_services[] (antes solo el principal) + fecha agendada en PDF. Sobre A1.2 (modal multiservicio). Pauta del PDF aún muestra la del servicio principal (Fase 6 consolidará).
+  APP_VERSION: 'v2.9.3-agendamiento-a2',            // 2026-06-15: Fase A2 — lista de agendamientos potenciada: filtro por estado, búsqueda por patente/cliente, agrupación temporal (hoy/semana/adelante/pasadas), cliente+gestor por tarjeta. Edición ya conectada vía editOT.
   SDK_TIMEOUT_MS: 8000,
   CONN_TIMEOUT_MS: 5000,
   EMERGENCY_TIMEOUT_MS: 15000,
@@ -11595,6 +11595,7 @@ async function renderBossGestor(body) {
 
   // Vista LISTA — fichas agendadas
   var listWrap = mk('div','');
+  listWrap.id = 'gestor-list-wrap';
   listWrap.innerHTML = '<div class="empty"><span class="spin"></span>Cargando agendamientos...</div>';
   body.appendChild(listWrap);
   await _gestorLoadList(listWrap);
@@ -11623,69 +11624,164 @@ window._gestorSetView = _gestorSetView;
 
 // Carga las OT agendadas (work_orders con scheduled_appointment_at), ordenadas por fecha.
 // A1: render de solo lectura. A2 agregará edición de las que están en status 'open'.
+// A2: estado de filtros de la lista de agendamientos (en memoria).
+var _gestorFilter = { estado: 'activas', q: '' };
+var _gestorRowsCache = null;  // cache de filas hidratadas para filtrar sin recargar
+
 async function _gestorLoadList(wrap) {
   try {
     var q = sb.from('work_orders')
-      .select('id, ot_number, status, scheduled_appointment_at, sold_services, service_classification, service_description, vehicle_id, client_id, commercial_manager_id, commercial_manager_name')
+      .select('id, ot_number, status, scheduled_appointment_at, created_at, sold_services, service_classification, service_description, vehicle_id, client_id, commercial_manager_id, commercial_manager_name')
       .not('scheduled_appointment_at', 'is', null)
       .order('scheduled_appointment_at', { ascending: true });
     var r = await q;
     if (r.error) { wrap.innerHTML = '<div class="empty">Error al cargar: ' + escapeHtml(r.error.message) + '</div>'; return; }
     var rows = r.data || [];
-    if (rows.length === 0) {
-      wrap.innerHTML = '<div class="empty">No hay servicios agendados todavía. Usa "+ Nueva ficha de servicio" para agendar.</div>';
-      return;
-    }
-    // Hidratar patentes (work_orders no tiene plate; usar client_vehicles)
+
+    // Hidratar vehículos y clientes en paralelo
     var vehIds = rows.map(function(o){ return o.vehicle_id; }).filter(Boolean);
-    var plateById = {};
+    var cliIds = rows.map(function(o){ return o.client_id; }).filter(Boolean);
+    var plateById = {}, cliById = {};
     if (vehIds.length) {
-      try {
-        var rv = await sb.from('client_vehicles').select('id, plate, brand, model').in('id', vehIds);
-        (rv.data || []).forEach(function(v){ plateById[v.id] = v; });
-      } catch(_){}
+      try { var rv = await sb.from('client_vehicles').select('id, plate, brand, model').in('id', vehIds);
+        (rv.data || []).forEach(function(v){ plateById[v.id] = v; }); } catch(_){}
     }
-    var html = '<div style="font-size:12px;color:var(--wh3);margin-bottom:10px">Servicios agendados · ' + rows.length + ' · ordenados por fecha</div>';
+    if (cliIds.length) {
+      try { var rc = await sb.from('clients').select('id, name').in('id', cliIds);
+        (rc.data || []).forEach(function(c){ cliById[c.id] = c; }); } catch(_){}
+    }
+    // Anexar datos hidratados a cada fila para filtrar/render
     rows.forEach(function(o){
       var veh = plateById[o.vehicle_id] || {};
-      var plate = veh.plate || '—';
-      var bm = [veh.brand, veh.model].filter(Boolean).join(' ');
-      // Servicios: desde sold_services[] si existe, si no del service_classification (OT vieja)
-      var svcLabel;
+      o._plate = veh.plate || '—';
+      o._bm = [veh.brand, veh.model].filter(Boolean).join(' ');
+      o._cliName = (cliById[o.client_id] || {}).name || '';
       if (Array.isArray(o.sold_services) && o.sold_services.length) {
-        svcLabel = o.sold_services.map(function(s){
+        o._svcLabel = o.sold_services.map(function(s){
           var def = SERVICES_INGRESO.find(function(x){ return x.key === s.service_classification; });
           return def ? def.label : s.service_classification;
         }).join(' + ');
       } else {
         var def0 = SERVICES_INGRESO.find(function(x){ return x.key === o.service_classification; });
-        svcLabel = (def0 ? def0.label : (o.service_classification || 'Sin servicio'));
+        o._svcLabel = (def0 ? def0.label : (o.service_classification || 'Sin servicio'));
       }
-      var fecha = o.scheduled_appointment_at ? fmtD(o.scheduled_appointment_at) : 'Sin fecha';
-      var canEdit = (o.status === 'open');
-      var stColor = o.status === 'open' ? 'var(--blue)' : 'var(--wh3)';
-      html += '<div style="border:1px solid var(--border2);border-left:3px solid var(--gold);border-radius:4px;padding:10px 12px;margin-bottom:8px;background:#fff">'
-        +   '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">'
-        +     '<div style="flex:1">'
-        +       '<div style="font-size:13px;font-weight:700;color:#111">' + escapeHtml(plate) + (bm ? ' · <span style="font-weight:400;color:var(--wh3)">' + escapeHtml(bm) + '</span>' : '') + '</div>'
-        +       '<div style="font-size:12px;color:var(--wh2);margin-top:2px">' + escapeHtml(svcLabel) + '</div>'
-        +       (o.ot_number ? '<div style="font-size:10px;color:var(--wh4);margin-top:2px;font-family:var(--mono)">OT ' + escapeHtml(String(o.ot_number)) + '</div>' : '')
-        +     '</div>'
-        +     '<div style="text-align:right;flex-shrink:0">'
-        +       '<div style="font-size:12px;font-weight:600;color:#111">' + escapeHtml(fecha) + '</div>'
-        +       '<span style="font-size:10px;font-weight:700;color:' + stColor + '">' + escapeHtml(String(o.status || '').toUpperCase()) + '</span>'
-        +     '</div>'
-        +   '</div>'
-        +   (canEdit
-              ? '<div style="margin-top:8px"><button class="btn-sm" onclick="editFichaGestor(\'' + o.id + '\')">Editar</button></div>'
-              : '<div style="margin-top:6px;font-size:11px;color:var(--wh4);font-style:italic">Ya iniciada — no editable desde aquí</div>')
-        + '</div>';
     });
-    wrap.innerHTML = html;
+    _gestorRowsCache = rows;
+    _gestorRenderList(wrap);
   } catch(e) {
     wrap.innerHTML = '<div class="empty">Error: ' + escapeHtml(e.message) + '</div>';
   }
 }
+
+// Render con filtros aplicados sobre la cache (no recarga la base).
+function _gestorRenderList(wrap) {
+  if (!wrap) wrap = document.getElementById('gestor-list-wrap');
+  if (!wrap) return;
+  var rows = _gestorRowsCache || [];
+
+  // Barra de filtros
+  var f = _gestorFilter;
+  var bar = '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">'
+    + '<input id="gestor-q" class="inp" style="flex:1;min-width:160px;margin-bottom:0" placeholder="Buscar por patente o cliente..." value="' + escapeHtml(f.q) + '" oninput="_gestorOnSearch(this.value)"/>'
+    + '<select class="inp" style="width:auto;margin-bottom:0" onchange="_gestorOnEstado(this.value)">'
+    +   '<option value="activas"' + (f.estado==='activas'?' selected':'') + '>Activas (agendadas + en curso)</option>'
+    +   '<option value="open"' + (f.estado==='open'?' selected':'') + '>Solo agendadas</option>'
+    +   '<option value="in_progress"' + (f.estado==='in_progress'?' selected':'') + '>En curso</option>'
+    +   '<option value="closed"' + (f.estado==='closed'?' selected':'') + '>Cerradas</option>'
+    +   '<option value="todas"' + (f.estado==='todas'?' selected':'') + '>Todas</option>'
+    + '</select>'
+    + '</div>';
+
+  // Filtrar
+  var qx = (f.q || '').trim().toLowerCase();
+  var filtered = rows.filter(function(o){
+    // Estado
+    if (f.estado === 'activas') { if (o.status !== 'open' && o.status !== 'in_progress' && o.status !== 'assigned') return false; }
+    else if (f.estado === 'closed') { if (o.status !== 'closed') return false; }
+    else if (f.estado !== 'todas') { if (o.status !== f.estado) return false; }
+    // Búsqueda
+    if (qx) {
+      var hay = (o._plate + ' ' + o._cliName).toLowerCase();
+      if (hay.indexOf(qx) === -1) return false;
+    }
+    return true;
+  });
+
+  if (filtered.length === 0) {
+    wrap.innerHTML = bar + '<div class="empty">' + (rows.length === 0
+      ? 'No hay servicios agendados todavía. Usa "+ Nueva ficha de servicio" para agendar.'
+      : 'Ningún agendamiento coincide con el filtro.') + '</div>';
+    return;
+  }
+
+  // Agrupación temporal
+  var now = new Date();
+  var startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  var endToday = new Date(startToday.getTime() + 86400000);
+  var endWeek = new Date(startToday.getTime() + 7 * 86400000);
+  var groups = { pasadas: [], hoy: [], semana: [], adelante: [] };
+  filtered.forEach(function(o){
+    var d = new Date(o.scheduled_appointment_at);
+    if (isNaN(d.getTime())) { groups.adelante.push(o); return; }
+    if (d < startToday) groups.pasadas.push(o);
+    else if (d < endToday) groups.hoy.push(o);
+    else if (d < endWeek) groups.semana.push(o);
+    else groups.adelante.push(o);
+  });
+
+  var html = bar;
+  var sections = [
+    ['hoy', 'Hoy'], ['semana', 'Esta semana'], ['adelante', 'Más adelante'], ['pasadas', 'Pasadas']
+  ];
+  sections.forEach(function(sec){
+    var key = sec[0], title = sec[1], list = groups[key];
+    if (!list.length) return;
+    html += '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--wh3);margin:14px 0 8px">' + title + ' · ' + list.length + '</div>';
+    list.forEach(function(o){ html += _gestorCardHtml(o); });
+  });
+  wrap.innerHTML = html;
+}
+
+// HTML de una tarjeta de agendamiento (con cliente + gestor).
+function _gestorCardHtml(o) {
+  var fecha = o.scheduled_appointment_at ? fmtD(o.scheduled_appointment_at) : 'Sin fecha';
+  var canEdit = (o.status === 'open');
+  var stColor = (o.status === 'open') ? 'var(--blue)' : (o.status === 'closed') ? 'var(--wh4)' : 'var(--wh3)';
+  return '<div style="border:1px solid var(--border2);border-left:3px solid var(--gold);border-radius:4px;padding:10px 12px;margin-bottom:8px;background:#fff">'
+    +   '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">'
+    +     '<div style="flex:1">'
+    +       '<div style="font-size:13px;font-weight:700;color:#111">' + escapeHtml(o._plate) + (o._bm ? ' · <span style="font-weight:400;color:var(--wh3)">' + escapeHtml(o._bm) + '</span>' : '') + '</div>'
+    +       (o._cliName ? '<div style="font-size:12px;color:var(--wh2);margin-top:1px">' + escapeHtml(o._cliName) + '</div>' : '')
+    +       '<div style="font-size:12px;color:var(--wh2);margin-top:2px">' + escapeHtml(o._svcLabel) + '</div>'
+    +       '<div style="font-size:10px;color:var(--wh4);margin-top:2px">'
+    +         (o.ot_number ? '<span style="font-family:var(--mono)">OT ' + escapeHtml(String(o.ot_number)) + '</span>' : '')
+    +         (o.commercial_manager_name ? ' · ' + escapeHtml(o.commercial_manager_name) : '')
+    +       '</div>'
+    +     '</div>'
+    +     '<div style="text-align:right;flex-shrink:0">'
+    +       '<div style="font-size:12px;font-weight:600;color:#111">' + escapeHtml(fecha) + '</div>'
+    +       '<span style="font-size:10px;font-weight:700;color:' + stColor + '">' + escapeHtml(String(o.status || '').toUpperCase()) + '</span>'
+    +     '</div>'
+    +   '</div>'
+    +   (canEdit
+          ? '<div style="margin-top:8px"><button class="btn-sm" onclick="editFichaGestor(\'' + o.id + '\')">Editar</button></div>'
+          : '<div style="margin-top:6px;font-size:11px;color:var(--wh4);font-style:italic">Ya iniciada — no editable desde aquí</div>')
+    + '</div>';
+}
+
+var _gestorSearchTimer = null;
+function _gestorOnSearch(v) {
+  _gestorFilter.q = v;
+  // debounce ligero para no re-renderizar en cada tecla
+  if (_gestorSearchTimer) clearTimeout(_gestorSearchTimer);
+  _gestorSearchTimer = setTimeout(function(){ _gestorRenderList(); 
+    // mantener foco en el input tras re-render
+    var el = document.getElementById('gestor-q'); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+  }, 250);
+}
+function _gestorOnEstado(v) { _gestorFilter.estado = v; _gestorRenderList(); }
+window._gestorOnSearch = _gestorOnSearch;
+window._gestorOnEstado = _gestorOnEstado;
 
 // A1: "Nueva ficha" y "editar" reusan el modal multiservicio. Por ahora, como
 // puente seguro, abren el flujo de creación de OT existente (openNewOTForVehicle
