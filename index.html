@@ -24459,6 +24459,7 @@ async function generateOTPdf(otId) {
 
     // ─── Datos del cliente ───
     function sectionTitle(t) {
+      if (y + 10 > 285) { doc.addPage(); y = 15; }
       doc.setFillColor(245, 245, 245);
       doc.rect(marginX, y - 4, pageW - 2*marginX, 6, 'F');
       doc.setFont('helvetica','bold');
@@ -24471,12 +24472,27 @@ async function generateOTPdf(otId) {
       y += 5;
     }
     function field(label, value) {
+      var val = value == null || value === '' ? '—' : String(value);
+      // Calcular las líneas reales que ocupará el valor con su ancho disponible.
+      // Antes se asumía 1 línea fija (y += 5), por lo que descripciones largas
+      // (ej. OT legacy con muchos servicios en un solo campo) se desbordaban
+      // encima de los campos siguientes.
+      var valX = marginX + 35;
+      var valMaxW = pageW - marginX*2 - 35;
+      doc.setFont('helvetica','normal');
+      doc.setFontSize(9);
+      var valLines = doc.splitTextToSize(val, valMaxW);
+      var lineH = 5;
+      var blockH = Math.max(1, valLines.length) * lineH;
+      if (y + blockH > 285) { doc.addPage(); y = 15; }
       doc.setFont('helvetica','bold');
       doc.text(label + ':', marginX, y);
       doc.setFont('helvetica','normal');
-      var val = value == null || value === '' ? '—' : String(value);
-      doc.text(val, marginX + 35, y, {maxWidth: pageW - marginX*2 - 35});
-      y += 5;
+      var startY = y;
+      valLines.forEach(function(ln, idx) {
+        doc.text(ln, valX, startY + idx * lineH);
+      });
+      y += blockH;
     }
 
     sectionTitle('Cliente');
