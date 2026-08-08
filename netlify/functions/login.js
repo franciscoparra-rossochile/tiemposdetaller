@@ -66,6 +66,42 @@ function verificar(clave, guardado) {
   } catch (_) { return false; }
 }
 
+/* ── Prueba de identidad entre llamadas ────────────────────────────────────
+   Sin esto, `set` y el cambio forzado de contraseña quedaban abiertos: la
+   tabla `users` es legible con la llave anónima, así que cualquiera obtenía
+   el uuid del admin y le fijaba una contraseña nueva. Verificado en vivo.
+
+   El token es HMAC sobre {uid, rol, exp}. La llave de firma es la de servicio,
+   que ya vive en las variables de entorno: no hay nada nuevo que configurar.
+   Si esa llave falta, `abrirToken` devuelve null y las acciones sensibles se
+   niegan — falla cerrado, que es como debe fallar. */
+const TOKEN_MS = 12 * 3600 * 1000;   /* igual que la sesión de la app */
+
+function secretoFirma() { return process.env.SUPABASE_SERVICE_ROLE_KEY || ''; }
+
+function firmar(uid, rol) {
+  const s = secretoFirma();
+  if (!s) return null;
+  const cuerpo = Buffer.from(JSON.stringify({ uid, rol, exp: Date.now() + TOKEN_MS })).toString('base64url');
+  const firma = crypto.createHmac('sha256', s).update(cuerpo).digest('base64url');
+  return cuerpo + '.' + firma;
+}
+
+function abrirToken(t) {
+  const s = secretoFirma();
+  if (!s || !t || typeof t !== 'string') return null;
+  const i = t.indexOf('.');
+  if (i < 1) return null;
+  const cuerpo = t.slice(0, i), firma = t.slice(i + 1);
+  const esperada = crypto.createHmac('sha256', s).update(cuerpo).digest('base64url');
+  const a = Buffer.from(firma), b = Buffer.from(esperada);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+  let p = null;
+  try { p = JSON.parse(Buffer.from(cuerpo, 'base64url').toString('utf8')); } catch (_) { return null; }
+  if (!p || !p.uid || !p.exp || Date.now() > p.exp) return null;
+  return p;
+}
+
 /* Nunca devolver al navegador nada que se parezca a una credencial. */
 function limpiar(u) {
   const out = { ...u };
@@ -73,31 +109,8 @@ function limpiar(u) {
   return out;
 }
 
-/* Convierte a hash lo que quede en texto plano. Se dispara sin await para no
-   demorar el login: si falla, el próximo login lo vuelve a intentar. */
-let _barriendo = false;
-async function barrido(limite) {
-  if (_barriendo) return 0;
-  _barriendo = true;
-  try {
-    let users = [];
-    try { users = await sb('users?select=id,password'); }
-    catch (_) { return 0; }  /* la columna ya no existe: no queda nada que migrar */
-    const secretos = await sb('user_secrets?select=user_id');
-    const ya = new Set((secretos || []).map(x => x.user_id));
-    let faltan = (users || []).filter(u => u.password && !ya.has(u.id));
-    if (limite) faltan = faltan.slice(0, limite);
-    let n = 0;
-    for (const u of faltan) {
-      try { await sb('user_secrets', 'POST', { user_id: u.id, password_hash: hashear(u.password) }); n++; } catch (_) {}
-    }
-    if (n) console.log('barrido: ' + n + ' contrasena(s) convertidas a hash');
-    return n;
-  } catch (e) {
-    console.warn('barrido no pudo correr:', String(e.message).slice(0, 90));
-    return 0;
-  } finally { _barriendo = false; }
-}
+/* El barrido de migración se eliminó junto con la columna `password`: ya no
+   queda nada en texto plano que convertir. */
 
 exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') return J(204, {});
@@ -106,20 +119,10 @@ exports.handler = async (event) => {
   const accion = body.accion || 'login';
 
   try {
-    /* ── Migración: hashea todo lo que quede en texto plano. Una sola vez. ── */
-    if (accion === 'migrar') {
-      if (body.k !== process.env.MIGRACION_TOKEN) return J(401, { error: 'no autorizado' });
-      const users = await sb('users?select=id,username,password');
-      const secretos = await sb('user_secrets?select=user_id');
-      const ya = new Set((secretos || []).map(s => s.user_id));
-      let n = 0;
-      for (const u of users) {
-        if (ya.has(u.id) || !u.password) continue;
-        await sb('user_secrets', 'POST', { user_id: u.id, password_hash: hashear(u.password) });
-        n++;
-      }
-      return J(200, { ok: true, migrados: n, total: users.length, con_hash: ya.size + n });
-    }
+    /* La acción `migrar` se eliminó. Tenía un fallo: comparaba
+       `body.k !== process.env.MIGRACION_TOKEN` y, al no existir esa variable,
+       una petición sin token daba `undefined !== undefined` = false y pasaba
+       el control. Ya no hace falta: el barrido automático la reemplazó. */
 
     /* ── Login ── */
     if (accion === 'login') {
@@ -155,48 +158,65 @@ exports.handler = async (event) => {
           try { await sb('user_secrets', 'POST', { user_id: u.id, password_hash: hashear(clave) }); } catch (_) {}
         }
       }
-      /* ── Barrido automático ──
-         En cuanto la llave de servicio está cargada, el primer login convierte
-         a hash TODAS las contraseñas que queden en texto plano. Es idempotente
-         y elimina el paso manual: nadie tiene que acordarse de dispararlo ni
-         manejar un token para hacerlo. */
-      /* Esperado y acotado: en una función serverless el proceso se congela
-         apenas se responde, así que un barrido "en segundo plano" nunca
-         alcanza a correr. Dos por login agregan ~200 ms y convergen en pocos
-         ingresos; el barrido completo va en la acción `estado`. */
-      if (secretosDisponibles) { try { await barrido(2); } catch (_) {} }
-      return J(200, { ok: true, user: limpiar(u), seguro: !!guardado });
+      /* El barrido de migración se retiró del login: la columna `password` ya
+         no existe, así que solo agregaba una consulta fallida a cada ingreso. */
+      return J(200, {
+        ok: true,
+        user: limpiar(u),
+        seguro: !!guardado,
+        /* prueba de identidad para las acciones que escriben contraseñas */
+        token: firmar(u.id, u.role)
+      });
     }
 
-    /* ── Cambio de contraseña ── */
+    /* ── Cambio de contraseña (el propio usuario) ──
+       Dos caminos válidos, y ninguno más:
+         a) sabe su contraseña actual y la manda en `actual`;
+         b) trae el token que se le entregó en el login de hace un rato.
+       El camino (b) cubre el cambio obligado del primer ingreso, donde el
+       navegador ya no conserva la clave temporal con la que acaba de entrar.
+       Antes bastaba con que el usuario tuviera `must_change_password` activo:
+       eso dejaba que cualquiera, sin credencial alguna, le pisara la clave a
+       una cuenta recién reseteada. */
     if (accion === 'cambiar') {
       const uid = String(body.user_id || '');
       const actual = String(body.actual || ''), nueva = String(body.nueva || '');
       if (!uid || !nueva) return J(400, { error: 'Faltan datos' });
-      if (nueva.length < 6) return J(400, { error: 'La contraseña nueva debe tener al menos 6 caracteres' });
-      const rows = await sb('users?select=id,password,must_change_password&id=eq.' + uid + '&limit=1');
+      if (nueva.length < 4) return J(400, { error: 'La contraseña nueva debe tener al menos 4 caracteres' });
+
+      const rows = await sb('users?select=id,must_change_password&id=eq.' + uid + '&limit=1');
       const u = (rows || [])[0];
       if (!u) return J(404, { error: 'Usuario no encontrado' });
-      const sec = await sb('user_secrets?select=password_hash&user_id=eq.' + uid + '&limit=1');
-      const guardado = ((sec || [])[0] || {}).password_hash;
-      /* si viene de un reseteo obligatorio no se pide la actual */
-      if (!u.must_change_password) {
-        const okActual = guardado ? verificar(actual, guardado) : (u.password && String(u.password) === actual);
-        if (!okActual) return J(401, { error: 'La contraseña actual no coincide' });
+
+      const ses = abrirToken(body.token);
+      const conToken = !!(ses && ses.uid === uid);
+
+      if (!conToken) {
+        const sec = await sb('user_secrets?select=password_hash&user_id=eq.' + uid + '&limit=1');
+        const guardado = ((sec || [])[0] || {}).password_hash;
+        if (!guardado || !actual || !verificar(actual, guardado)) {
+          return J(401, { error: 'La contraseña actual no coincide' });
+        }
       }
+
       await sb('user_secrets', 'POST', { user_id: uid, password_hash: hashear(nueva) });
-      /* Solo se toca la columna antigua si todavía existe: cuando se borre,
-         este PATCH falla y no debe tumbar el cambio de contraseña. */
-      try { await sb('users?id=eq.' + uid, 'PATCH', { password: nueva, must_change_password: false }); }
-      catch (_) { await sb('users?id=eq.' + uid, 'PATCH', { must_change_password: false }); }
-      return J(200, { ok: true });
+      await sb('users?id=eq.' + uid, 'PATCH', { must_change_password: false });
+      /* token nuevo: la sesión sigue viva con la contraseña recién puesta */
+      return J(200, { ok: true, token: firmar(uid, null) });
     }
 
     /* ── Fijar contraseña (alta o reseteo por administrador) ──
-       La app ya no puede escribir en `users.password` porque esa columna deja
-       de existir: acá se crea el hash. No pide la actual porque es un reseteo
-       administrativo, y por eso marca must_change_password. */
+       Exige token de admin. Sin esto quedaba completamente abierto: los uuid
+       de `users` son legibles con la llave anónima, así que bastaba pedir el
+       del admin y fijarle una contraseña conocida para entrar como él. */
     if (accion === 'set') {
+      const ses = abrirToken(body.token);
+      if (!ses) return J(401, { error: 'Sesión no válida. Vuelve a entrar.' });
+      /* el rol se relee de la base: el del token es solo una pista */
+      const quien = await sb('users?select=id,role&id=eq.' + ses.uid + '&limit=1');
+      const admin = (quien || [])[0];
+      if (!admin || admin.role !== 'admin') return J(403, { error: 'Solo un administrador puede fijar contraseñas' });
+
       const uid = String(body.user_id || '');
       const nueva = String(body.nueva || '');
       if (!uid || !nueva) return J(400, { error: 'Faltan datos' });
@@ -207,29 +227,14 @@ exports.handler = async (event) => {
       if (body.forzar_cambio !== false) {
         try { await sb('users?id=eq.' + uid, 'PATCH', { must_change_password: true }); } catch (_) {}
       }
+      console.log('set: ' + admin.id + ' fijó la contraseña de ' + uid);
       return J(200, { ok: true });
     }
 
-    /* ── Diagnóstico: cuánto falta por migrar (sin exponer nada) ── */
-    if (accion === 'estado') {
-      /* Diagnóstico y también el empujón: acá sí conviene esperar el barrido
-         completo, porque nadie está esperando una pantalla. */
-      if (process.env.SUPABASE_SERVICE_ROLE_KEY) { try { await barrido(0); } catch (_) {} }
-      const users = await sb('users?select=id');
-      let secretos = [];
-      try { secretos = await sb('user_secrets?select=user_id'); }
-      catch (_) { return J(200, { ok: true, usuarios: (users || []).length, con_hash: null,
-        llave_de_servicio: false, aviso: 'Falta SUPABASE_SERVICE_ROLE_KEY en Netlify: sin ella no se puede leer la tabla de secretos.' }); }
-      const n = (users || []).length, c = (secretos || []).length;
-      return J(200, {
-        ok: true, usuarios: n, con_hash: c, faltan: Math.max(0, n - c),
-        llave_de_servicio: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
-        listo: n > 0 && c >= n,
-        siguiente: (n > 0 && c >= n)
-          ? 'Todas las contraseñas están en hash. Ya se puede borrar la columna `password` (coordinar con producción).'
-          : 'El primer login después de cargar la llave convierte todo solo.'
-      });
-    }
+    /* Las acciones de diagnóstico `verificar` y `estado` se retiraron: la
+       migración terminó, la columna de texto plano ya no existe, y mientras
+       existieran cualquiera podía preguntarle al servidor cuántas cuentas hay
+       y cuáles están sin hash. Una función pública responde lo mínimo. */
 
     return J(400, { error: 'acción desconocida' });
   } catch (e) {
