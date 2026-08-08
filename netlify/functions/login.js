@@ -274,6 +274,80 @@ function correoRecuperacion(nombre, enlace) {
   return { html, texto };
 }
 
+/* ── Portero compartido de acciones de administrador ───────────────────────
+   `set` ya hacía esto en línea; las acciones de equipo necesitan lo mismo, y
+   una regla de seguridad escrita en dos lugares se arregla en uno solo la
+   próxima vez. El rol SIEMPRE se relee de la base: el que viaja en el token
+   es una pista para pintar la pantalla, no una credencial. Si a alguien lo
+   bajan de admin a las 10, su token de las 9 no le sirve a las 11. */
+async function exigirAdmin(token) {
+  const ses = abrirToken(token);
+  if (!ses) return { error: 'Sesión no válida. Vuelve a entrar.', code: 401 };
+  const filas = await sb('users?select=id,username,role,is_active&id=eq.' + ses.uid + '&limit=1');
+  const u = (filas || [])[0];
+  if (!u || u.role !== 'admin') return { error: 'Solo un administrador puede hacer esto', code: 403 };
+  if (u.is_active === false) return { error: 'Cuenta desactivada', code: 403 };
+  return u;
+}
+
+/* POST sin `merge-duplicates`: para crear una cuenta queremos que un choque
+   falle, no que pise en silencio una fila existente. */
+async function sbRep(path, method, body) {
+  const k = llave();
+  const r = await fetch(SURL + '/rest/v1/' + path, {
+    method: method || 'POST',
+    headers: { apikey: k, Authorization: 'Bearer ' + k, 'content-type': 'application/json',
+               Prefer: 'return=representation' },
+    body: body ? JSON.stringify(body) : undefined
+  });
+  const t = await r.text();
+  if (!r.ok) throw new Error(path + ' → ' + r.status + ' ' + t.slice(0, 200));
+  return t ? JSON.parse(t) : [];
+}
+
+/* ── Lista blanca de campos ────────────────────────────────────────────────
+   Se copia campo por campo lo que el panel puede tocar. Nada de reenviar el
+   objeto que mandó el navegador: si mañana la tabla gana una columna
+   sensible, un cliente modificado la escribiría sin que nadie lo note. Lo que
+   no está en esta lista no se escribe, y punto.
+
+   Fuera quedan a propósito: id, is_active, baja_el, baja_por (van por
+   `equipo_baja`), recovery_email (lo pone su dueño, nadie más) y cualquier
+   cosa que tenga que ver con la contraseña (va por `set`). */
+const ROLES = ['admin', 'jefatura', 'tech'];
+function camposEquipo(d) {
+  d = d || {};
+  const campos = {};
+  if (d.name !== undefined)   campos.name   = String(d.name || '').trim().slice(0, 80);
+  if (d.username !== undefined) campos.username = String(d.username || '').trim().toLowerCase().replace(/\s+/g, '').slice(0, 40);
+  if (d.cargo !== undefined)  campos.cargo  = String(d.cargo || '').trim().slice(0, 80);
+  if (d.avatar_url !== undefined) campos.avatar_url = d.avatar_url ? String(d.avatar_url).slice(0, 500) : null;
+  if (d.role !== undefined) {
+    const r = String(d.role || '');
+    if (ROLES.indexOf(r) < 0) return { error: 'Rol no válido' };
+    campos.role = r;
+  }
+  /* Un técnico es técnico: `can_tech` es el permiso de que jefatura o un
+     admin además tomen servicios, y en un tech no significa nada. */
+  if (d.can_tech !== undefined) campos.can_tech = (campos.role || '') !== 'tech' && d.can_tech === true;
+  if (d.permissions !== undefined && d.permissions && typeof d.permissions === 'object') {
+    const p = {};
+    for (const k of Object.keys(d.permissions)) p[String(k).slice(0, 60)] = d.permissions[k] === true;
+    campos.permissions = p;
+  }
+  if (d.must_change_password !== undefined) campos.must_change_password = d.must_change_password === true;
+  if (!Object.keys(campos).length) return { error: 'No hay nada que guardar' };
+  return { campos };
+}
+
+/* ¿Cuántos admins activos quedarían si sacamos a este? Una app de taller sin
+   administrador es un taller sin llave del pañol: nadie puede crear cuentas,
+   resetear contraseñas ni arreglar el desastre desde adentro. */
+async function quedanAdmins(excepto) {
+  const filas = await sb('users?select=id&role=eq.admin&is_active=is.true&id=neq.' + excepto);
+  return (filas || []).length;
+}
+
 async function limpiarFallos(uname) {
   try { await sb('login_attempts?clave=eq.' + encodeURIComponent('u:' + uname), 'DELETE'); } catch (_) {}
 }
@@ -536,6 +610,96 @@ exports.handler = async (event) => {
       }
       console.log('restablecer: contraseña nueva para ' + uid);
       return J(200, { ok: true, usuario: u.username });
+    }
+
+    /* ── Gestión de equipo ─────────────────────────────────────────────────
+       Antes esto lo hacía el navegador: `users.insert()`, `users.update()` con
+       el rol adentro, y `users.delete()`, todo con la llave anónima que va
+       incrustada en el HTML público. El panel se le mostraba solo a un admin,
+       pero la pantalla que esconde un botón no es un candado: PostgREST le
+       contesta igual a quien llame directo. Cualquiera con el código fuente a
+       la vista podía ponerse `role: admin`, crear una cuenta nueva o borrar a
+       los quince.
+
+       Ahora la base ya no acepta esas escrituras desde el navegador (v2.9:
+       revoke insert/update/delete, y update devuelto columna por columna solo
+       para lo inofensivo). Estas tres acciones son la puerta de reemplazo, y
+       tienen el mismo portero que `set`: token de sesión firmado, rol releído
+       desde la base —no el del token— y cuenta vigente. */
+    if (accion === 'equipo_crear' || accion === 'equipo_editar' || accion === 'equipo_baja') {
+      const admin = await exigirAdmin(body.token);
+      if (admin.error) return J(admin.code, { error: admin.error });
+
+      if (accion === 'equipo_crear') {
+        const d = camposEquipo(body.datos);
+        if (d.error) return J(400, { error: d.error });
+        if (!d.campos.username) return J(400, { error: 'Falta el usuario' });
+        if (!d.campos.name) return J(400, { error: 'Falta el nombre' });
+        const clave = String(body.clave || '');
+        if (clave.length < CLAVE_MIN) return J(400, { error: 'La contraseña debe tener al menos ' + CLAVE_MIN + ' caracteres' });
+
+        const repe = await sb('users?select=id,is_active&username=eq.' + encodeURIComponent(d.campos.username) + '&limit=1');
+        if ((repe || [])[0]) {
+          return J(409, { error: (repe[0].is_active === false)
+            ? 'Ese usuario ya existe pero está dado de baja. Reactívalo en vez de crearlo de nuevo.'
+            : 'Ese nombre de usuario ya está ocupado.' });
+        }
+
+        d.campos.must_change_password = true;   /* siempre, sin excepción */
+        d.campos.is_active = true;
+        const creado = await sbRep('users', 'POST', d.campos);
+        const nuevo = (creado || [])[0];
+        if (!nuevo || !nuevo.id) return J(500, { error: 'No se pudo crear la cuenta' });
+        await sb('user_secrets', 'POST', { user_id: nuevo.id, password_hash: hashear(clave) });
+        console.log('equipo_crear: ' + admin.id + ' creó ' + nuevo.username + ' (' + nuevo.role + ')');
+        return J(200, { ok: true, user: limpiar(nuevo) });
+      }
+
+      const uid = String(body.user_id || '');
+      if (!uid) return J(400, { error: 'Falta el usuario' });
+      const rows = await sb('users?select=id,name,username,role,is_active&id=eq.' + uid + '&limit=1');
+      const destino = (rows || [])[0];
+      if (!destino) return J(404, { error: 'Usuario no encontrado' });
+
+      if (accion === 'equipo_editar') {
+        const d = camposEquipo(body.datos);
+        if (d.error) return J(400, { error: d.error });
+        /* Quitarse a uno mismo el rol de admin deja el panel sin dueño y no
+           hay forma de volver desde la app. Se bloquea acá y no en el
+           navegador, que es donde importa. */
+        if (uid === admin.id && d.campos.role && d.campos.role !== 'admin') {
+          return J(409, { error: 'No puedes quitarte a ti mismo el rol de administrador. Pídeselo al otro admin.' });
+        }
+        if (d.campos.role && d.campos.role !== 'admin' && destino.role === 'admin') {
+          const q = await quedanAdmins(uid);
+          if (q === 0) return J(409, { error: 'Es el último administrador activo. Nombra otro antes de bajarle el rol.' });
+        }
+        if (d.campos.username && d.campos.username !== destino.username) {
+          const repe = await sb('users?select=id&username=eq.' + encodeURIComponent(d.campos.username) + '&id=neq.' + uid + '&limit=1');
+          if ((repe || [])[0]) return J(409, { error: 'Ese nombre de usuario ya está ocupado.' });
+        }
+        await sb('users?id=eq.' + uid, 'PATCH', d.campos);
+        console.log('equipo_editar: ' + admin.id + ' editó ' + destino.username + ' → ' + JSON.stringify(Object.keys(d.campos)));
+        return J(200, { ok: true });
+      }
+
+      /* equipo_baja: reemplaza al borrado. Borrar la fila se lleva por delante
+         el historial de servicios de la persona, que es justo lo que no hay
+         que perder —es el registro de quién hizo cada trabajo—. Dar de baja
+         cierra el acceso y deja los datos donde están. */
+      const reactivar = body.reactivar === true;
+      if (!reactivar) {
+        if (uid === admin.id) return J(409, { error: 'No puedes darte de baja a ti mismo.' });
+        if (destino.role === 'admin') {
+          const q = await quedanAdmins(uid);
+          if (q === 0) return J(409, { error: 'Es el último administrador activo. Nombra otro antes de darlo de baja.' });
+        }
+      }
+      await sb('users?id=eq.' + uid, 'PATCH', reactivar
+        ? { is_active: true,  baja_el: null, baja_por: null, must_change_password: true }
+        : { is_active: false, baja_el: new Date().toISOString(), baja_por: admin.username || admin.id });
+      console.log('equipo_baja: ' + admin.id + (reactivar ? ' reactivó ' : ' dio de baja a ') + destino.username);
+      return J(200, { ok: true, is_active: reactivar });
     }
 
     /* Las acciones de diagnóstico `verificar` y `estado` se retiraron: la
