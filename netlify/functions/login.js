@@ -119,12 +119,19 @@ function limpiar(u) {
 const CLAVE_MIN = 6;
 
 /* ── Freno a intentos ──────────────────────────────────────────────────────
-   Se cuenta por usuario (para proteger una cuenta concreta) y por IP (para
-   frenar a quien prueba una clave común contra los 15 nombres). Los fallidos
-   viven en `login_attempts`, tabla con RLS y sin políticas: invisible para la
-   llave pública.
-   Si la tabla todavía no existe, `frenado` devuelve false y el login sigue
-   funcionando igual. Un freno que se cae no puede dejar al taller afuera. */
+   Los fallidos viven en `login_attempts`, tabla con RLS y sin políticas:
+   invisible para la llave pública. Si la tabla no existe, `frenado` devuelve
+   false y el login sigue igual: un freno que se cae no puede dejar al taller
+   afuera.
+
+   ⚠ El contador por IP solo cuenta intentos contra usuarios QUE NO EXISTEN.
+   Los 15 del taller salen a internet por la misma IP: si contara todos los
+   fallos, quince personas equivocándose dos veces cada una el lunes en la
+   mañana —justo cuando todos cambian su contraseña— sumarían treinta y
+   dejarían al taller entero bloqueado. Eso no es un ataque, es un lunes.
+   Probar nombres de usuario que no existen sí es la firma de alguien
+   barriendo la lista, y para eso queda el contador. La cuenta concreta la
+   protege el contador por usuario, que sí cuenta todo. */
 const FRENO_VENTANA_MIN = 15;
 const FRENO_POR_USUARIO = 8;
 const FRENO_POR_IP      = 30;
@@ -157,9 +164,13 @@ async function frenado(uname, ip) {
   }
 }
 
-async function anotarFallo(uname, ip) {
+async function anotarFallo(uname, ip, usuarioExiste) {
   try {
-    await sb('login_attempts', 'POST', [{ clave: 'u:' + uname }, { clave: 'ip:' + ip }]);
+    const filas = [{ clave: 'u:' + uname }];
+    /* solo se le cuenta a la IP cuando el usuario no existe: ver el comentario
+       del bloque de arriba sobre los 15 detrás de la misma salida a internet */
+    if (!usuarioExiste) filas.push({ clave: 'ip:' + ip });
+    await sb('login_attempts', 'POST', filas);
     /* barrido barato: lo viejo ya no sirve para nada y la tabla no debe crecer */
     const viejo = new Date(Date.now() - 6 * 3600000).toISOString();
     await sb('login_attempts?cuando=lt.' + encodeURIComponent(viejo), 'DELETE');
@@ -197,7 +208,7 @@ exports.handler = async (event) => {
       const rows = await sb('users?select=*&username=eq.' + encodeURIComponent(uname) + '&limit=1');
       const u = (rows || [])[0];
       /* mismo mensaje y mismo costo si el usuario no existe: no revelar cuáles sí */
-      if (!u) { hashear(clave); await anotarFallo(uname, ip); return J(401, { error: 'Usuario o contraseña incorrectos' }); }
+      if (!u) { hashear(clave); await anotarFallo(uname, ip, false); return J(401, { error: 'Usuario o contraseña incorrectos' }); }
 
       /* Si todavía no está cargada la llave de servicio, la tabla de secretos
          es inaccesible (RLS). Eso NO puede dejar a nadie afuera: se cae al
@@ -213,7 +224,7 @@ exports.handler = async (event) => {
 
       if (guardado) {
         if (!verificar(clave, guardado)) {
-          await anotarFallo(uname, ip);
+          await anotarFallo(uname, ip, true);
           return J(401, { error: 'Usuario o contraseña incorrectos' });
         }
       } else {
@@ -221,7 +232,7 @@ exports.handler = async (event) => {
            crea el hash en el acto, para que el próximo login ya sea seguro. */
         /* sin hash y sin columna antigua no hay con qué comparar */
         if (!('password' in u) || !u.password || String(u.password) !== clave) {
-          await anotarFallo(uname, ip);
+          await anotarFallo(uname, ip, true);
           return J(401, { error: 'Usuario o contraseña incorrectos' });
         }
         if (secretosDisponibles) {
