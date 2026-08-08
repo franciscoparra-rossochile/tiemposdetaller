@@ -239,6 +239,17 @@ exports.handler = async (event) => {
           try { await sb('user_secrets', 'POST', { user_id: u.id, password_hash: hashear(clave) }); } catch (_) {}
         }
       }
+      /* ── Cuenta dada de baja ────────────────────────────────────────────
+         Se comprueba DESPUÉS de validar la contraseña, a propósito. Si se
+         respondiera "cuenta desactivada" antes, cualquiera podría averiguar
+         quién trabaja acá y quién ya no probando nombres. Así, para enterarse
+         hay que saber la contraseña — o sea, ser la persona. Y a esa persona
+         sí le sirve un mensaje claro en vez de "contraseña incorrecta", que la
+         dejaría reintentando y llamando a jefatura. */
+      if (u.is_active === false) {
+        return J(403, { error: 'Tu cuenta está desactivada. Habla con jefatura si crees que es un error.' });
+      }
+
       /* Entró bien: se borra su cuenta de fallidos para que un olvido de la
          mañana no lo deje frenado en la tarde. */
       await limpiarFallos(uname);
@@ -267,9 +278,10 @@ exports.handler = async (event) => {
       const actual = String(body.actual || ''), nueva = String(body.nueva || '');
       if (!uid || !nueva) return J(400, { error: 'Faltan datos' });
 
-      const rows = await sb('users?select=id,must_change_password&id=eq.' + uid + '&limit=1');
+      const rows = await sb('users?select=id,must_change_password,is_active&id=eq.' + uid + '&limit=1');
       const u = (rows || [])[0];
       if (!u) return J(404, { error: 'Usuario no encontrado' });
+      if (u.is_active === false) return J(403, { error: 'Cuenta desactivada' });
 
       /* Primero quién eres, después si lo que traes sirve. Al revés, un
          desconocido podría distinguir por el mensaje de error entre una cuenta
@@ -316,16 +328,21 @@ exports.handler = async (event) => {
       const ses = abrirToken(body.token);
       if (!ses) return J(401, { error: 'Sesión no válida. Vuelve a entrar.' });
       /* el rol se relee de la base: el del token es solo una pista */
-      const quien = await sb('users?select=id,role&id=eq.' + ses.uid + '&limit=1');
+      const quien = await sb('users?select=id,role,is_active&id=eq.' + ses.uid + '&limit=1');
       const admin = (quien || [])[0];
       if (!admin || admin.role !== 'admin') return J(403, { error: 'Solo un administrador puede fijar contraseñas' });
+      /* Un admin dado de baja conserva su token hasta 12 h. No debe poder
+         usarlo para nada. */
+      if (admin.is_active === false) return J(403, { error: 'Cuenta desactivada' });
 
       const uid = String(body.user_id || '');
       const nueva = String(body.nueva || '');
       if (!uid || !nueva) return J(400, { error: 'Faltan datos' });
       if (nueva.length < CLAVE_MIN) return J(400, { error: 'La contraseña debe tener al menos ' + CLAVE_MIN + ' caracteres' });
-      const rows = await sb('users?select=id&id=eq.' + uid + '&limit=1');
-      if (!(rows || [])[0]) return J(404, { error: 'Usuario no encontrado' });
+      const rows = await sb('users?select=id,is_active&id=eq.' + uid + '&limit=1');
+      const destino = (rows || [])[0];
+      if (!destino) return J(404, { error: 'Usuario no encontrado' });
+      if (destino.is_active === false) return J(409, { error: 'Esa cuenta está dada de baja. Reactívala antes de darle una contraseña.' });
       await sb('user_secrets', 'POST', { user_id: uid, password_hash: hashear(nueva) });
       if (body.forzar_cambio !== false) {
         try { await sb('users?id=eq.' + uid, 'PATCH', { must_change_password: true }); } catch (_) {}
