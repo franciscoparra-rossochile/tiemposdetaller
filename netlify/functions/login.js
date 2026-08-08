@@ -177,6 +177,103 @@ async function anotarFallo(uname, ip, usuarioExiste) {
   } catch (_) {}
 }
 
+/* ── Recuperación de contraseña por correo ─────────────────────────────────
+   El enlace lleva un token firmado que incluye una HUELLA del hash de la
+   contraseña vigente. Cuando la contraseña cambia, el hash cambia, la huella
+   deja de coincidir y el enlace muere solo.
+
+   Eso lo hace de un solo uso sin guardar nada en la base: no hay tabla de
+   tokens que limpiar, no se acumulan tokens viejos, y no hay forma de reusar
+   un enlace ya usado. Media hora de vigencia. */
+const RECUP_MS = 30 * 60 * 1000;
+
+/* De dónde sale el enlace del correo.
+   ⚠ NO se usa el header Host tal cual: cualquiera puede falsificarlo y
+   conseguir que el correo legítimo apunte a un dominio suyo. Se acepta solo
+   uno de los dos sitios conocidos, y ante la duda, producción. */
+const SITIOS = ['operacionrosso.netlify.app', 'beta-operacionrosso.netlify.app'];
+function baseDe(event) {
+  const h = ((event && event.headers) || {})['host'] || '';
+  return 'https://' + (SITIOS.indexOf(String(h).toLowerCase()) >= 0 ? h : SITIOS[0]);
+}
+
+function huellaDe(hash) {
+  return crypto.createHash('sha256').update(String(hash || '')).digest('base64url').slice(0, 12);
+}
+
+function firmarRecup(uid, hashActual) {
+  const s = secretoFirma();
+  if (!s) return null;
+  const cuerpo = Buffer.from(JSON.stringify({
+    uid, exp: Date.now() + RECUP_MS, h: huellaDe(hashActual)
+  })).toString('base64url');
+  return cuerpo + '.' + crypto.createHmac('sha256', s).update(cuerpo).digest('base64url');
+}
+
+/* Devuelve el uid solo si la firma es válida, no venció, y la contraseña
+   sigue siendo la misma de cuando se emitió el enlace. */
+async function abrirRecup(t) {
+  const s = secretoFirma();
+  if (!s || !t || typeof t !== 'string') return null;
+  const i = t.indexOf('.');
+  if (i < 1) return null;
+  const cuerpo = t.slice(0, i);
+  const esperada = crypto.createHmac('sha256', s).update(cuerpo).digest('base64url');
+  const a = Buffer.from(t.slice(i + 1)), b = Buffer.from(esperada);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+  let p = null;
+  try { p = JSON.parse(Buffer.from(cuerpo, 'base64url').toString('utf8')); } catch (_) { return null; }
+  if (!p || !p.uid || !p.exp || Date.now() > p.exp) return null;
+  try {
+    const sec = await sb('user_secrets?select=password_hash&user_id=eq.' + p.uid + '&limit=1');
+    const guardado = ((sec || [])[0] || {}).password_hash;
+    if (!guardado || huellaDe(guardado) !== p.h) return null;   /* ya se usó */
+  } catch (_) { return null; }
+  return p.uid;
+}
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+/* Envío por API HTTP, no SMTP: cero dependencias que empaquetar. */
+async function enviarCorreo(para, asunto, html, texto) {
+  const k = process.env.RESEND_API_KEY;
+  if (!k) { console.warn('sin RESEND_API_KEY: no se envió el correo'); return false; }
+  try {
+    const r = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + k, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        from: 'Rosso Chile <servicios@rossochile.cl>',
+        to: [para], subject: asunto, html, text: texto
+      })
+    });
+    if (!r.ok) { console.warn('Resend ' + r.status + ': ' + (await r.text()).slice(0, 200)); return false; }
+    return true;
+  } catch (e) { console.warn('no se pudo enviar el correo:', e.message); return false; }
+}
+
+function correoRecuperacion(nombre, enlace) {
+  const html = '<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:520px;margin:0 auto;padding:24px;color:#1a1a1a;">' +
+    '<div style="font-weight:700;font-size:18px;letter-spacing:.04em;color:#c8102e;">ROSSO CHILE</div>' +
+    '<h1 style="font-size:20px;margin:20px 0 8px;">Recuperar tu contraseña</h1>' +
+    '<p style="line-height:1.55;margin:0 0 18px;">Hola ' + esc(nombre || '') + ', pediste recuperar el acceso a la aplicación del taller. ' +
+    'Aprieta el botón y define una contraseña nueva.</p>' +
+    '<p style="margin:0 0 20px;"><a href="' + esc(enlace) + '" style="display:inline-block;background:#c8102e;color:#fff;text-decoration:none;font-weight:700;padding:12px 22px;border-radius:8px;">Definir contraseña nueva</a></p>' +
+    '<p style="line-height:1.55;color:#555;font-size:13px;margin:0 0 6px;">El enlace sirve por 30 minutos y una sola vez.</p>' +
+    '<p style="line-height:1.55;color:#555;font-size:13px;margin:0;"><b>Si no pediste esto, ignora el correo.</b> Tu contraseña actual sigue funcionando y nadie puede cambiarla sin este enlace.</p>' +
+    '<hr style="border:0;border-top:1px solid #e5e5e5;margin:22px 0;"/>' +
+    '<p style="color:#888;font-size:12px;margin:0;">Si el botón no funciona, copia esta dirección en tu navegador:<br/>' + esc(enlace) + '</p>' +
+    '</div>';
+  const texto = 'Hola ' + (nombre || '') + ',\n\n' +
+    'Pediste recuperar el acceso a la aplicación del taller. Abre esta dirección y define una contraseña nueva:\n\n' +
+    enlace + '\n\nEl enlace sirve por 30 minutos y una sola vez.\n\n' +
+    'Si no pediste esto, ignora el correo: tu contraseña actual sigue funcionando.\n\nRosso Chile';
+  return { html, texto };
+}
+
 async function limpiarFallos(uname) {
   try { await sb('login_attempts?clave=eq.' + encodeURIComponent('u:' + uname), 'DELETE'); } catch (_) {}
 }
@@ -349,6 +446,96 @@ exports.handler = async (event) => {
       }
       console.log('set: ' + admin.id + ' fijó la contraseña de ' + uid);
       return J(200, { ok: true });
+    }
+
+    /* ── Pedir el enlace de recuperación ────────────────────────────────
+       La respuesta es SIEMPRE la misma, exista o no la cuenta, esté activa o
+       no, tenga correo registrado o no. Si dijera "ese usuario no existe",
+       cualquiera podría averiguar quién trabaja acá probando nombres — y con
+       la lista de nombres, atacar cuentas concretas. */
+    if (accion === 'recuperar') {
+      const id = String(body.identificador || '').trim().toLowerCase();
+      const ip = ipDe(event);
+      const MISMA = { ok: true, mensaje: 'Si esa cuenta existe y tiene un correo registrado, te va a llegar un enlace en unos minutos. Revisa también la carpeta de spam.' };
+      if (!id) return J(400, { error: 'Escribe tu usuario o tu correo' });
+
+      /* mismo freno que el login: que no sirva para sondear cuentas en masa */
+      if (await frenado('rec:' + id, ip)) {
+        return J(429, { error: 'Demasiados intentos. Espera ' + FRENO_VENTANA_MIN + ' minutos.' });
+      }
+      /* Acá SÍ se le cuenta a la IP, al revés que en el login. Un usuario
+         real equivocándose de contraseña es cosa de todos los días; pedir
+         recuperación es rarísimo. Sin contarlo por IP, alguien podría disparar
+         correos de recuperación a los 15 en bucle y llenarles la bandeja. */
+      await anotarFallo('rec:' + id, ip, false);
+
+      let u = null;
+      try {
+        const campo = id.indexOf('@') >= 0 ? 'recovery_email' : 'username';
+        const rows = await sb('users?select=id,name,username,role,recovery_email,is_active&' +
+                              campo + '=eq.' + encodeURIComponent(id) + '&limit=1');
+        u = (rows || [])[0] || null;
+      } catch (_) {}
+
+      if (!u || u.is_active === false || !u.recovery_email) return J(200, MISMA);
+
+      const sec = await sb('user_secrets?select=password_hash&user_id=eq.' + u.id + '&limit=1');
+      const guardado = ((sec || [])[0] || {}).password_hash;
+      if (!guardado) return J(200, MISMA);
+
+      const enlace = baseDe(event) + '/?r=' + encodeURIComponent(firmarRecup(u.id, guardado) || '');
+      const { html, texto } = correoRecuperacion(u.name, enlace);
+      await enviarCorreo(u.recovery_email, 'Recuperar tu contraseña · Rosso OPS', html, texto);
+      console.log('recuperar: enlace enviado a la cuenta ' + u.id);
+      return J(200, MISMA);
+    }
+
+    /* ── Comprobar el enlace antes de mostrar el formulario ──────────────
+       Para no hacer que alguien escriba una contraseña nueva dos veces y
+       recién ahí enterarse de que el enlace venció. */
+    if (accion === 'revisar_enlace') {
+      const uid = await abrirRecup(body.t);
+      if (!uid) return J(200, { ok: false, motivo: 'El enlace venció o ya se usó. Pide uno nuevo.' });
+      const rows = await sb('users?select=name,username&id=eq.' + uid + '&limit=1');
+      const u = (rows || [])[0] || {};
+      return J(200, { ok: true, nombre: u.name || null, usuario: u.username || null });
+    }
+
+    /* ── Restablecer con el enlace ── */
+    if (accion === 'restablecer') {
+      const nueva = String(body.nueva || '');
+      const uid = await abrirRecup(body.t);
+      /* la validez del enlace se comprueba ANTES que el largo: un desconocido
+         con un token inventado no debe distinguir "enlace malo" de "clave
+         corta" */
+      if (!uid) return J(401, { error: 'El enlace venció o ya se usó. Pide uno nuevo.' });
+      if (nueva.length < CLAVE_MIN) return J(400, { error: 'La contraseña nueva debe tener al menos ' + CLAVE_MIN + ' caracteres' });
+
+      const rows = await sb('users?select=id,name,username,role,is_active&id=eq.' + uid + '&limit=1');
+      const u = (rows || [])[0];
+      if (!u || u.is_active === false) return J(403, { error: 'Cuenta desactivada' });
+
+      await sb('user_secrets', 'POST', { user_id: uid, password_hash: hashear(nueva) });
+      await sb('users?id=eq.' + uid, 'PATCH', { must_change_password: false });
+      await limpiarFallos(u.username);
+
+      /* Aviso cruzado entre administradores: son las dos cuentas que pueden
+         todo, y enterarse de que la clave de la otra se recuperó cuesta un
+         correo. Nunca puede tumbar el restablecimiento. */
+      if (u.role === 'admin') {
+        try {
+          const otros = await sb('users?select=name,recovery_email&role=eq.admin&is_active=eq.true&id=neq.' + uid);
+          for (const o of (otros || [])) {
+            if (!o.recovery_email) continue;
+            await enviarCorreo(o.recovery_email, 'Aviso: se recuperó la contraseña de un administrador',
+              '<p>Se acaba de recuperar por correo la contraseña de <b>' + esc(u.name || u.username) + '</b>, que es cuenta de administrador en Rosso OPS.</p>' +
+              '<p>Si fue esa persona, no hay nada que hacer. Si no, entra y cámbiala.</p>',
+              'Se recuperó por correo la contraseña de ' + (u.name || u.username) + ' (administrador). Si no fue esa persona, entra y cámbiala.');
+          }
+        } catch (_) {}
+      }
+      console.log('restablecer: contraseña nueva para ' + uid);
+      return J(200, { ok: true, usuario: u.username });
     }
 
     /* Las acciones de diagnóstico `verificar` y `estado` se retiraron: la
