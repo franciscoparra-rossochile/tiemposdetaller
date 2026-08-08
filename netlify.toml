@@ -1,0 +1,10 @@
+[functions]
+  directory = "netlify/functions"
+
+# Verificación de contraseñas del lado del servidor. Antes la app comparaba la
+# clave en el navegador con la llave anónima, que está en el HTML de este sitio
+# público: las contraseñas del equipo eran legibles por cualquiera.
+[[redirects]]
+  from = "/api/login"
+  to = "/.netlify/functions/login"
+  status = 200

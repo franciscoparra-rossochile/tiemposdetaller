@@ -5457,8 +5457,18 @@ async function _doLoginInner() {
 
   let data, error;
   try {
-    const res = await sb.from('users').select('*').eq('username', u).eq('password', p).maybeSingle();
-    data = res.data; error = res.error;
+    /* SEGURIDAD 2026-08-08: antes la contraseña viajaba como filtro en la URL
+       de la consulta (queda en logs de Supabase y de cualquier proxy), y la
+       llave anónima está en el HTML de este sitio público. Ahora la verifica
+       el servidor y el navegador nunca ve una credencial. */
+    const _r = await fetch('/api/login', {
+      method: 'POST', headers: {'content-type': 'application/json'},
+      body: JSON.stringify({accion: 'login', username: u, password: p})
+    });
+    const _j = await _r.json().catch(function(){ return {}; });
+    if (_r.ok && _j.ok) { data = _j.user; }
+    else if (_r.status === 401) { data = null; }
+    else { error = {message: _j.error || ('HTTP ' + _r.status)}; }
   } catch (e) {
     error = {message: 'Excepcion de red: ' + (e && e.message ? e.message : String(e))};
   }
@@ -5740,16 +5750,20 @@ async function saveForcedPassword() {
   if (nw !== conf) {
     err.textContent = 'Las contrasenas no coinciden'; err.style.display = 'block'; return;
   }
-  if (nw === CU.password) {
-    err.textContent = 'La nueva contrasena debe ser distinta de la actual'; err.style.display = 'block'; return;
-  }
+  /* ya no se puede comparar en el navegador: la contraseña no viaja hasta acá */
 
   btn.innerHTML = '<span class="spin"></span> Guardando...'; btn.disabled = true;
 
-  // Actualiza password y quita la marca de cambio obligatorio en una sola operacion
-  var {error} = await sb.from('users')
-    .update({password: nw, must_change_password: false})
-    .eq('id', CU.id);
+  // El hash lo crea el servidor; la app nunca escribe una contraseña.
+  var error = null;
+  try {
+    var _r = await fetch('/api/login', {
+      method: 'POST', headers: {'content-type': 'application/json'},
+      body: JSON.stringify({accion: 'cambiar', user_id: CU.id, nueva: nw})
+    });
+    var _j = await _r.json().catch(function(){ return {}; });
+    if (!_r.ok || !_j.ok) error = {message: _j.error || ('HTTP ' + _r.status)};
+  } catch (e) { error = {message: e.message}; }
 
   btn.innerHTML = 'Guardar y entrar'; btn.disabled = false;
 
@@ -5760,8 +5774,7 @@ async function saveForcedPassword() {
     return;
   }
 
-  // Actualizar estado local
-  CU.password = nw;
+  // Actualizar estado local (la contraseña ya no se guarda en memoria)
   CU.must_change_password = false;
   logR('FORCE_PW_OK', {user: CU.username});
 
@@ -16789,20 +16802,40 @@ async function saveUser() {
     });
   }
 
+  /* SEGURIDAD 2026-08-08: la app ya no escribe contraseñas. El alta y el
+     reseteo guardan el resto de los datos, y la clave la convierte en hash el
+     servidor con /api/login. */
+  async function _fijarClave(uid, clave) {
+    var r = await fetch('/api/login', {
+      method: 'POST', headers: {'content-type': 'application/json'},
+      body: JSON.stringify({accion: 'set', user_id: uid, nueva: clave})
+    });
+    var j = await r.json().catch(function(){ return {}; });
+    if (!r.ok || !j.ok) throw new Error(j.error || ('HTTP ' + r.status));
+  }
   if (editUserId) {
     var updates = {name, username, cargo, role, avatar_url, can_tech: canTech};
     if (newPerms) updates.permissions = newPerms;
-    if (pass.length >= 4) {
-      // Admin esta reseteando la contrasena -> forzar cambio en proximo login del usuario.
-      updates.password = pass;
-      updates.must_change_password = true;
-    }
+    if (pass.length >= 4) updates.must_change_password = true;
     ({error} = await sb.from('users').update(updates).eq('id', editUserId));
+    if (!error && pass.length >= 4) {
+      try { await _fijarClave(editUserId, pass); }
+      catch (e) { error = {message: 'Datos guardados, pero la contrasena no: ' + e.message}; }
+    }
   } else {
     // Usuario nuevo -> siempre debe cambiar contrasena al primer ingreso.
-    var insertObj = {name, username, password:pass, cargo, role, avatar_url, must_change_password: true, can_tech: canTech};
+    var insertObj = {name, username, cargo, role, avatar_url, must_change_password: true, can_tech: canTech};
     if (newPerms) insertObj.permissions = newPerms;
-    ({error} = await sb.from('users').insert(insertObj));
+    var _ins = await sb.from('users').insert(insertObj).select();
+    error = _ins.error;
+    if (!error) {
+      var _nuevo = (_ins.data || [])[0];
+      if (!_nuevo) error = {message: 'Usuario creado pero no se pudo fijar la contrasena: reintenta desde editar.'};
+      else {
+        try { await _fijarClave(_nuevo.id, pass); }
+        catch (e) { error = {message: 'Usuario creado, pero la contrasena no: ' + e.message}; }
+      }
+    }
   }
   logR('SAVE_USER', {error: error ? error.message : null});
   btn.innerHTML = 'Guardar'; btn.disabled = false;
@@ -25467,14 +25500,22 @@ async function saveMiCuenta() {
   var ok = document.getElementById('mc-ok');
   var btn = document.getElementById('mc-btn');
   err.style.display='none'; ok.style.display='none';
-  if (old !== CU.password) { err.textContent='Contrasena actual incorrecta'; err.style.display='block'; return; }
+  if (!old) { err.textContent='Escribe tu contrasena actual'; err.style.display='block'; return; }
   if (nw.length < 4) { err.textContent='Minimo 4 caracteres'; err.style.display='block'; return; }
   if (nw !== conf) { err.textContent='Las contrasenas no coinciden'; err.style.display='block'; return; }
   btn.innerHTML='<span class="spin"></span>'; btn.disabled=true;
-  var {error} = await sb.from('users').update({password:nw, must_change_password: false}).eq('id',CU.id);
+  /* la actual la verifica el servidor contra el hash */
+  var error = null;
+  try {
+    var _r = await fetch('/api/login', {
+      method: 'POST', headers: {'content-type': 'application/json'},
+      body: JSON.stringify({accion: 'cambiar', user_id: CU.id, actual: old, nueva: nw})
+    });
+    var _j = await _r.json().catch(function(){ return {}; });
+    if (!_r.ok || !_j.ok) error = {message: _j.error || ('HTTP ' + _r.status)};
+  } catch (e) { error = {message: e.message}; }
   btn.innerHTML='Actualizar'; btn.disabled=false;
   if (error) { err.textContent='Error: '+error.message; err.style.display='block'; return; }
-  CU.password = nw;
   CU.must_change_password = false;
   ok.style.display = 'block';
 }
