@@ -112,6 +112,64 @@ function limpiar(u) {
 /* El barrido de migración se eliminó junto con la columna `password`: ya no
    queda nada en texto plano que convertir. */
 
+/* ── Largo mínimo de contraseña ────────────────────────────────────────────
+   Seis, acompañado del freno de abajo. Sin freno, seis caracteres se prueban
+   por fuerza bruta; con freno, un atacante tiene ocho tiros cada cuarto de
+   hora y el problema deja de ser el largo. */
+const CLAVE_MIN = 6;
+
+/* ── Freno a intentos ──────────────────────────────────────────────────────
+   Se cuenta por usuario (para proteger una cuenta concreta) y por IP (para
+   frenar a quien prueba una clave común contra los 15 nombres). Los fallidos
+   viven en `login_attempts`, tabla con RLS y sin políticas: invisible para la
+   llave pública.
+   Si la tabla todavía no existe, `frenado` devuelve false y el login sigue
+   funcionando igual. Un freno que se cae no puede dejar al taller afuera. */
+const FRENO_VENTANA_MIN = 15;
+const FRENO_POR_USUARIO = 8;
+const FRENO_POR_IP      = 30;
+
+function ipDe(event) {
+  const h = (event && event.headers) || {};
+  const x = h['x-nf-client-connection-ip'] || h['client-ip'] || h['x-forwarded-for'] || '';
+  return String(x).split(',')[0].trim() || 'desconocida';
+}
+
+async function contar(clave, desde) {
+  const q = 'login_attempts?select=id&clave=eq.' + encodeURIComponent(clave) +
+            '&cuando=gte.' + encodeURIComponent(desde);
+  const filas = await sb(q);
+  return (filas || []).length;
+}
+
+async function frenado(uname, ip) {
+  const desde = new Date(Date.now() - FRENO_VENTANA_MIN * 60000).toISOString();
+  try {
+    const [porUsuario, porIp] = await Promise.all([
+      contar('u:' + uname, desde),
+      contar('ip:' + ip, desde)
+    ]);
+    if (porUsuario >= FRENO_POR_USUARIO) return 'usuario';
+    if (porIp >= FRENO_POR_IP) return 'ip';
+    return false;
+  } catch (_) {
+    return false;   /* la tabla no existe todavía: no frenar a nadie */
+  }
+}
+
+async function anotarFallo(uname, ip) {
+  try {
+    await sb('login_attempts', 'POST', [{ clave: 'u:' + uname }, { clave: 'ip:' + ip }]);
+    /* barrido barato: lo viejo ya no sirve para nada y la tabla no debe crecer */
+    const viejo = new Date(Date.now() - 6 * 3600000).toISOString();
+    await sb('login_attempts?cuando=lt.' + encodeURIComponent(viejo), 'DELETE');
+  } catch (_) {}
+}
+
+async function limpiarFallos(uname) {
+  try { await sb('login_attempts?clave=eq.' + encodeURIComponent('u:' + uname), 'DELETE'); } catch (_) {}
+}
+
 exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') return J(204, {});
   let body = {};
@@ -130,10 +188,16 @@ exports.handler = async (event) => {
       const clave = String(body.password || '');
       if (!uname || !clave) return J(400, { error: 'Faltan usuario o contraseña' });
 
+      const ip = ipDe(event);
+      const freno = await frenado(uname, ip);
+      if (freno) {
+        return J(429, { error: 'Demasiados intentos fallidos. Espera ' + FRENO_VENTANA_MIN + ' minutos y vuelve a intentar.' });
+      }
+
       const rows = await sb('users?select=*&username=eq.' + encodeURIComponent(uname) + '&limit=1');
       const u = (rows || [])[0];
       /* mismo mensaje y mismo costo si el usuario no existe: no revelar cuáles sí */
-      if (!u) { hashear(clave); return J(401, { error: 'Usuario o contraseña incorrectos' }); }
+      if (!u) { hashear(clave); await anotarFallo(uname, ip); return J(401, { error: 'Usuario o contraseña incorrectos' }); }
 
       /* Si todavía no está cargada la llave de servicio, la tabla de secretos
          es inaccesible (RLS). Eso NO puede dejar a nadie afuera: se cae al
@@ -148,16 +212,25 @@ exports.handler = async (event) => {
       }
 
       if (guardado) {
-        if (!verificar(clave, guardado)) return J(401, { error: 'Usuario o contraseña incorrectos' });
+        if (!verificar(clave, guardado)) {
+          await anotarFallo(uname, ip);
+          return J(401, { error: 'Usuario o contraseña incorrectos' });
+        }
       } else {
         /* transición: todavía sin hash. Se valida contra el valor antiguo y se
            crea el hash en el acto, para que el próximo login ya sea seguro. */
         /* sin hash y sin columna antigua no hay con qué comparar */
-        if (!('password' in u) || !u.password || String(u.password) !== clave) return J(401, { error: 'Usuario o contraseña incorrectos' });
+        if (!('password' in u) || !u.password || String(u.password) !== clave) {
+          await anotarFallo(uname, ip);
+          return J(401, { error: 'Usuario o contraseña incorrectos' });
+        }
         if (secretosDisponibles) {
           try { await sb('user_secrets', 'POST', { user_id: u.id, password_hash: hashear(clave) }); } catch (_) {}
         }
       }
+      /* Entró bien: se borra su cuenta de fallidos para que un olvido de la
+         mañana no lo deje frenado en la tarde. */
+      await limpiarFallos(uname);
       /* El barrido de migración se retiró del login: la columna `password` ya
          no existe, así que solo agregaba una consulta fallida a cada ingreso. */
       return J(200, {
@@ -182,12 +255,14 @@ exports.handler = async (event) => {
       const uid = String(body.user_id || '');
       const actual = String(body.actual || ''), nueva = String(body.nueva || '');
       if (!uid || !nueva) return J(400, { error: 'Faltan datos' });
-      if (nueva.length < 4) return J(400, { error: 'La contraseña nueva debe tener al menos 4 caracteres' });
 
       const rows = await sb('users?select=id,must_change_password&id=eq.' + uid + '&limit=1');
       const u = (rows || [])[0];
       if (!u) return J(404, { error: 'Usuario no encontrado' });
 
+      /* Primero quién eres, después si lo que traes sirve. Al revés, un
+         desconocido podría distinguir por el mensaje de error entre una cuenta
+         que existe y una que no, o entre reglas que cumple y que no. */
       const ses = abrirToken(body.token);
       const conToken = !!(ses && ses.uid === uid);
 
@@ -199,8 +274,25 @@ exports.handler = async (event) => {
         }
       }
 
+      if (nueva.length < CLAVE_MIN) return J(400, { error: 'La contraseña nueva debe tener al menos ' + CLAVE_MIN + ' caracteres' });
+
       await sb('user_secrets', 'POST', { user_id: uid, password_hash: hashear(nueva) });
-      await sb('users?id=eq.' + uid, 'PATCH', { must_change_password: false });
+
+      /* Correo personal de recuperación. Se acepta en el mismo paso que el
+         cambio de contraseña porque ese es el momento en que la persona ya
+         probó ser quien dice: pedirlo por separado sería otra pantalla que
+         nadie completa. Solo se guarda si la columna existe. */
+      const cambios = { must_change_password: false };
+      const correo = String(body.recovery_email || '').trim().toLowerCase();
+      if (correo && /^[^@\s]+@[^@\s]+\.[^@\s]{2,}$/.test(correo)) cambios.recovery_email = correo;
+      try {
+        await sb('users?id=eq.' + uid, 'PATCH', cambios);
+      } catch (e) {
+        /* que el correo falle (columna ausente, o ya usado por otra cuenta) no
+           puede impedir el cambio de contraseña, que es lo importante */
+        await sb('users?id=eq.' + uid, 'PATCH', { must_change_password: false });
+        return J(200, { ok: true, token: firmar(uid, null), aviso_correo: 'No se pudo guardar el correo de recuperación.' });
+      }
       /* token nuevo: la sesión sigue viva con la contraseña recién puesta */
       return J(200, { ok: true, token: firmar(uid, null) });
     }
@@ -220,7 +312,7 @@ exports.handler = async (event) => {
       const uid = String(body.user_id || '');
       const nueva = String(body.nueva || '');
       if (!uid || !nueva) return J(400, { error: 'Faltan datos' });
-      if (nueva.length < 4) return J(400, { error: 'La contraseña debe tener al menos 4 caracteres' });
+      if (nueva.length < CLAVE_MIN) return J(400, { error: 'La contraseña debe tener al menos ' + CLAVE_MIN + ' caracteres' });
       const rows = await sb('users?select=id&id=eq.' + uid + '&limit=1');
       if (!(rows || [])[0]) return J(404, { error: 'Usuario no encontrado' });
       await sb('user_secrets', 'POST', { user_id: uid, password_hash: hashear(nueva) });
