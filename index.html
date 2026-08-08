@@ -16921,6 +16921,29 @@ function prevAvatar(inp) {
   reader.readAsDataURL(inp.files[0]);
 }
 
+/* SEGURIDAD 2026-08-08 (v2.9): la app ya no escribe la tabla `users`.
+   Antes lo hacia desde el navegador con la llave anonima —la misma que va
+   incrustada en este HTML publico y en el repo publico— y el objeto que
+   mandaba incluia `role`. El panel se le mostraba solo a un admin, pero
+   esconder un boton no es un candado: PostgREST le contesta igual a quien
+   llame directo. Cualquiera con el codigo fuente a la vista podia ponerse
+   role:admin, crear una cuenta nueva o borrar al equipo entero.
+
+   Es la misma leccion del bypass de `set`, y por eso el arreglo es el mismo:
+   la base ya no acepta insert/update/delete sobre `users` desde el navegador,
+   y estas tres acciones pasan por /api/login, que exige token de sesion y
+   relee el rol desde la base en vez de creerle al token. */
+async function _equipo(accion, payload) {
+  if (!_TK) throw new Error('Tu sesion es de una version anterior: cierra sesion y vuelve a entrar.');
+  var r = await fetch('/api/login', {
+    method: 'POST', headers: {'content-type': 'application/json'},
+    body: JSON.stringify(Object.assign({accion: accion, token: _TK}, payload))
+  });
+  var j = await r.json().catch(function(){ return {}; });
+  if (!r.ok || !j.ok) throw new Error(j.error || ('HTTP ' + r.status));
+  return j;
+}
+
 async function saveUser() {
   var name = document.getElementById('m-cu-name').value.trim();
   var username = document.getElementById('m-cu-user').value.trim().toLowerCase().replace(/\s/g,'');
@@ -17000,7 +17023,8 @@ async function saveUser() {
     var updates = {name, username, cargo, role, avatar_url, can_tech: canTech};
     if (newPerms) updates.permissions = newPerms;
     if (pass.length >= 4) updates.must_change_password = true;
-    ({error} = await sb.from('users').update(updates).eq('id', editUserId));
+    try { await _equipo('equipo_editar', {user_id: editUserId, datos: updates}); }
+    catch (e) { error = {message: e.message}; }
     if (!error && pass.length >= 4) {
       try { await _fijarClave(editUserId, pass); }
       catch (e) { error = {message: 'Datos guardados, pero la contrasena no: ' + e.message}; }
@@ -17009,16 +17033,11 @@ async function saveUser() {
     // Usuario nuevo -> siempre debe cambiar contrasena al primer ingreso.
     var insertObj = {name, username, cargo, role, avatar_url, must_change_password: true, can_tech: canTech};
     if (newPerms) insertObj.permissions = newPerms;
-    var _ins = await sb.from('users').insert(insertObj).select();
-    error = _ins.error;
-    if (!error) {
-      var _nuevo = (_ins.data || [])[0];
-      if (!_nuevo) error = {message: 'Usuario creado pero no se pudo fijar la contrasena: reintenta desde editar.'};
-      else {
-        try { await _fijarClave(_nuevo.id, pass); }
-        catch (e) { error = {message: 'Usuario creado, pero la contrasena no: ' + e.message}; }
-      }
-    }
+    /* El alta y la contrasena viajan juntas en un solo llamado: antes eran
+       dos pasos y si el segundo fallaba quedaba una cuenta sin clave que
+       nadie podia usar ni veia como rota. */
+    try { await _equipo('equipo_crear', {datos: insertObj, clave: pass}); }
+    catch (e) { error = {message: e.message}; }
   }
   logR('SAVE_USER', {error: error ? error.message : null});
   btn.innerHTML = 'Guardar'; btn.disabled = false;
@@ -17040,16 +17059,43 @@ async function deleteUser() {
   if (!editUserId) return;
   // FASE 2.6: confirmación tipeada anti-clic accidental
   confirmHard(
-    '<b>Vas a eliminar este usuario</b><br/>Pierde acceso al sistema. Sus servicios históricos se mantienen.',
+    '<b>Vas a dar de baja a este usuario</b><br/>Deja de poder entrar y de poder recuperar su contraseña. Sus servicios históricos se mantienen intactos, y si vuelve lo puedes reactivar desde Configuración → Usuarios.',
     function(){ _doDeleteUser(); }
   );
 }
+
+/* v2.9: la vuelta de la baja. Reactivar obliga a cambiar la contraseña en el
+   primer ingreso, porque la que tenia quedo guardada quien sabe donde durante
+   todo el tiempo que estuvo afuera. */
+async function reactivarUsuario(uid, nombre) {
+  confirmHard(
+    '<b>Vas a reactivar a ' + escapeHtml(nombre || 'este usuario') + '</b><br/>Va a poder entrar de nuevo. En su primer ingreso el sistema le va a exigir una contraseña nueva.',
+    function(){ _doReactivarUsuario(uid); }
+  );
+}
+/* Separada de la confirmación, igual que _doDeleteUser: así la acción se puede
+   probar sin tener que simular el tecleo del "CONFIRMAR". */
+async function _doReactivarUsuario(uid) {
+  if (!uid) return;
+  try { await _equipo('equipo_baja', {user_id: uid, reactivar: true}); }
+  catch (e) { showGlobalError('No se pudo reactivar: ' + e.message, 6000); return; }
+  invalidateAssignableTechsCache();
+  if (document.getElementById('m-config').style.display !== 'none' && _curConfigTab === 'usuarios') {
+    renderConfigUsuarios(document.getElementById('m-cfg-body'));
+  }
+  showGlobalError('Usuario reactivado. Dale una contraseña desde Editar.', 3500);
+}
 async function _doDeleteUser() {
   if (!editUserId) return;
-  // QA-STABLE: verificar éxito real antes de cerrar modal y refrescar.
-  var r = await sb.from('users').delete().eq('id', editUserId);
-  if (r && r.error) {
-    showGlobalError('No se pudo eliminar el usuario: ' + r.error.message, 6000);
+  /* v2.9: dar de baja en vez de borrar. Borrar la fila se llevaba por delante
+     el historial de servicios de la persona —quien hizo cada trabajo, cuanto
+     se demoro—, que es justo el dato que no hay que perder. La baja cierra el
+     acceso (no puede entrar ni recuperar la clave) y deja los datos donde
+     estan. Si alguien vuelve, se reactiva y conserva su hoja de vida. */
+  try {
+    await _equipo('equipo_baja', {user_id: editUserId});
+  } catch (e) {
+    showGlobalError('No se pudo dar de baja al usuario: ' + e.message, 6000);
     return;
   }
   await refreshAvatarsCache();
@@ -17059,7 +17105,7 @@ async function _doDeleteUser() {
   if (document.getElementById('m-config').style.display !== 'none' && _curConfigTab === 'usuarios') {
     renderConfigUsuarios(document.getElementById('m-cfg-body'));
   }
-  showGlobalError('Usuario eliminado', 2500);
+  showGlobalError('Usuario dado de baja', 2500);
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -23895,19 +23941,29 @@ async function renderConfigUsuarios(body) {
     body.appendChild(addBtn);
     var card = mk('div','');
     var roleO = {admin:0,jefatura:1,tech:2};
-    data.sort(function(a,b){return (roleO[a.role]||9)-(roleO[b.role]||9)||a.name.localeCompare(b.name);}).forEach(function(u) {
+    /* v2.9: los dados de baja se van al final y se ven apagados. Antes no se
+       distinguian de los vigentes, y una lista donde un ex trabajador se ve
+       igual que uno activo es una lista en la que nadie confia. */
+    data.sort(function(a,b){
+      var ba = (a.is_active === false) ? 1 : 0, bb = (b.is_active === false) ? 1 : 0;
+      return ba - bb || (roleO[a.role]||9)-(roleO[b.role]||9) || a.name.localeCompare(b.name);
+    }).forEach(function(u) {
+      var deBaja = (u.is_active === false);
       var init = u.name.split(' ').map(function(x){return x[0];}).join('').slice(0,2);
       var avc = u.role==='admin'?'av-adm':u.role==='jefatura'?'av-jef':'av-tech';
       var row = mk('div','row');
-      row.style.cssText = 'padding:8px 0;border-bottom:1px solid #f0f0f0';
+      row.style.cssText = 'padding:8px 0;border-bottom:1px solid #f0f0f0' + (deBaja ? ';opacity:.5' : '');
       var av = '<div class="av ' + avc + '" style="margin-right:8px">' + (u.avatar_url ? '<img src="' + u.avatar_url + '" style="width:100%;height:100%;object-fit:cover;border-radius:2px"/>' : init) + '</div>';
       row.innerHTML = av
         + '<div style="flex:1">'
         + '<div style="font-size:13px;font-weight:700;font-family:\'Rajdhani\',sans-serif;text-transform:uppercase;letter-spacing:.03em;color:#111">' + escapeHtml(u.name) + '</div>'
         + '<div style="font-size:11px;color:#666">@' + escapeHtml(u.username) + (u.cargo?' - '+escapeHtml(u.cargo):'') + '</div>'
         + '<span class="badge ' + (u.role==='admin'?'b-cal':u.role==='jefatura'?'b-run':'b-pend') + '">' + u.role + '</span>'
+        + (deBaja ? '<span class="badge b-pend" style="margin-left:4px;background:#eee;color:#777">de baja</span>' : '')
         + '</div>'
-        + '<button class="btn-sm" onclick="closeModal(\'m-config\');openUserModal(\'' + u.id + '\')">Editar</button>';
+        + (deBaja
+            ? '<button class="btn-sm" onclick="reactivarUsuario(\'' + u.id + '\',\'' + escapeHtml(u.name).replace(/'/g,"\\'") + '\')">Reactivar</button>'
+            : '<button class="btn-sm" onclick="closeModal(\'m-config\');openUserModal(\'' + u.id + '\')">Editar</button>');
       card.appendChild(row);
     });
     body.appendChild(card);
