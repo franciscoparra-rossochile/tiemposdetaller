@@ -5312,6 +5312,22 @@ function retryConn() {
 // Adicional: idle-timeout de 30 min cierra la sesion si no hay interaccion.
 const SESSION_MAX_AGE_MS = window.RossoConfig.SESSION_MAX_AGE_MS; // 4h
 
+/* SEGURIDAD 2026-08-08 (segunda pasada): las acciones que ESCRIBEN una
+   contraseña —el reseteo administrativo y el cambio obligado del primer
+   ingreso— no pedían credencial alguna. Como los uuid de `users` son legibles
+   con la llave anónima, bastaba pedir el del admin y fijarle una clave nueva.
+   Ahora el login entrega un token firmado por el servidor y esas dos acciones
+   lo exigen. El token no abre nada por sí solo: solo prueba quién lo pide. */
+var _TK = null;
+function _guardarTK() {
+  try {
+    var raw = localStorage.getItem('rosso_session');
+    if (!raw) return;
+    var s = JSON.parse(raw); s.tk = _TK;
+    localStorage.setItem('rosso_session', JSON.stringify(s));
+  } catch (e) {}
+}
+
 async function tryRestoreSession() {
   var raw;
   try { raw = localStorage.getItem('rosso_session'); }
@@ -5354,6 +5370,7 @@ async function tryRestoreSession() {
   }
 
   CU = data;
+  _TK = sess.tk || null;
   logR('SESSION_RESTORED', {name: CU.name, role: CU.role, age_min: Math.round((Date.now() - sess.saved_at) / 60000)});
 
   // Si must_change_password se activo desde el login original, respetar eso ahora
@@ -5466,7 +5483,7 @@ async function _doLoginInner() {
       body: JSON.stringify({accion: 'login', username: u, password: p})
     });
     const _j = await _r.json().catch(function(){ return {}; });
-    if (_r.ok && _j.ok) { data = _j.user; }
+    if (_r.ok && _j.ok) { data = _j.user; _TK = _j.token || null; }
     else if (_r.status === 401) { data = null; }
     else { error = {message: _j.error || ('HTTP ' + _r.status)}; }
   } catch (e) {
@@ -5492,6 +5509,7 @@ async function _doLoginInner() {
     localStorage.setItem('rosso_session', JSON.stringify({
       user_id: CU.id,
       username: CU.username,
+      tk: _TK,
       saved_at: Date.now()
     }));
   } catch(e) { logR('SESSION_SAVE_FAIL', {msg: e.message}, 'warn'); }
@@ -5752,6 +5770,14 @@ async function saveForcedPassword() {
   }
   /* ya no se puede comparar en el navegador: la contraseña no viaja hasta acá */
 
+  /* Sesión vieja (guardada antes de que existiera el token): no hay con qué
+     probar quién es. Se pide entrar de nuevo en vez de mostrar un 401 seco. */
+  if (!_TK) {
+    err.textContent = 'Tu sesion es de una version anterior. Cierra sesion y vuelve a entrar para definir tu contrasena.';
+    err.style.display = 'block';
+    return;
+  }
+
   btn.innerHTML = '<span class="spin"></span> Guardando...'; btn.disabled = true;
 
   // El hash lo crea el servidor; la app nunca escribe una contraseña.
@@ -5759,10 +5785,11 @@ async function saveForcedPassword() {
   try {
     var _r = await fetch('/api/login', {
       method: 'POST', headers: {'content-type': 'application/json'},
-      body: JSON.stringify({accion: 'cambiar', user_id: CU.id, nueva: nw})
+      body: JSON.stringify({accion: 'cambiar', user_id: CU.id, nueva: nw, token: _TK})
     });
     var _j = await _r.json().catch(function(){ return {}; });
     if (!_r.ok || !_j.ok) error = {message: _j.error || ('HTTP ' + _r.status)};
+    else if (_j.token) { _TK = _j.token; _guardarTK(); }
   } catch (e) { error = {message: e.message}; }
 
   btn.innerHTML = 'Guardar y entrar'; btn.disabled = false;
@@ -16806,9 +16833,10 @@ async function saveUser() {
      reseteo guardan el resto de los datos, y la clave la convierte en hash el
      servidor con /api/login. */
   async function _fijarClave(uid, clave) {
+    if (!_TK) throw new Error('Tu sesion es de una version anterior: cierra sesion y vuelve a entrar.');
     var r = await fetch('/api/login', {
       method: 'POST', headers: {'content-type': 'application/json'},
-      body: JSON.stringify({accion: 'set', user_id: uid, nueva: clave})
+      body: JSON.stringify({accion: 'set', user_id: uid, nueva: clave, token: _TK})
     });
     var j = await r.json().catch(function(){ return {}; });
     if (!r.ok || !j.ok) throw new Error(j.error || ('HTTP ' + r.status));
