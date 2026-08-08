@@ -224,7 +224,14 @@ select.inp{cursor:pointer}textarea.inp{resize:none}
       <button type="submit" class="btn btn-red" id="li-btn">Ingresar</button>
     </form>
     <button type="button" id="li-olvide" onclick="pedirRecuperacion()" style="appearance:none;background:none;border:0;padding:10px 0 2px;width:100%;cursor:pointer;color:var(--wh4);font-size:12px;text-decoration:underline;font-family:inherit">Olvide mi contrasena</button>
-    <button class="btn btn-out" style="margin-top:4px" onclick="openModal('m-create-user')">Crear cuenta nueva</button>
+    <!-- SEGURIDAD 2026-08-08 (v2.9): acá había un botón "Crear cuenta nueva"
+         que abría, SIN haber iniciado sesión, el mismo modal que usa jefatura
+         para dar de alta gente — selector de Rol incluido, con la opción
+         "Administrador" en la lista. Cualquiera que abriera la portada podía
+         crearse una cuenta de administrador con tres clics. No era una API
+         escondida: era un botón en la pantalla de ingreso.
+         Las cuentas las crea un admin desde Configuración → Usuarios. -->
+    <div id="lg-nota-cuenta" style="text-align:center;font-size:11px;color:var(--wh4);margin-top:10px;line-height:1.4">¿No tienes cuenta? Pídesela al jefe de taller.</div>
     <div id="conn-status" style="text-align:center;font-size:10px;color:var(--wh4);margin-top:8px;font-family:var(--mono)"></div>
     <button id="retry-btn" onclick="retryConn()" style="display:none;margin-top:8px;background:var(--red);color:#fff;border:none;border-radius:4px;padding:8px 16px;font-size:12px;font-weight:700;cursor:pointer;font-family:var(--head);letter-spacing:.06em;text-transform:uppercase">Reintentar conexion</button>
   </div>
@@ -16832,6 +16839,18 @@ function renderBossCfg(body) {
 // USER CRUD
 // ═══════════════════════════════════════════════
 async function openUserModal(uid) {
+  /* SEGURIDAD 2026-08-08 (v2.9): portero en la puerta del modal, no solo en
+     los botones que llevan a ella. El botón "Crear cuenta nueva" de la
+     pantalla de ingreso abría este mismo modal —con el selector de Rol y la
+     opción Administrador adentro— sin haber iniciado sesión. Se sacó el
+     botón, pero la lección es que el control tiene que vivir acá: si mañana
+     alguien agrega otro atajo, este `if` lo detiene igual.
+     El servidor manda de todas formas; esto es para que la app no ofrezca
+     una pantalla que después va a rebotar. */
+  if (!CU || CU.role !== 'admin') {
+    if (typeof showGlobalError === 'function') showGlobalError('Solo un administrador puede gestionar cuentas.', 4000);
+    return;
+  }
   editUserId = uid;
   document.getElementById('m-cu-err').style.display = 'none';
   document.getElementById('m-cu-btn').innerHTML = 'Guardar';
